@@ -41,6 +41,20 @@ pub struct Change {
     pub state: FileState,
 }
 
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct Commit {
+    pub hash: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub date: String,
+    pub refs: String,
+    pub subject: String,
+    pub col: usize,
+    pub up: Vec<usize>,
+    pub through: Vec<usize>,
+    pub down: Vec<usize>,
+}
+
 #[derive(PartialEq, Eq, Debug)]
 struct Entry {
     path: String,
@@ -54,6 +68,7 @@ struct Status {
     branch: String,
     tracking: Option<(usize, usize)>,
     branches: Vec<String>,
+    log: Vec<Commit>,
     staged: Vec<Change>,
     unstaged: Vec<Change>,
     files: HashMap<String, FileState>,
@@ -64,9 +79,14 @@ enum Msg {
     Status(PathBuf, Option<Status>),
     Diff(PathBuf, Vec<(usize, LineChange)>),
     Done(Option<String>),
+    Repos(PathBuf, Vec<PathBuf>, bool),
+    Files(String, Vec<Change>),
 }
 
 pub struct Git {
+    folder: Option<PathBuf>,
+    repos: Vec<PathBuf>,
+    shown: Option<(String, Vec<Change>)>,
     root: Option<PathBuf>,
     ctx: Option<egui::Context>,
     status: Option<Status>,
@@ -197,12 +217,104 @@ fn parse_diff(text: &str) -> Vec<(usize, LineChange)> {
     out
 }
 
+const LOG_FORMAT: &str = "--format=%H%x1f%P%x1f%an%x1f%ar%x1f%D%x1f%s";
+
+fn parse_log(text: &str) -> Vec<Commit> {
+    let mut commits: Vec<Commit> = text
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\x1f').map(str::to_owned);
+            Some(Commit {
+                hash: fields.next()?,
+                parents: fields.next()?.split_whitespace().map(str::to_owned).collect(),
+                author: fields.next()?,
+                date: fields.next()?,
+                refs: fields.next()?,
+                subject: fields.next()?,
+                ..Default::default()
+            })
+        })
+        .collect();
+    let mut lanes: Vec<Option<String>> = vec![];
+    let free = |lanes: &mut Vec<Option<String>>| {
+        lanes.iter().position(Option::is_none).unwrap_or_else(|| {
+            lanes.push(None);
+            lanes.len() - 1
+        })
+    };
+    for commit in &mut commits {
+        let waiting: Vec<usize> = (0..lanes.len()).filter(|i| lanes[*i].as_deref() == Some(&commit.hash)).collect();
+        commit.col = waiting.first().copied().unwrap_or_else(|| free(&mut lanes));
+        commit.through = (0..lanes.len()).filter(|i| lanes[*i].is_some() && !waiting.contains(i)).collect();
+        for i in &waiting {
+            lanes[*i] = None;
+        }
+        commit.up = waiting;
+        for (n, parent) in commit.parents.iter().enumerate() {
+            let lane = lanes.iter().position(|l| l.as_ref() == Some(parent)).unwrap_or_else(|| {
+                let lane = if n == 0 { commit.col } else { free(&mut lanes) };
+                lanes[lane] = Some(parent.clone());
+                lane
+            });
+            commit.down.push(lane);
+        }
+    }
+    commits
+}
+
+fn parse_name_status(text: &str) -> Vec<Change> {
+    let mut out = vec![];
+    let mut parts = text.split('\0');
+    while let (Some(code), Some(mut path)) = (parts.next(), parts.next()) {
+        let code = code.trim_start();
+        if code.starts_with(['R', 'C']) {
+            path = parts.next().unwrap_or(path);
+        }
+        let state = match code.as_bytes().first() {
+            Some(b'A') => FileState::Added,
+            Some(b'D') => FileState::Deleted,
+            _ => FileState::Modified,
+        };
+        out.push(Change { path: path.to_owned(), state });
+    }
+    out
+}
+
+fn find_repos(folder: &Path) -> (Vec<PathBuf>, bool) {
+    let own = run(folder, &["rev-parse", "--show-toplevel"]).is_some();
+    let mut repos = if own { vec![folder.to_path_buf()] } else { vec![] };
+    let children = |dir: &Path| {
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let name = p.file_name().unwrap_or_default().to_string_lossy();
+                p.is_dir() && !name.starts_with('.') && name != "node_modules" && name != "target"
+            })
+            .collect();
+        dirs.sort();
+        dirs
+    };
+    for child in children(folder) {
+        if child.join(".git").exists() {
+            repos.push(child.clone());
+        }
+        repos.extend(children(&child).into_iter().filter(|p| p.join(".git").exists()));
+    }
+    (repos, own)
+}
+
 fn load_status(root: &Path) -> Option<Status> {
     let top = PathBuf::from(run(root, &["rev-parse", "--show-toplevel"])?.trim());
     let text = run(root, &["status", "--porcelain=v1", "-z", "--branch", "--ignored"])?;
     let (branch, tracking, entries) = parse_status(&text);
     let branches = run(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]).unwrap_or_default();
     let branches = branches.lines().map(str::to_owned).collect();
+    let log = ["log", "--topo-order", "-n", "200", LOG_FORMAT, "HEAD", "@{upstream}"];
+    let log = run(root, &log[..5 + tracking.map_or(1, |_| 2)]).or_else(|| run(root, &log[..6])).unwrap_or_default();
+    let log = parse_log(&log);
     let branch = branch
         .or_else(|| run(root, &["rev-parse", "--short", "HEAD"]).map(|s| s.trim().to_owned()))
         .unwrap_or_default();
@@ -233,13 +345,16 @@ fn load_status(root: &Path) -> Option<Status> {
         }
         files.insert(full, state);
     }
-    Some(Status { top, branch, tracking, branches, staged, unstaged, files, folders })
+    Some(Status { top, branch, tracking, branches, log, staged, unstaged, files, folders })
 }
 
 impl Git {
     pub fn new() -> Self {
         let (tx, rx) = channel();
         Self {
+            folder: None,
+            repos: vec![],
+            shown: None,
             root: None,
             ctx: None,
             status: None,
@@ -255,11 +370,61 @@ impl Git {
     }
 
     pub fn set_root(&mut self, root: Option<PathBuf>, ctx: &egui::Context) {
+        self.folder = root.clone();
+        self.repos.clear();
+        if let Some(folder) = root.clone() {
+            let (tx, ctx) = (self.tx.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                let (repos, own) = find_repos(&folder);
+                let _ = tx.send(Msg::Repos(folder, repos, own));
+                ctx.request_repaint();
+            });
+        }
+        self.select(root, ctx);
+    }
+
+    pub fn select(&mut self, root: Option<PathBuf>, ctx: &egui::Context) {
         self.root = root;
         self.status = None;
         self.repo_name = None;
+        self.shown = None;
+        self.error = None;
         self.diffs.borrow_mut().clear();
         self.refresh(ctx);
+    }
+
+    pub fn repos(&self) -> &[PathBuf] {
+        &self.repos
+    }
+
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
+    }
+
+    pub fn log(&self) -> &[Commit] {
+        self.status.as_ref().map(|s| s.log.as_slice()).unwrap_or_default()
+    }
+
+    pub fn files(&self, hash: &str) -> Option<&[Change]> {
+        self.shown.as_ref().filter(|(shown, _)| shown == hash).map(|(_, files)| files.as_slice())
+    }
+
+    pub fn show(&mut self, hash: &str) {
+        let (Some(status), Some(ctx)) = (&self.status, &self.ctx) else { return };
+        let (top, tx, ctx, hash) = (status.top.clone(), self.tx.clone(), ctx.clone(), hash.to_owned());
+        std::thread::spawn(move || {
+            let args = ["show", "--format=", "--name-status", "-z", "--diff-merges=first-parent", &hash];
+            let files = parse_name_status(&run(&top, &args).unwrap_or_default());
+            let _ = tx.send(Msg::Files(hash, files));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn stash(&mut self, pop: bool) {
+        match pop {
+            true => self.act(&[&["stash", "pop"]]),
+            false => self.act(&[&["stash", "push", "--include-untracked"]]),
+        }
     }
 
     pub fn refresh(&mut self, ctx: &egui::Context) {
@@ -303,6 +468,18 @@ impl Git {
                 Msg::Diff(path, changes) => {
                     self.diffs.borrow_mut().insert(path, Some(Arc::new(changes)));
                 }
+                Msg::Repos(folder, repos, own) => {
+                    if self.folder.as_ref() == Some(&folder) {
+                        if !own
+                            && self.root == self.folder
+                            && let (Some(first), Some(ctx)) = (repos.first(), self.ctx.clone())
+                        {
+                            self.select(Some(first.clone()), &ctx);
+                        }
+                        self.repos = repos;
+                    }
+                }
+                Msg::Files(hash, files) => self.shown = Some((hash, files)),
                 Msg::Done(error) => {
                     acted = true;
                     self.busy = false;
@@ -560,6 +737,26 @@ mod tests {
     }
 
     #[test]
+    fn lays_out_lanes_and_parses_commit_files() {
+        let text = "a\x1fc\x1fme\x1fnow\x1fHEAD -> main\x1flocal\nb\x1fc\x1fyou\x1fnow\x1forigin/main\x1fremote\n\
+                    m\x1fc x\x1fme\x1fnow\x1f\x1fmerge\nx\x1fd\x1fme\x1fnow\x1f\x1fside\nc\x1fd\x1fme\x1fnow\x1f\x1fbase\nd\x1f\x1fme\x1fnow\x1f\x1froot\n";
+        let log = parse_log(text);
+        let lanes = |i: usize| (log[i].col, log[i].up.clone(), log[i].through.clone(), log[i].down.clone());
+        assert_eq!(log[0].refs, "HEAD -> main");
+        assert_eq!(log[5].subject, "root");
+        assert_eq!(lanes(0), (0, vec![], vec![], vec![0]));
+        assert_eq!(lanes(1), (1, vec![], vec![0], vec![0]));
+        assert_eq!(lanes(2), (1, vec![], vec![0], vec![0, 1]));
+        assert_eq!(lanes(3), (1, vec![1], vec![0], vec![1]));
+        assert_eq!(lanes(4), (0, vec![0], vec![1], vec![1]));
+        assert_eq!(lanes(5), (1, vec![1], vec![], vec![]));
+
+        let files = parse_name_status("M\0src/a.rs\0A\0new.txt\0R100\0old.rs\0b.rs\0D\0gone.rs\0");
+        let expect = [("src/a.rs", FileState::Modified), ("new.txt", FileState::Added), ("b.rs", FileState::Modified), ("gone.rs", FileState::Deleted)];
+        assert_eq!(files, expect.map(|(path, state)| Change { path: path.into(), state }));
+    }
+
+    #[test]
     fn pushes_pulls_switches_and_discards() {
         let base = std::env::temp_dir().join(format!("halo-git-sync-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -601,6 +798,32 @@ mod tests {
         g.discard(Some("a.txt"));
         g.wait(|g| !g.busy() && g.changes(false).is_empty());
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap().replace('\r', ""), "one\n");
+
+        assert_eq!(g.log().iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["second", "init"]);
+        assert!(g.log()[0].refs.contains("origin/trunk"));
+        let first = g.log()[1].hash.clone();
+        g.show(&first);
+        g.wait(|g| g.files(&first).is_some());
+        assert_eq!(g.files(&first).unwrap(), [Change { path: "a.txt".into(), state: FileState::Added }]);
+
+        std::fs::write(dir.join("a.txt"), "stashed\n").unwrap();
+        std::fs::write(dir.join("extra.txt"), "x").unwrap();
+        g.refresh(&egui::Context::default());
+        g.wait(|g| g.changes(false).len() == 2);
+        g.stash(false);
+        g.wait(|g| !g.busy() && g.changes(false).is_empty());
+        g.stash(true);
+        g.wait(|g| !g.busy() && g.changes(false).len() == 2);
+        assert_eq!(g.error(), None);
+
+        let nested = dir.join("libs").join("inner");
+        std::fs::create_dir_all(&nested).unwrap();
+        exec(&nested, &["init", "-q"]).unwrap();
+        assert_eq!(find_repos(&dir), (vec![dir.clone(), nested.clone()], true));
+        assert_eq!(find_repos(&base), (vec![dir.clone()], false));
+        g.set_root(Some(base.clone()), &egui::Context::default());
+        g.wait(|g| g.branch() == Some("trunk") && g.repos().len() == 1);
+        assert_eq!(g.root(), Some(dir.as_path()));
 
         g.switch("missing", false);
         g.wait(|g| g.error().is_some());
