@@ -5,6 +5,7 @@ use crate::editor::Editors;
 use crate::explorer::Explorer;
 use crate::git::Git;
 use crate::scm::Scm;
+use crate::search::Search;
 use crate::settings::{Session, Settings};
 use crate::terminal::BottomPanel;
 use crate::theme::Theme;
@@ -34,12 +35,14 @@ pub struct Halo {
     pub editors: Editors,
     pub bottom: BottomPanel,
     pub ai: AiPanel,
+    pub search: Search,
     pub zone: Zone,
     pub cmds: Vec<Command>,
     about: bool,
     confirm_exit: bool,
     exiting: bool,
     focused: bool,
+    pub chord: Option<egui::KeyboardShortcut>,
 }
 
 impl Halo {
@@ -65,12 +68,14 @@ impl Halo {
             editors: Editors::new(),
             bottom: BottomPanel::new(),
             ai: AiPanel::default(),
+            search: Search::default(),
             zone: Zone::Editor,
             cmds: vec![],
             about: false,
             confirm_exit: false,
             exiting: false,
             focused: true,
+            chord: None,
         };
 
         let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().ok()).map(strip_unc);
@@ -175,6 +180,10 @@ impl Halo {
             ZoomOut => ctx.set_zoom_factor((ctx.zoom_factor() - 0.1).max(0.5)),
             ZoomReset => ctx.set_zoom_factor(1.0),
             About => self.about = true,
+            GoToFile => self.search.open(""),
+            ShowCommands => self.search.open(">"),
+            FindInFiles => self.search.open("%"),
+            GoToSymbol => self.search.open("@"),
             GitSync => self.git.sync(),
             RefreshExplorer => {
                 self.explorer.refresh();
@@ -199,7 +208,11 @@ impl Halo {
             }
             other => {
                 let _ = match self.zone {
-                    Zone::Ai => self.ai.exec(&other, ctx) || self.bottom.exec(&other, &self.settings, cwd.as_deref(), ctx),
+                    Zone::Ai => {
+                        self.ai.exec(&other, ctx)
+                            || self.editors.exec(&other, &self.settings, ctx)
+                            || self.bottom.exec(&other, &self.settings, cwd.as_deref(), ctx)
+                    }
                     Zone::Terminal => {
                         self.bottom.exec(&other, &self.settings, cwd.as_deref(), ctx) || self.editors.exec(&other, &self.settings, ctx)
                     }
@@ -210,12 +223,29 @@ impl Halo {
     }
 
     fn global_shortcuts(&mut self, ctx: &egui::Context) {
+        let bindings = command::bindings();
+        let editor = self.zone == Zone::Editor;
         ctx.input_mut(|i| {
-            for binding in command::bindings() {
-                if binding.scope == Scope::Global && i.consume_shortcut(&binding.shortcut) {
-                    self.cmds.push(binding.command.clone());
+            let Some(first) = self.chord else {
+                for binding in bindings.iter() {
+                    let chord = binding.chord.is_some();
+                    if (binding.scope == Scope::Global || (chord && editor)) && i.consume_shortcut(&binding.shortcut) {
+                        match chord {
+                            true => self.chord = Some(binding.shortcut),
+                            false => self.cmds.push(binding.command.clone()),
+                        }
+                    }
                 }
+                return;
+            };
+            let second = bindings.iter().filter(|b| b.shortcut == first).find(|b| b.chord.is_some_and(|c| i.consume_shortcut(&c)));
+            if let Some(binding) = second {
+                self.cmds.push(binding.command.clone());
+            } else if !i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })) {
+                return;
             }
+            i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
+            self.chord = None;
         });
     }
 
@@ -337,7 +367,7 @@ impl Halo {
             ui.label(RichText::new("ultra-lightweight editor").color(theme.text_dim));
             ui.add_space(22.0);
             for cmd in [Command::OpenFolder, Command::OpenFile, Command::NewFile] {
-                let shortcut = command::shortcut(&cmd).map(|s| ui.ctx().format_shortcut(&s)).unwrap_or_default();
+                let shortcut = command::shortcut_text(ui.ctx(), &cmd).unwrap_or_default();
                 let button = egui::Button::new(RichText::new(cmd.label()).color(theme.accent))
                     .shortcut_text(shortcut)
                     .min_size(vec2(260.0, 28.0));

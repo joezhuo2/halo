@@ -41,6 +41,11 @@ impl Halo {
                         }
                     }
 
+                    if let Some(first) = self.chord {
+                        let label = format!("({}) was pressed. Waiting for the second key...", ui.ctx().format_shortcut(&first));
+                        item(ui, &theme, &label, true, "Key chord");
+                    }
+
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(6.0);
                         if item(ui, &theme, icons::ROBOT, self.session.ai, "Toggle AI panel (Ctrl+Alt+B)").clicked() {

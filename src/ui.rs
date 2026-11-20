@@ -5,6 +5,16 @@ pub use egui_phosphor::regular as icons;
 
 pub const ANIM: f32 = 0.14;
 
+static NOTICES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub fn notify(text: impl Into<String>) {
+    NOTICES.lock().unwrap().push(text.into());
+}
+
+pub fn take_notices() -> Vec<String> {
+    std::mem::take(&mut *NOTICES.lock().unwrap())
+}
+
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     a.lerp_to_gamma(b, t.clamp(0.0, 1.0))
 }

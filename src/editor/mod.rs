@@ -18,6 +18,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub fn configure(settings: &Settings) {
+    highlight::configure(&settings.grammars, &settings.associations);
+}
+
 const TAB_H: f32 = 34.0;
 const MAX_COLS: usize = 5000;
 
@@ -397,6 +401,14 @@ impl Editors {
                 refocus = false;
             }
             Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
+            GoTo(line, column) => {
+                let (line, column) = (*line, *column);
+                self.with_active(|buf, tab| {
+                    let line = line.clamp(1, buf.lines()) - 1;
+                    let pos = buf.line_start(line) + (column.max(1) - 1).min(buf.line_len(line));
+                    tab.sels = vec![Sel::caret(pos)];
+                });
+            }
             Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
@@ -484,6 +496,15 @@ impl Editors {
 
     pub fn has_focus(&self) -> bool {
         self.focused
+    }
+
+    pub fn focus(&mut self) {
+        self.want_focus = true;
+    }
+
+    pub fn symbols(&self) -> Vec<(usize, String)> {
+        let doc = self.active_tab().and_then(|(g, t)| self.docs.get(&self.groups[g].tabs[t].doc));
+        doc.map(|d| highlight::symbols(d.buf.path.as_deref(), &d.buf.rope)).unwrap_or_default()
     }
 
     pub fn any_dirty(&self) -> bool {
@@ -798,7 +819,7 @@ impl Editors {
             ui.memory_mut(|m| {
                 m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
             });
-            for binding in command::bindings().iter().filter(|b| b.scope == Scope::Editor) {
+            for binding in command::bindings().iter().filter(|b| b.scope == Scope::Editor && b.chord.is_none()) {
                 if ui.input_mut(|i| i.consume_shortcut(&binding.shortcut)) {
                     pending.push(binding.command.clone());
                 }

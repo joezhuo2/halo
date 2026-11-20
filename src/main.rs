@@ -8,6 +8,7 @@ mod editor;
 mod explorer;
 mod git;
 mod scm;
+mod search;
 mod settings;
 mod statusbar;
 mod terminal;

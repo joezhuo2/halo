@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -9,7 +10,13 @@ pub struct ShellProfile {
     pub args: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Task {
+    pub name: String,
+    pub command: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
     pub theme: String,
@@ -19,6 +26,10 @@ pub struct Settings {
     pub minimap: bool,
     pub default_terminal: String,
     pub terminals: Vec<ShellProfile>,
+    pub grammars: String,
+    pub associations: BTreeMap<String, String>,
+    pub run: BTreeMap<String, String>,
+    pub tasks: Vec<Task>,
 }
 
 impl Default for Settings {
@@ -32,6 +43,25 @@ impl Default for Settings {
             minimap: true,
             default_terminal: terminals.first().map(|p| p.name.clone()).unwrap_or_default(),
             terminals,
+            grammars: dir().join("grammars").to_string_lossy().into_owned(),
+            associations: BTreeMap::new(),
+            run: [
+                ("py", r#"python "{file}""#),
+                ("js", r#"node "{file}""#),
+                ("mjs", r#"node "{file}""#),
+                ("ts", r#"npx tsx "{file}""#),
+                ("rs", "cargo run"),
+                ("go", r#"go run "{file}""#),
+                ("rb", r#"ruby "{file}""#),
+                ("php", r#"php "{file}""#),
+                ("lua", r#"lua "{file}""#),
+                ("sh", r#"bash "{file}""#),
+                ("ps1", r#"powershell -File "{file}""#),
+                ("java", r#"java "{file}""#),
+            ]
+            .map(|(ext, command)| (ext.to_owned(), command.to_owned()))
+            .into(),
+            tasks: vec![],
         }
     }
 }
@@ -89,7 +119,11 @@ pub fn dir() -> PathBuf {
 }
 
 fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
-    serde_json::from_str(std::fs::read_to_string(path).ok()?.trim_start_matches('\u{feff}')).ok()
+    let text = std::fs::read_to_string(path).ok()?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|e| crate::ui::notify(format!("{name} could not be read, defaults are in use: {e}")))
+        .ok()
 }
 
 fn write<T: Serialize>(path: &Path, value: &T) {
@@ -126,6 +160,11 @@ impl Settings {
 
     pub fn default_profile(&self) -> Option<&ShellProfile> {
         self.terminal(&self.default_terminal).or_else(|| self.terminals.first())
+    }
+
+    pub fn run_command(&self, file: &Path, shell_path: &str) -> Option<String> {
+        let ext = file.extension()?.to_string_lossy().to_lowercase();
+        Some(self.run.get(&ext)?.replace("{file}", shell_path))
     }
 }
 

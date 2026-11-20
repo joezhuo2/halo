@@ -1,7 +1,7 @@
 use crate::theme::Theme;
 use eframe::egui::Color32;
 use ropey::Rope;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::path::Path;
 use std::str::FromStr;
@@ -27,9 +27,23 @@ pub struct Highlighter {
     dark: Option<bool>,
 }
 
+static CONFIG: OnceLock<(String, BTreeMap<String, String>)> = OnceLock::new();
+
+pub fn configure(grammars: &str, associations: &BTreeMap<String, String>) {
+    let _ = CONFIG.set((grammars.to_owned(), associations.clone()));
+}
+
 fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+    SET.get_or_init(|| {
+        let set = SyntaxSet::load_defaults_newlines();
+        let Some(folder) = CONFIG.get().map(|c| Path::new(&c.0)).filter(|f| f.is_dir()) else { return set };
+        let mut builder = set.into_builder();
+        if let Err(error) = builder.add_from_folder(folder, true) {
+            crate::ui::notify(format!("Could not load grammars from {}: {error}", folder.display()));
+        }
+        builder.build()
+    })
 }
 
 fn color(c: Color32) -> Color {
@@ -86,11 +100,37 @@ fn find_syntax(path: Option<&Path>, first_line: &str) -> Option<&'static SyntaxR
         "svg" | "csproj" | "xaml" => "xml",
         other => other,
     };
-    set.find_syntax_by_extension(&name)
+    let user = CONFIG.get().and_then(|c| c.1.get(&ext));
+    user.and_then(|target| set.find_syntax_by_extension(target).or_else(|| set.find_syntax_by_name(target)))
+        .or_else(|| set.find_syntax_by_extension(&name))
         .or_else(|| set.find_syntax_by_extension(&ext))
         .or_else(|| set.find_syntax_by_extension(alias))
         .or_else(|| set.find_syntax_by_first_line(first_line))
         .filter(|s| s.name != "Plain Text")
+}
+
+pub fn symbols(path: Option<&Path>, rope: &Rope) -> Vec<(usize, String)> {
+    let first_line: String = rope.line(0).chars().take(200).collect();
+    let Some(syntax) = find_syntax(path, &first_line).filter(|_| rope.len_bytes() <= MAX_FILE) else { return vec![] };
+    let names = ScopeSelectors::from_str("entity.name - entity.name.tag").unwrap_or_default();
+    let (mut parse, mut stack) = (ParseState::new(syntax), ScopeStack::new());
+    let mut out = vec![];
+    for (number, slice) in rope.lines().enumerate().filter(|(_, slice)| slice.len_bytes() <= MAX_LINE) {
+        let text: std::borrow::Cow<str> = slice.into();
+        let (mut at, mut name) = (0, String::new());
+        for (pos, op) in parse.parse_line(&text, syntaxes()).unwrap_or_default() {
+            if names.does_match(stack.as_slice()).is_some() {
+                name.push_str(&text[at..pos]);
+                name.push(' ');
+            }
+            let _ = stack.apply(&op);
+            at = pos;
+        }
+        if !name.trim().is_empty() {
+            out.push((number, name.split_whitespace().collect::<Vec<_>>().join(" ")));
+        }
+    }
+    out
 }
 
 impl Highlighter {
@@ -201,6 +241,14 @@ mod tests {
             assert!(rounds < 2000);
         }
         assert!(h.get(49_010).is_some());
+
+        let found = symbols(Some(Path::new("a.rs")), &Rope::from_str("struct Foo;
+
+fn bar() {
+    baz();
+}
+"));
+        assert_eq!(found, vec![(0, "Foo".to_owned()), (2, "bar".to_owned())]);
 
         let plain = Highlighter::new(Some(Path::new("notes.unknownext")), &Rope::from_str("hello"));
         assert_eq!(plain.language, "Plain Text");

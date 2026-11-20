@@ -1,4 +1,4 @@
-use crate::app::Halo;
+use crate::app::{Halo, Zone};
 use crate::command::{self, Command};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
@@ -58,7 +58,13 @@ impl Halo {
                 let mut search = Rect::from_center_size(bar.center(), vec2(width, 24.0));
                 search.min.x = search.min.x.max(menus_right + 12.0);
                 search.max.x = search.max.x.min(bar.right() - 44.0 * 3.0 - 12.0);
-                if search.width() > 90.0 {
+                if self.search.is_open() {
+                    let rect = Rect::from_center_size(bar.center(), vec2((bar.width() - 24.0).min(600.0), 26.0));
+                    let folder = self.session.folder.clone();
+                    if self.search.ui(ui, &theme, rect, folder.as_deref(), &self.editors, &mut self.cmds) && self.zone == Zone::Editor {
+                        self.editors.focus();
+                    }
+                } else if search.width() > 90.0 {
                     self.search_box(ui, &theme, search);
                 }
             });
@@ -67,7 +73,10 @@ impl Halo {
     fn search_box(&mut self, ui: &mut Ui, theme: &Theme, rect: Rect) {
         let resp = ui
             .interact(rect, Id::new("titlebar_search"), Sense::click())
-            .on_hover_text("Search files, commands and text - arrives in milestone 3");
+            .on_hover_text("Search files, > commands, % text, @ symbols, : line (Ctrl+P)");
+        if resp.clicked() {
+            self.cmds.push(Command::GoToFile);
+        }
         let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
         let painter = ui.painter();
         painter.rect(
@@ -149,8 +158,8 @@ impl Halo {
 
     fn menu_item(&mut self, ui: &mut Ui, cmd: Command) {
         let mut button = egui::Button::new(cmd.label());
-        if let Some(shortcut) = command::shortcut(&cmd) {
-            button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+        if let Some(shortcut) = command::shortcut_text(ui.ctx(), &cmd) {
+            button = button.shortcut_text(shortcut);
         }
         if ui.add(button).clicked() {
             self.cmds.push(cmd);
