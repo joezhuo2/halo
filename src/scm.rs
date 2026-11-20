@@ -4,27 +4,41 @@ use crate::git::{Change, FileState, Git};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use eframe::egui::{
-    self, Align, Align2, FontId, Frame, Id, Key, Layout, Margin, Modifiers, RichText, ScrollArea, Sense, Ui,
+    self, Align, Align2, FontId, Frame, Id, Key, Layout, Margin, Modifiers, Rect, RichText, ScrollArea, Sense, Ui,
     UiBuilder, pos2, vec2,
 };
 use std::path::Path;
 
 const ROW: f32 = 22.0;
+const STAGED: [(&str, &str); 1] = [(icons::MINUS, "Unstage")];
+const STAGED_ALL: [(&str, &str); 1] = [(icons::MINUS, "Unstage All")];
+const UNSTAGED: [(&str, &str); 2] = [(icons::PLUS, "Stage"), (icons::ARROW_COUNTER_CLOCKWISE, "Discard Changes")];
+const UNSTAGED_ALL: [(&str, &str); 2] =
+    [(icons::PLUS, "Stage All"), (icons::ARROW_COUNTER_CLOCKWISE, "Discard All Changes")];
 
 enum Action {
     Stage(Option<String>),
     Unstage(Option<String>),
+    Discard(Option<String>),
     Commit,
+    Fetch,
+    Pull,
+    Push,
+    Switch(String),
+    NewBranch,
+    Refresh,
 }
 
 pub struct Scm {
     message: String,
     committing: bool,
+    discard: Option<Option<String>>,
+    new_branch: Option<String>,
 }
 
 impl Scm {
     pub fn new() -> Self {
-        Self { message: String::new(), committing: false }
+        Self { message: String::new(), committing: false, discard: None, new_branch: None }
     }
 
     pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, git: &mut Git, cmds: &mut Vec<Command>) {
@@ -46,6 +60,7 @@ impl Scm {
 
         let mut action = None;
         let busy = git.busy();
+        toolbar(ui, theme, git, &mut action);
         Frame::new().inner_margin(Margin::symmetric(10, 4)).show(ui, |ui| {
             let id = Id::new("scm_message");
             let can_commit = !busy && !git.changes(true).is_empty() && !self.message.trim().is_empty();
@@ -89,17 +104,181 @@ impl Scm {
                 }
             }
         });
+        self.dialogs(ui, git, &top, cmds);
 
         match action {
             Some(Action::Stage(path)) => git.stage(path.as_deref()),
             Some(Action::Unstage(path)) => git.unstage(path.as_deref()),
+            Some(Action::Discard(path)) => self.discard = Some(path),
             Some(Action::Commit) => {
                 git.commit(self.message.trim());
                 self.committing = true;
             }
+            Some(Action::Fetch) => git.fetch(),
+            Some(Action::Pull) => git.pull(),
+            Some(Action::Push) => git.push(),
+            Some(Action::Switch(branch)) => git.switch(&branch, false),
+            Some(Action::NewBranch) => self.new_branch = Some(String::new()),
+            Some(Action::Refresh) => git.refresh(ui.ctx()),
             None => {}
         }
     }
+
+    fn dialogs(&mut self, ui: &mut Ui, git: &mut Git, top: &Path, cmds: &mut Vec<Command>) {
+        if let Some(target) = self.discard.clone() {
+            let mut choice = None;
+            let modal = egui::Modal::new(Id::new("scm_discard")).show(ui.ctx(), |ui| {
+                ui.set_width(360.0);
+                ui.heading("Discard changes");
+                ui.label(match &target {
+                    Some(path) => format!("Discard the changes in {path}?"),
+                    None => format!("Discard all {} changes?", git.changes(false).len()),
+                });
+                ui.label("Tracked files are restored and this cannot be undone. Untracked files move to the recycle bin.");
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Discard").clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(false);
+                    }
+                });
+            });
+            if choice.is_none() && modal.should_close() {
+                choice = Some(false);
+            }
+            if let Some(confirmed) = choice {
+                self.discard = None;
+                if confirmed {
+                    discard(git, top, target.as_deref(), cmds);
+                }
+            }
+        }
+
+        if let Some(mut name) = self.new_branch.take() {
+            let mut choice = None;
+            let modal = egui::Modal::new(Id::new("scm_new_branch")).show(ui.ctx(), |ui| {
+                ui.set_width(320.0);
+                ui.heading("Create branch");
+                ui.label(format!("Starts from {}.", git.branch().unwrap_or("the current commit")));
+                ui.add_space(6.0);
+                let edit = ui.add(egui::TextEdit::singleline(&mut name).hint_text("Branch name").desired_width(f32::INFINITY));
+                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                if !enter && ui.memory(|m| m.focused().is_none()) {
+                    edit.request_focus();
+                }
+                let valid = !name.trim().is_empty();
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if (ui.add_enabled(valid, egui::Button::new("Create")).clicked() || enter) && valid {
+                        choice = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(false);
+                    }
+                });
+            });
+            if choice.is_none() && modal.should_close() {
+                choice = Some(false);
+            }
+            match choice {
+                Some(true) => git.switch(name.trim(), true),
+                Some(false) => {}
+                None => self.new_branch = Some(name),
+            }
+        }
+    }
+}
+
+fn discard(git: &mut Git, top: &Path, target: Option<&str>, cmds: &mut Vec<Command>) {
+    let targets: Vec<Change> =
+        git.changes(false).iter().filter(|c| target.is_none_or(|t| t == c.path)).cloned().collect();
+    let mut tracked = false;
+    for change in targets {
+        if change.state != FileState::Added {
+            tracked = true;
+            continue;
+        }
+        let full = top.join(&change.path);
+        match trash::delete(&full) {
+            Ok(()) => cmds.push(Command::PathChanged(full, None)),
+            Err(error) => {
+                git.set_error(format!("Could not move {} to the recycle bin: {error}", change.path));
+                return;
+            }
+        }
+    }
+    if tracked {
+        git.discard(target);
+    }
+}
+
+fn toolbar(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>) {
+    let busy = git.busy();
+    Frame::new().inner_margin(Margin::symmetric(10, 2)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let branch = git.branch().unwrap_or_default();
+            let label = RichText::new(format!("{} {branch} {}", icons::GIT_BRANCH, icons::CARET_DOWN)).color(theme.text);
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.menu_button(label, |ui| {
+                    ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                        for name in git.branches() {
+                            if ui.selectable_label(name == branch, name).clicked() && name != branch {
+                                *action = Some(Action::Switch(name.clone()));
+                            }
+                        }
+                    });
+                    ui.separator();
+                    if ui.button("Create Branch...").clicked() {
+                        *action = Some(Action::NewBranch);
+                    }
+                })
+                .response
+                .on_hover_text("Switch branch");
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if busy {
+                    ui.spinner();
+                    return;
+                }
+                let tracking = git.tracking();
+                let (ahead, behind) = tracking.unwrap_or_default();
+                let push = match tracking {
+                    Some(_) => format!("Push ({ahead} ahead)"),
+                    None => "Publish Branch to origin".to_owned(),
+                };
+                if ui::icon_button(ui, theme, icons::ARROW_UP, 22.0, ahead > 0, &push).clicked() {
+                    *action = Some(Action::Push);
+                }
+                if ui::icon_button(ui, theme, icons::ARROW_DOWN, 22.0, behind > 0, &format!("Pull ({behind} behind)")).clicked() {
+                    *action = Some(Action::Pull);
+                }
+                if ui::icon_button(ui, theme, icons::CLOUD_ARROW_DOWN, 22.0, false, "Fetch").clicked() {
+                    *action = Some(Action::Fetch);
+                }
+                if ui::icon_button(ui, theme, icons::ARROWS_CLOCKWISE, 22.0, false, "Refresh").clicked() {
+                    *action = Some(Action::Refresh);
+                }
+            });
+        });
+    });
+}
+
+fn buttons(ui: &mut Ui, theme: &Theme, rect: Rect, enabled: bool, items: &[(&str, &str)]) -> Option<usize> {
+    let builder = UiBuilder::new().max_rect(rect.shrink2(vec2(6.0, 0.0))).layout(Layout::right_to_left(Align::Center));
+    ui.scope_builder(builder, |ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let mut hit = None;
+        for (i, (icon, tip)) in items.iter().enumerate() {
+            if ui::icon_button(ui, theme, icon, 20.0, false, tip).clicked() && enabled {
+                hit = Some(i);
+            }
+        }
+        hit
+    })
+    .inner
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -113,15 +292,15 @@ fn group(
     action: &mut Option<Action>,
     cmds: &mut Vec<Command>,
 ) {
-    let (title, icon, tip, all_tip) = if staged {
-        ("STAGED CHANGES", icons::MINUS, "Unstage", "Unstage All")
+    let (title, row_items, all_items): (_, &[_], &[_]) = if staged {
+        ("STAGED CHANGES", &STAGED, &STAGED_ALL)
     } else {
-        ("CHANGES", icons::PLUS, "Stage", "Stage All")
+        ("CHANGES", &UNSTAGED, &UNSTAGED_ALL)
     };
-    let act = |path: Option<String>| if staged { Action::Unstage(path) } else { Action::Stage(path) };
-    let buttons = |ui: &mut Ui, rect: egui::Rect, tip: &str| {
-        let builder = UiBuilder::new().max_rect(rect.shrink2(vec2(6.0, 0.0))).layout(Layout::right_to_left(Align::Center));
-        ui.scope_builder(builder, |ui| !busy && ui::icon_button(ui, theme, icon, 20.0, false, tip).clicked()).inner
+    let act = |index: usize, path: Option<String>| match (staged, index) {
+        (true, _) => Action::Unstage(path),
+        (false, 0) => Action::Stage(path),
+        (false, _) => Action::Discard(path),
     };
 
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
@@ -130,8 +309,8 @@ fn group(
     let y = rect.center().y;
     let text = format!("{title}  {}", changes.len());
     painter.text(pos2(rect.left() + 12.0, y), Align2::LEFT_CENTER, text, FontId::proportional(11.5), theme.text);
-    if buttons(ui, rect, all_tip) {
-        *action = Some(act(None));
+    if let Some(index) = buttons(ui, theme, rect, !busy, all_items) {
+        *action = Some(act(index, None));
     }
 
     for change in changes {
@@ -145,7 +324,8 @@ fn group(
             None => ("", change.path.as_str()),
         };
         let color = state_color(theme, Some(change.state));
-        let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 50.0));
+        let reserved = if hovered { 34.0 + 20.0 * row_items.len() as f32 } else { 28.0 };
+        let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - reserved));
         let y = rect.center().y;
         let x = rect.left() + 14.0;
         painter.text(pos2(x, y), Align2::LEFT_CENTER, file_icon(name), FontId::proportional(15.0), theme.text_dim);
@@ -155,8 +335,9 @@ fn group(
         ui.painter().text(pos2(rect.right() - 14.0, y), Align2::CENTER_CENTER, badge, FontId::proportional(11.5), color);
 
         let full = top.join(&change.path);
-        if hovered && buttons(ui, rect.with_max_x(rect.right() - 22.0), tip) {
-            *action = Some(act(Some(change.path.clone())));
+        let hit = if hovered { buttons(ui, theme, rect.with_max_x(rect.right() - 22.0), !busy, row_items) } else { None };
+        if let Some(index) = hit {
+            *action = Some(act(index, Some(change.path.clone())));
         } else if resp.clicked() && full.is_file() {
             cmds.push(Command::OpenPath(full));
         }
@@ -166,7 +347,7 @@ fn group(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::{Event, PointerButton, RawInput, Rect, pos2};
+    use eframe::egui::{Event, PointerButton, RawInput};
 
     fn frame(ctx: &egui::Context, scm: &mut Scm, git: &mut Git, events: Vec<Event>) -> Vec<Command> {
         git.poll();
@@ -190,19 +371,8 @@ mod tests {
         frame(ctx, scm, git, vec![button(false)])
     }
 
-    fn wait(git: &mut Git, done: impl Fn(&Git) -> bool) {
-        for _ in 0..500 {
-            git.poll();
-            if done(git) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        panic!("git did not settle: {:?}", git.error());
-    }
-
     #[test]
-    fn stages_from_a_row_and_commits_with_ctrl_enter() {
+    fn stages_discards_and_commits_from_the_side_bar() {
         let dir = std::env::temp_dir().join(format!("halo-scm-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -210,35 +380,50 @@ mod tests {
         run(&["init", "-q", "-b", "trunk"]);
         run(&["config", "user.email", "t@example.com"]);
         run(&["config", "user.name", "t"]);
-        run(&["commit", "-q", "--allow-empty", "-m", "init"]);
-        std::fs::write(dir.join("new.txt"), "x").unwrap();
+        std::fs::write(dir.join("a.txt"), "one").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "init"]);
+        std::fs::write(dir.join("a.txt"), "two").unwrap();
 
         let ctx = egui::Context::default();
         let (mut scm, mut git) = (Scm::new(), Git::new());
         git.set_root(Some(dir.clone()), &ctx);
-        wait(&mut git, |g| g.changes(false).len() == 1);
+        git.wait(|g| g.changes(false).len() == 1);
 
         let row = (0..150)
             .map(|i| i as f32 * 4.0)
             .find(|y| !click(&ctx, &mut scm, &mut git, 100.0, *y).is_empty())
             .expect("a row that opens its file")
             + 10.0;
-        assert_eq!(click(&ctx, &mut scm, &mut git, 100.0, row), [Command::OpenPath(git.top().unwrap().join("new.txt"))]);
+        assert_eq!(click(&ctx, &mut scm, &mut git, 100.0, row), [Command::OpenPath(git.top().unwrap().join("a.txt"))]);
+
+        click(&ctx, &mut scm, &mut git, 242.0, row);
+        assert_eq!(scm.discard, Some(Some("a.txt".into())));
+        scm.discard = None;
+        frame(&ctx, &mut scm, &mut git, vec![]);
 
         click(&ctx, &mut scm, &mut git, 262.0, row);
-        wait(&mut git, |g| g.changes(true).len() == 1 && g.changes(false).is_empty());
+        git.wait(|g| g.changes(true).len() == 1 && g.changes(false).is_empty());
 
         ctx.memory_mut(|m| m.request_focus(Id::new("scm_message")));
         frame(&ctx, &mut scm, &mut git, vec![]);
-        frame(&ctx, &mut scm, &mut git, vec![Event::Text("add new".into())]);
+        frame(&ctx, &mut scm, &mut git, vec![Event::Text("second".into())]);
         let modifiers = Modifiers { ctrl: true, command: true, ..Default::default() };
         let enter = Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers };
         frame(&ctx, &mut scm, &mut git, vec![enter]);
-        wait(&mut git, |g| !g.busy() && g.changes(true).is_empty());
+        git.wait(|g| !g.busy() && g.changes(true).is_empty());
         frame(&ctx, &mut scm, &mut git, vec![]);
         assert_eq!(git.error(), None);
         assert_eq!(scm.message, "");
-        assert_eq!(run(&["log", "--format=%s"]), "add new\ninit\n");
+        assert_eq!(run(&["log", "--format=%s"]), "second\ninit\n");
+
+        std::fs::write(dir.join("a.txt"), "three").unwrap();
+        git.refresh(&ctx);
+        git.wait(|g| g.changes(false).len() == 1);
+        let mut cmds = vec![];
+        discard(&mut git, &dir, Some("a.txt"), &mut cmds);
+        git.wait(|g| !g.busy() && g.changes(false).is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "two");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

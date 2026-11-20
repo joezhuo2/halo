@@ -167,7 +167,7 @@ impl Halo {
             ZoomOut => ctx.set_zoom_factor((ctx.zoom_factor() - 0.1).max(0.5)),
             ZoomReset => ctx.set_zoom_factor(1.0),
             About => self.about = true,
-            RefreshGit => self.git.refresh(ctx),
+            GitSync => self.git.sync(),
             RefreshExplorer => {
                 self.explorer.refresh();
                 self.git.refresh(ctx);
@@ -413,7 +413,10 @@ impl eframe::App for Halo {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let window = ui.max_rect();
-        self.git.poll();
+        if self.git.poll() {
+            self.explorer.refresh();
+            self.editors.reload_clean();
+        }
         self.handle_window_events(&ctx);
         self.global_shortcuts(&ctx);
 

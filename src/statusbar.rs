@@ -29,8 +29,15 @@ impl Halo {
                         if item(ui, &theme, &label, false, "Repository / branch").clicked() {
                             self.cmds.push(Command::ShowSourceControl);
                         }
-                        if item(ui, &theme, icons::ARROWS_CLOCKWISE, false, "Refresh git status").clicked() {
-                            self.cmds.push(Command::RefreshGit);
+                        let (label, tip) = match self.git.tracking() {
+                            Some((ahead, behind)) => (
+                                format!("{} {behind}{} {ahead}{}", icons::ARROWS_CLOCKWISE, icons::ARROW_DOWN, icons::ARROW_UP),
+                                "Synchronize changes: pull, then push",
+                            ),
+                            None => (icons::CLOUD_ARROW_UP.to_owned(), "Publish branch to origin"),
+                        };
+                        if item(ui, &theme, &label, self.git.busy(), tip).clicked() {
+                            self.cmds.push(Command::GitSync);
                         }
                     }
 

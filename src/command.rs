@@ -51,7 +51,7 @@ pub enum Command {
     SplitTerminal,
     KillTerminal,
 
-    RefreshGit,
+    GitSync,
     RefreshExplorer,
     PathChanged(PathBuf, Option<PathBuf>),
     About,
@@ -163,7 +163,7 @@ impl Command {
             NewTerminalWith(_) => "New Terminal",
             SplitTerminal => "Split Terminal",
             KillTerminal => "Kill Terminal",
-            RefreshGit => "Refresh Git Status",
+            GitSync => "Synchronize Changes",
             RefreshExplorer => "Refresh Explorer",
             PathChanged(..) => "Path Changed",
             About => "About Halo",
