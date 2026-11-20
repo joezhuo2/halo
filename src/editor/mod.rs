@@ -477,6 +477,19 @@ impl Editors {
         }
     }
 
+    pub fn reload_clean(&mut self) {
+        for doc in self.docs.values_mut().filter(|d| !d.buf.is_dirty()) {
+            let Some(path) = doc.buf.path.clone() else { continue };
+            if let Ok(buf) = Document::load(&path)
+                && buf.rope != doc.buf.rope
+            {
+                doc.hl = Highlighter::new(Some(&path), &buf.rope);
+                doc.max_cols = (0, 0);
+                doc.buf = buf;
+            }
+        }
+    }
+
     pub fn path_changed(&mut self, old: &Path, new: Option<&Path>) {
         let affected: Vec<u64> = self
             .docs
@@ -1246,5 +1259,29 @@ mod tests {
         frame(&ctx, &mut editors, vec![]);
         assert_eq!(editors.groups.len(), 1);
         assert_eq!(editors.docs.len(), 1);
+    }
+
+    #[test]
+    fn reloads_clean_documents_changed_on_disk() {
+        let path = std::env::temp_dir().join(format!("halo-reload-test-{}.txt", std::process::id()));
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        editors.open(&path);
+        let end = Event::Key { key: Key::End, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![end]);
+        std::fs::write(&path, "1\n").unwrap();
+        editors.reload_clean();
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Text("x".into())]);
+        let text = |e: &Editors| e.docs.values().next().unwrap().buf.rope.to_string();
+        assert_eq!(text(&editors), "1\nx");
+
+        std::fs::write(&path, "other\n").unwrap();
+        editors.reload_clean();
+        assert_eq!(text(&editors), "1\nx");
+        let _ = std::fs::remove_file(&path);
     }
 }
