@@ -35,9 +35,25 @@ pub enum LineChange {
 
 pub type LineChanges = Arc<Vec<(usize, LineChange)>>;
 
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Change {
+    pub path: String,
+    pub state: FileState,
+}
+
+#[derive(PartialEq, Eq, Debug)]
+struct Entry {
+    path: String,
+    state: FileState,
+    staged: Option<FileState>,
+    unstaged: Option<FileState>,
+}
+
 struct Status {
     top: PathBuf,
     branch: String,
+    staged: Vec<Change>,
+    unstaged: Vec<Change>,
     files: HashMap<String, FileState>,
     folders: HashMap<String, FileState>,
 }
@@ -45,6 +61,7 @@ struct Status {
 enum Msg {
     Status(PathBuf, Option<Status>),
     Diff(PathBuf, Vec<(usize, LineChange)>),
+    Done(Option<String>),
 }
 
 pub struct Git {
@@ -56,10 +73,16 @@ pub struct Git {
     rx: Receiver<Msg>,
     running: bool,
     pending: bool,
+    busy: bool,
+    error: Option<String>,
     diffs: RefCell<HashMap<PathBuf, Option<LineChanges>>>,
 }
 
 pub fn run(dir: &Path, args: &[&str]) -> Option<String> {
+    exec(dir, args).ok()
+}
+
+pub fn exec(dir: &Path, args: &[&str]) -> Result<String, String> {
     let mut command = std::process::Command::new("git");
     command.args(args).current_dir(dir);
     #[cfg(windows)]
@@ -67,8 +90,13 @@ pub fn run(dir: &Path, args: &[&str]) -> Option<String> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let output = command.output().ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    let output = command.output().map_err(|e| format!("Could not run git: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if output.status.success() {
+        return Ok(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(if stderr.is_empty() { stdout.trim().to_owned() } else { stderr })
 }
 
 fn key(path: &Path) -> String {
@@ -91,7 +119,7 @@ fn parse_branch(header: &str) -> Option<String> {
     Some(name.to_owned())
 }
 
-fn parse_status(text: &str) -> (Option<String>, Vec<(String, FileState)>) {
+fn parse_status(text: &str) -> (Option<String>, Vec<Entry>) {
     let mut branch = None;
     let mut files = vec![];
     let mut entries = text.split('\0');
@@ -116,7 +144,19 @@ fn parse_status(text: &str) -> (Option<String>, Vec<(String, FileState)>) {
             (b'A', _) => FileState::Added,
             _ => FileState::Modified,
         };
-        files.push((path, state));
+        let side = |c: u8| match c {
+            b' ' => None,
+            b'A' => Some(FileState::Added),
+            b'D' => Some(FileState::Deleted),
+            _ => Some(FileState::Modified),
+        };
+        let (staged, unstaged) = match state {
+            FileState::Ignored => (None, None),
+            FileState::Conflicted => (None, Some(state)),
+            _ if x == b'?' => (None, Some(state)),
+            _ => (side(x), side(y)),
+        };
+        files.push(Entry { path, state, staged, unstaged });
     }
     (branch, files)
 }
@@ -154,7 +194,14 @@ fn load_status(root: &Path) -> Option<Status> {
     let top_key = key(&top);
     let mut files = HashMap::new();
     let mut folders: HashMap<String, FileState> = HashMap::new();
-    for (path, state) in entries {
+    let (mut staged, mut unstaged) = (vec![], vec![]);
+    for Entry { path, state, staged: x, unstaged: y } in entries {
+        if let Some(state) = x {
+            staged.push(Change { path: path.clone(), state });
+        }
+        if let Some(state) = y {
+            unstaged.push(Change { path: path.clone(), state });
+        }
         let full = key(&top.join(&path));
         if state != FileState::Ignored {
             let mut parent = full.as_str();
@@ -171,7 +218,7 @@ fn load_status(root: &Path) -> Option<Status> {
         }
         files.insert(full, state);
     }
-    Some(Status { top, branch, files, folders })
+    Some(Status { top, branch, staged, unstaged, files, folders })
 }
 
 impl Git {
@@ -186,6 +233,8 @@ impl Git {
             rx,
             running: false,
             pending: false,
+            busy: false,
+            error: None,
             diffs: RefCell::new(HashMap::new()),
         }
     }
@@ -238,6 +287,13 @@ impl Git {
                 Msg::Diff(path, changes) => {
                     self.diffs.borrow_mut().insert(path, Some(Arc::new(changes)));
                 }
+                Msg::Done(error) => {
+                    self.busy = false;
+                    self.error = error;
+                    if let Some(ctx) = self.ctx.clone() {
+                        self.refresh(&ctx);
+                    }
+                }
             }
         }
     }
@@ -248,6 +304,54 @@ impl Git {
 
     pub fn repo_name(&self) -> Option<&str> {
         self.repo_name.as_deref()
+    }
+
+    pub fn top(&self) -> Option<&Path> {
+        self.status.as_ref().map(|s| s.top.as_path())
+    }
+
+    pub fn changes(&self, staged: bool) -> &[Change] {
+        match &self.status {
+            Some(s) if staged => &s.staged,
+            Some(s) => &s.unstaged,
+            None => &[],
+        }
+    }
+
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub fn stage(&mut self, path: Option<&str>) {
+        self.act(["add", "-A", "--"].into_iter().chain(path).collect());
+    }
+
+    pub fn unstage(&mut self, path: Option<&str>) {
+        self.act(["reset", "-q", "--"].into_iter().chain(path).collect());
+    }
+
+    pub fn commit(&mut self, message: &str) {
+        self.act(vec!["commit", "-q", "-m", message]);
+    }
+
+    fn act(&mut self, args: Vec<&str>) {
+        let (Some(status), Some(ctx)) = (&self.status, &self.ctx) else { return };
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.error = None;
+        let (top, tx, ctx) = (status.top.clone(), self.tx.clone(), ctx.clone());
+        let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
+        std::thread::spawn(move || {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let _ = tx.send(Msg::Done(exec(&top, &args).err()));
+            ctx.request_repaint();
+        });
     }
 
     pub fn state(&self, path: &Path) -> Option<FileState> {
@@ -295,18 +399,21 @@ mod tests {
 
     #[test]
     fn parses_porcelain_entries_and_renames() {
-        let text = "## main...origin/main [ahead 1]\0 M src/a.rs\0?? new.txt\0R  b.rs\0old.rs\0!! target/\0UU c.rs\0 D gone.rs\0";
+        let text = "## main...origin/main [ahead 1]\0 M src/a.rs\0?? new.txt\0R  b.rs\0old.rs\0!! target/\0UU c.rs\0 D gone.rs\0AM both.rs\0";
         let (branch, files) = parse_status(text);
         assert_eq!(branch.as_deref(), Some("main"));
+        use FileState::*;
+        let entry = |path: &str, state, staged, unstaged| Entry { path: path.into(), state, staged, unstaged };
         assert_eq!(
             files,
             vec![
-                ("src/a.rs".into(), FileState::Modified),
-                ("new.txt".into(), FileState::Added),
-                ("b.rs".into(), FileState::Modified),
-                ("target/".into(), FileState::Ignored),
-                ("c.rs".into(), FileState::Conflicted),
-                ("gone.rs".into(), FileState::Deleted),
+                entry("src/a.rs", Modified, None, Some(Modified)),
+                entry("new.txt", Added, None, Some(Added)),
+                entry("b.rs", Modified, Some(Modified), None),
+                entry("target/", Ignored, None, None),
+                entry("c.rs", Conflicted, None, Some(Conflicted)),
+                entry("gone.rs", Deleted, None, Some(Deleted)),
+                entry("both.rs", Added, Some(Added), Some(Modified)),
             ]
         );
         assert_eq!(parse_branch("## No commits yet on dev").as_deref(), Some("dev"));
@@ -347,6 +454,15 @@ mod tests {
 
         let status = load_status(&dir.join("sub")).unwrap();
         assert_eq!(status.branch, "trunk");
+        let paths = |list: &[Change]| list.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
+        assert!(status.staged.is_empty());
+        assert_eq!(paths(&status.unstaged), ["sub/a.txt", "new.txt"]);
+        git(&["add", "-A", "--", "new.txt"]);
+        let staged = load_status(&dir).unwrap();
+        assert_eq!(staged.staged, [Change { path: "new.txt".into(), state: FileState::Added }]);
+        assert_eq!(paths(&staged.unstaged), ["sub/a.txt"]);
+        git(&["reset", "-q", "--", "new.txt"]);
+        assert!(exec(&dir, &["commit", "-q", "-m", "nothing staged"]).is_err());
         let mut g = Git::new();
         g.status = Some(status);
         assert_eq!(g.state(&dir.join("sub/a.txt")), Some(FileState::Modified));
