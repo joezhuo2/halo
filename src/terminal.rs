@@ -483,6 +483,7 @@ struct PortRow {
     process: String,
 }
 
+#[cfg_attr(not(windows), allow(unused_mut))]
 pub fn hidden_command(program: &str) -> std::process::Command {
     let mut command = std::process::Command::new(program);
     #[cfg(windows)]
@@ -497,6 +498,7 @@ fn output_of(program: &str, args: &[&str]) -> String {
     hidden_command(program).args(args).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
 }
 
+#[cfg(any(windows, test))]
 fn parse_netstat(text: &str) -> Vec<(String, u16, String)> {
     text.lines()
         .filter_map(|line| {
