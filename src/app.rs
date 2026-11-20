@@ -1,4 +1,5 @@
 use crate::accounts::Accounts;
+use crate::ai::AiPanel;
 use crate::command::{self, Command, Scope};
 use crate::editor::Editors;
 use crate::explorer::Explorer;
@@ -19,6 +20,7 @@ pub enum Zone {
     Editor,
     Terminal,
     Explorer,
+    Ai,
 }
 
 pub struct Halo {
@@ -31,6 +33,7 @@ pub struct Halo {
     pub accounts: Accounts,
     pub editors: Editors,
     pub bottom: BottomPanel,
+    pub ai: AiPanel,
     pub zone: Zone,
     pub cmds: Vec<Command>,
     about: bool,
@@ -61,6 +64,7 @@ impl Halo {
             accounts: Accounts::default(),
             editors: Editors::new(),
             bottom: BottomPanel::new(),
+            ai: AiPanel::default(),
             zone: Zone::Editor,
             cmds: vec![],
             about: false,
@@ -194,13 +198,13 @@ impl Halo {
                 }
             }
             other => {
-                if self.zone == Zone::Terminal {
-                    let _ = self.bottom.exec(&other, &self.settings, cwd.as_deref(), ctx)
-                        || self.editors.exec(&other, &self.settings, ctx);
-                } else {
-                    let _ = self.editors.exec(&other, &self.settings, ctx)
-                        || self.bottom.exec(&other, &self.settings, cwd.as_deref(), ctx);
-                }
+                let _ = match self.zone {
+                    Zone::Ai => self.ai.exec(&other, ctx) || self.bottom.exec(&other, &self.settings, cwd.as_deref(), ctx),
+                    Zone::Terminal => {
+                        self.bottom.exec(&other, &self.settings, cwd.as_deref(), ctx) || self.editors.exec(&other, &self.settings, ctx)
+                    }
+                    _ => self.editors.exec(&other, &self.settings, ctx) || self.bottom.exec(&other, &self.settings, cwd.as_deref(), ctx),
+                };
             }
         }
     }
@@ -279,15 +283,17 @@ impl Halo {
 
     fn ai_panel(&mut self, ui: &mut Ui) {
         let mut open = self.session.ai;
+        let cwd = self.session.folder.clone();
         Panel::right("ai_panel")
             .resizable(true)
             .default_size(380.0)
             .size_range(240.0..=800.0)
             .frame(Frame::new().fill(self.theme.panel))
             .show_collapsible(ui, &mut open, |ui| {
-                ui::section_header(ui, &self.theme, "Claude  |  Codex");
-                placeholder(ui, &self.theme, icons::ROBOT, "Claude and Codex sessions arrive in milestone 3.");
-            });
+                self.ai.ui(ui, &self.theme, self.settings.font_size, cwd.as_deref(), &mut self.cmds);
+            })
+            .is_none()
+            .then(|| self.ai.blur());
         self.session.ai = open;
     }
 
@@ -451,12 +457,16 @@ impl eframe::App for Halo {
             resize_edges(&ctx, window);
         }
 
-        if self.bottom.has_focus() {
+        if self.ai.has_focus() {
+            self.zone = Zone::Ai;
+        } else if self.bottom.has_focus() {
             self.zone = Zone::Terminal;
         } else if self.editors.has_focus() {
             self.zone = Zone::Editor;
         } else if self.explorer.has_focus() {
             self.zone = Zone::Explorer;
+        } else if self.zone == Zone::Ai {
+            self.zone = Zone::Editor;
         }
 
         for cmd in std::mem::take(&mut self.cmds) {
@@ -491,15 +501,6 @@ fn activity_item(ui: &mut Ui, theme: &Theme, icon: &str, active: bool, tip: &str
         painter.text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(23.0), color);
     }
     resp.on_hover_text(tip)
-}
-
-fn placeholder(ui: &mut Ui, theme: &Theme, icon: &str, text: &str) {
-    ui.vertical_centered(|ui| {
-        ui.add_space(28.0);
-        ui.label(RichText::new(icon).size(30.0).color(theme.text_dim));
-        ui.add_space(4.0);
-        ui.label(RichText::new(text).color(theme.text_dim));
-    });
 }
 
 fn resize_edges(ctx: &egui::Context, window: egui::Rect) {
