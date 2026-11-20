@@ -5,8 +5,8 @@ Written 2026-11-20. Read [requirements.md](requirements.md), [decisions.md](deci
 ## State
 
 - Repository: `C:\Users\Joe\Documents\halo`, remote `origin` = https://github.com/joezhuo2/halo.
-- Branch: `m1-shell` holds all of milestone 1. There is no `main` yet: the GitHub repository was empty, so `m1-shell` is the first branch on it. Decide whether to rename it to `main` or create `main` from it before opening pull requests for M2.
-- Build: `cargo build` is warning-free. `cargo test` passes 14 tests.
+- Branches: `main` was created from `m1-shell` (all of milestone 1) and pushed. Milestone 2 work is on `m2-scm`, not pushed yet.
+- Build: `cargo build` is warning-free. `cargo test` passes 15 tests.
 - Run: `cargo run --release`, or `target\release\halo.exe [folder-or-file]`.
 - Config written by the app: `%APPDATA%\halo\settings.json` and `session.json`. eframe also stores window size and position under `%APPDATA%\Halo`.
 
@@ -32,14 +32,14 @@ Mouse interactions were not exercised (only keyboard input and screenshots). Cov
 
 ## Known gaps and limits
 
-**Memory target is missed.** Release build, maximized on a high-DPI display: about 90 MB private working set with a folder open, about 100 MB with a file and a terminal (133 MB working set). The target is 80 MB. The largest single piece is the AMD OpenGL driver (`atio6axx.dll`, 62 MB image) loaded into the process. Ideas, none tried yet:
+**Memory target is missed.** Release build, maximized on a high-DPI display: about 90 MB private working set with a folder open, about 100 MB with a file and a terminal (133 MB working set). The target is 80 MB. The largest single piece is the AMD OpenGL driver (`atio6axx.dll`, 62 MB image) loaded into the process. Ideas:
 
-1. Try the wgpu renderer on DX12 and compare.
+1. Tried 2026-11-20, rejected: the wgpu renderer with default settings. Private working set with a folder open, same machine and window: OpenGL (glow) 84 MB; wgpu on DX12 273-281 MB, Vulkan 283 MB, GL 160 MB. The binary also grows from 9.6 MB to 14.3 MB. wgpu's low-memory device hints were not tried. Halo stays on glow.
 2. Measure at a smaller window size to see how much is framebuffer.
 3. Check which GPU is selected on hybrid laptops; an integrated GPU driver may be smaller.
 4. Trim the working set when idle (`SetProcessWorkingSetSize`), which improves the Task Manager number but not real use.
 
-Placeholders that say which milestone they arrive in: title bar search box, Source Control side bar, AI panel, Accounts button, Switch to WSL button, Run menu.
+Placeholders that say which milestone they arrive in: title bar search box, AI panel, Accounts button, Switch to WSL button, Run menu.
 
 Other limits:
 
@@ -62,5 +62,5 @@ Other limits:
 ## Suggested next steps
 
 1. Run the app by hand through the "Not verified" list and fix what breaks.
-2. Decide the memory plan (see above) before adding more features, since the renderer choice affects everything.
-3. Start M2 in `src/git.rs`: add staged/unstaged lists, then a `src/scm.rs` side bar; keep every git call inside `git::run` on a background thread.
+2. Memory: the renderer stays on glow (see above); the remaining ideas are 2 to 4.
+3. Continue M2 from [milestones.md](milestones.md): the Source Control side bar has changes, stage/unstage and commit. Next are discard, push/pull/fetch and branches; keep every git call on a background thread through `Git::act`.
