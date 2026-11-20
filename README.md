@@ -6,7 +6,7 @@ An ultra-lightweight native code editor, laid out like VS Code. Written in Rust 
 
 | Milestone | Scope | State |
 |-----------|-------|-------|
-| M1 | Window shell, explorer, editor, terminal, status bar, dark and light themes | in progress |
+| M1 | Window shell, explorer, editor, terminal, status bar, dark and light themes | done |
 | M2 | Source control, commit graph, conflict editor, pull request panel, GitHub accounts | planned |
 | M3 | Claude and Codex CLI panel, WSL mode, search bar, settings page | planned |
 | M4 | Windows installer and release pipeline | planned |
@@ -41,3 +41,7 @@ Halo follows VS Code defaults: `Ctrl+B` side bar, `Ctrl+J` panel, `Ctrl+Alt+B` A
 ## License
 
 MIT
+
+## Documentation
+
+See [docs/](docs): requirements, design decisions, architecture, milestones and handoff notes.
