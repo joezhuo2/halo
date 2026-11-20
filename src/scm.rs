@@ -1,13 +1,13 @@
 use crate::command::Command;
 use crate::explorer::{file_icon, state_badge, state_color};
-use crate::git::{Change, FileState, Git};
+use crate::git::{Change, Commit, FileState, Git};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use eframe::egui::{
-    self, Align, Align2, FontId, Frame, Id, Key, Layout, Margin, Modifiers, Rect, RichText, ScrollArea, Sense, Ui,
-    UiBuilder, pos2, vec2,
+    self, Align, Align2, FontId, Frame, Id, Key, Layout, Margin, Modifiers, Rect, RichText, ScrollArea, Sense, Stroke,
+    Ui, UiBuilder, pos2, vec2,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const ROW: f32 = 22.0;
 const STAGED: [(&str, &str); 1] = [(icons::MINUS, "Unstage")];
@@ -27,6 +27,9 @@ enum Action {
     Switch(String),
     NewBranch,
     Refresh,
+    Stash(bool),
+    SelectRepo(PathBuf),
+    ShowCommit(String),
 }
 
 pub struct Scm {
@@ -34,21 +37,25 @@ pub struct Scm {
     committing: bool,
     discard: Option<Option<String>>,
     new_branch: Option<String>,
+    commit: Option<String>,
 }
 
 impl Scm {
     pub fn new() -> Self {
-        Self { message: String::new(), committing: false, discard: None, new_branch: None }
+        Self { message: String::new(), committing: false, discard: None, new_branch: None, commit: None }
     }
 
     pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, git: &mut Git, cmds: &mut Vec<Command>) {
         ui.spacing_mut().item_spacing.y = 0.0;
         ui::section_header(ui, theme, "Source Control");
+        let mut action = None;
+        repositories(ui, theme, git, &mut action);
         let Some(top) = git.top().map(Path::to_path_buf) else {
             ui.vertical_centered(|ui| {
                 ui.add_space(16.0);
                 ui.label(RichText::new("The open folder is not a git repository.").color(theme.text_dim));
             });
+            self.apply(action, git, ui);
             return;
         };
         if self.committing && !git.busy() {
@@ -58,7 +65,6 @@ impl Scm {
             }
         }
 
-        let mut action = None;
         let busy = git.busy();
         toolbar(ui, theme, git, &mut action);
         Frame::new().inner_margin(Margin::symmetric(10, 4)).show(ui, |ui| {
@@ -103,9 +109,13 @@ impl Scm {
                     group(ui, theme, &top, changes, staged, busy, &mut action, cmds);
                 }
             }
+            graph(ui, theme, &top, git, self.commit.as_deref(), &mut action, cmds);
         });
         self.dialogs(ui, git, &top, cmds);
+        self.apply(action, git, ui);
+    }
 
+    fn apply(&mut self, action: Option<Action>, git: &mut Git, ui: &Ui) {
         match action {
             Some(Action::Stage(path)) => git.stage(path.as_deref()),
             Some(Action::Unstage(path)) => git.unstage(path.as_deref()),
@@ -120,6 +130,16 @@ impl Scm {
             Some(Action::Switch(branch)) => git.switch(&branch, false),
             Some(Action::NewBranch) => self.new_branch = Some(String::new()),
             Some(Action::Refresh) => git.refresh(ui.ctx()),
+            Some(Action::Stash(pop)) => git.stash(pop),
+            Some(Action::SelectRepo(repo)) => {
+                self.commit = None;
+                git.select(Some(repo), ui.ctx());
+            }
+            Some(Action::ShowCommit(hash)) if self.commit.as_deref() == Some(&hash) => self.commit = None,
+            Some(Action::ShowCommit(hash)) => {
+                git.show(&hash);
+                self.commit = Some(hash);
+            }
             None => {}
         }
     }
@@ -243,6 +263,14 @@ fn toolbar(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>) {
                     ui.spinner();
                     return;
                 }
+                ui.menu_button(RichText::new(icons::DOTS_THREE).color(theme.text_dim), |ui| {
+                    if ui.button("Stash Changes").clicked() {
+                        *action = Some(Action::Stash(false));
+                    }
+                    if ui.button("Pop Stash").clicked() {
+                        *action = Some(Action::Stash(true));
+                    }
+                });
                 let tracking = git.tracking();
                 let (ahead, behind) = tracking.unwrap_or_default();
                 let push = match tracking {
@@ -264,6 +292,107 @@ fn toolbar(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>) {
             });
         });
     });
+}
+
+fn repositories(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>) {
+    if git.repos().len() < 2 {
+        return;
+    }
+    for repo in git.repos() {
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+        let selected = git.root() == Some(repo.as_path());
+        ui::row_bg(ui, theme, rect, Id::new(("scm_repo", repo)), resp.hovered(), selected);
+        let painter = ui.painter().with_clip_rect(rect);
+        let (x, y) = (rect.left() + 14.0, rect.center().y);
+        let name = repo.file_name().unwrap_or(repo.as_os_str()).to_string_lossy();
+        let color = if selected { theme.text } else { theme.text_dim };
+        painter.text(pos2(x, y), Align2::LEFT_CENTER, icons::FOLDER, FontId::proportional(15.0), ui::with_alpha(theme.accent, 0.85));
+        painter.text(pos2(x + 21.0, y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), color);
+        if resp.clicked() && !selected {
+            *action = Some(Action::SelectRepo(repo.clone()));
+        }
+    }
+    ui.add_space(4.0);
+}
+
+fn graph(
+    ui: &mut Ui,
+    theme: &Theme,
+    top: &Path,
+    git: &Git,
+    open: Option<&str>,
+    action: &mut Option<Action>,
+    cmds: &mut Vec<Command>,
+) {
+    let log = git.log();
+    if log.is_empty() {
+        return;
+    }
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    ui.painter().rect_filled(rect, 0, ui::mix(theme.panel, theme.bar, 0.5));
+    ui.painter().text(pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, "COMMITS", FontId::proportional(11.5), theme.text);
+
+    let palette = [theme.accent, theme.modified, theme.added, theme.syntax.keyword, theme.syntax.string, theme.deleted];
+    let widest = |c: &Commit| c.through.iter().chain(&c.down).copied().fold(c.col, usize::max);
+    let lanes = log.iter().map(widest).max().unwrap_or(0).min(7) + 1;
+    let text_x = 20.0 + lanes as f32 * 10.0;
+    let lane_x = |rect: Rect, lane: usize| rect.left() + 14.0 + lane.min(7) as f32 * 10.0;
+    let stroke = |lane: usize| Stroke::new(1.5, palette[lane % palette.len()]);
+
+    for commit in log {
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+        let is_open = open == Some(commit.hash.as_str());
+        if ui.is_rect_visible(rect) {
+            ui::row_bg(ui, theme, rect, Id::new(("scm_commit", &commit.hash)), resp.hovered(), is_open);
+            let painter = ui.painter().with_clip_rect(rect);
+            let dot = pos2(lane_x(rect, commit.col), rect.center().y);
+            for lane in &commit.through {
+                painter.vline(lane_x(rect, *lane), rect.y_range(), stroke(*lane));
+            }
+            for lane in &commit.up {
+                painter.line_segment([pos2(lane_x(rect, *lane), rect.top()), dot], stroke(commit.col.max(*lane)));
+            }
+            for lane in &commit.down {
+                painter.line_segment([dot, pos2(lane_x(rect, *lane), rect.bottom())], stroke(commit.col.max(*lane)));
+            }
+            painter.circle_filled(dot, 3.5, palette[commit.col % palette.len()]);
+            let mut x = rect.left() + text_x;
+            if !commit.refs.is_empty() {
+                let refs = commit.refs.replace("HEAD -> ", "");
+                x = painter.text(pos2(x, dot.y), Align2::LEFT_CENTER, refs, FontId::proportional(11.5), theme.accent).right() + 6.0;
+            }
+            painter.text(pos2(x, dot.y), Align2::LEFT_CENTER, &commit.subject, FontId::proportional(13.0), theme.text);
+        }
+        let short = &commit.hash[..commit.hash.len().min(8)];
+        if resp.on_hover_text(format!("{short}  {}, {}", commit.author, commit.date)).clicked() {
+            *action = Some(Action::ShowCommit(commit.hash.clone()));
+        }
+        if !is_open {
+            continue;
+        }
+
+        let files = git.files(&commit.hash);
+        let loading = [Change { path: "Loading...".into(), state: FileState::Ignored }];
+        for change in files.unwrap_or(&loading) {
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+            ui::row_bg(ui, theme, rect, Id::new(("scm_commit_file", &change.path)), resp.hovered() && files.is_some(), false);
+            let painter = ui.painter().with_clip_rect(rect);
+            for lane in commit.through.iter().chain(&commit.down) {
+                painter.vline(lane_x(rect, *lane), rect.y_range(), stroke(*lane));
+            }
+            let (dir, name) = change.path.rsplit_once('/').unwrap_or(("", &change.path));
+            let color = state_color(theme, Some(change.state));
+            let (x, y) = (rect.left() + text_x, rect.center().y);
+            let drawn = painter.text(pos2(x, y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), color);
+            painter.text(pos2(drawn.right() + 8.0, y), Align2::LEFT_CENTER, dir, FontId::proportional(11.5), theme.text_dim);
+            let badge = if change.state == FileState::Added { "A" } else { state_badge(Some(change.state)) };
+            painter.text(pos2(rect.right() - 14.0, y), Align2::CENTER_CENTER, badge, FontId::proportional(11.5), color);
+            let full = top.join(&change.path);
+            if resp.clicked() && full.is_file() {
+                cmds.push(Command::OpenPath(full));
+            }
+        }
+    }
 }
 
 fn buttons(ui: &mut Ui, theme: &Theme, rect: Rect, enabled: bool, items: &[(&str, &str)]) -> Option<usize> {
@@ -424,6 +553,17 @@ mod tests {
         discard(&mut git, &dir, Some("a.txt"), &mut cmds);
         git.wait(|g| !g.busy() && g.changes(false).is_empty());
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "two");
+
+        let head = run(&["rev-parse", "HEAD"]).trim().to_owned();
+        let found = (0..150).map(|i| i as f32 * 4.0).any(|y| {
+            click(&ctx, &mut scm, &mut git, 150.0, y);
+            scm.commit.is_some()
+        });
+        assert!(found, "a commit row");
+        assert_eq!(scm.commit.as_deref(), Some(head.as_str()));
+        git.wait(|g| g.files(&head).is_some());
+        assert_eq!(git.files(&head).unwrap(), [Change { path: "a.txt".into(), state: FileState::Modified }]);
+        frame(&ctx, &mut scm, &mut git, vec![]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
