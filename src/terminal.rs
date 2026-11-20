@@ -677,23 +677,11 @@ impl BottomPanel {
         let body = Rect::from_min_max(pos2(header.left(), header.bottom()), ui.max_rect().max);
         ui.allocate_rect(ui.max_rect(), Sense::hover());
 
-        let mut underline = None;
         ui.scope_builder(UiBuilder::new().max_rect(header.shrink2(vec2(10.0, 0.0))), |ui| {
             ui.horizontal_centered(|ui| {
-                for (tab, label) in TABS {
-                    let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(11.5), Color32::PLACEHOLDER);
-                    let (r, resp) = ui.allocate_exact_size(vec2(galley.size().x + 20.0, 32.0), Sense::click());
-                    let a = ui::anim(ui, resp.id.with("active"), self.tab == tab);
-                    let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
-                    let text_pos = r.center() - galley.size() / 2.0;
-                    ui.painter().galley(text_pos, galley, ui::mix(theme.text_dim, theme.text, a.max(h)));
-                    if self.tab == tab {
-                        underline = Some((r.left() + 10.0, r.right() - 10.0, r.bottom() - 4.0));
-                    }
-                    if resp.clicked() {
-                        self.tab = tab;
-                    }
-                }
+                let mut index = TABS.iter().position(|t| t.0 == self.tab).unwrap_or(0);
+                ui::tabs(ui, theme, Id::new("panel_tab"), &TABS.map(|t| t.1), &mut index);
+                self.tab = TABS[index].0;
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui::icon_button(ui, theme, icons::X, 24.0, false, "Close Panel (Ctrl+J)").clicked() {
                         cmds.push(Command::TogglePanel);
@@ -727,12 +715,6 @@ impl BottomPanel {
                 });
             });
         });
-        if let Some((left, right, y)) = underline {
-            let left = ctx.animate_value_with_time(Id::new("panel_tab_left"), left, ui::ANIM);
-            let right = ctx.animate_value_with_time(Id::new("panel_tab_right"), right, ui::ANIM);
-            ui.painter().rect_filled(Rect::from_min_max(pos2(left, y), pos2(right, y + 1.5)), CornerRadius::ZERO, theme.accent);
-        }
-
         ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
             ui.set_clip_rect(body.intersect(ui.clip_rect()));
             match self.tab {

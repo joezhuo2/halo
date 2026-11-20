@@ -43,6 +43,29 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: &str, size: f32, active: bo
     if tip.is_empty() { resp } else { resp.on_hover_text(tip) }
 }
 
+pub fn tabs(ui: &mut Ui, theme: &Theme, id: Id, labels: &[&str], active: &mut usize) {
+    let mut underline = None;
+    for (index, label) in labels.iter().enumerate() {
+        let galley = ui.painter().layout_no_wrap((*label).to_owned(), FontId::proportional(11.5), Color32::PLACEHOLDER);
+        let (r, resp) = ui.allocate_exact_size(egui::vec2(galley.size().x + 20.0, 32.0), Sense::click());
+        if resp.clicked() {
+            *active = index;
+        }
+        let a = anim(ui, resp.id.with("active"), *active == index);
+        let h = anim(ui, resp.id.with("hover"), resp.hovered());
+        ui.painter().galley(r.center() - galley.size() / 2.0, galley, mix(theme.text_dim, theme.text, a.max(h)));
+        if *active == index {
+            underline = Some(r);
+        }
+    }
+    if let Some(r) = underline {
+        let left = ui.ctx().animate_value_with_time(id.with("left"), r.left() + 10.0, ANIM);
+        let right = ui.ctx().animate_value_with_time(id.with("right"), r.right() - 10.0, ANIM);
+        let bar = Rect::from_min_max(egui::pos2(left, r.bottom() - 4.0), egui::pos2(right, r.bottom() - 2.5));
+        ui.painter().rect_filled(bar, CornerRadius::ZERO, theme.accent);
+    }
+}
+
 pub fn fade_in(ui: &Ui, id: Id) -> f32 {
     let now = ui.input(|i| i.time);
     let start = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(id, || now));
