@@ -1,3 +1,4 @@
+use crate::accounts::Accounts;
 use crate::command::{self, Command, Scope};
 use crate::editor::Editors;
 use crate::explorer::Explorer;
@@ -27,6 +28,7 @@ pub struct Halo {
     pub git: Git,
     pub explorer: Explorer,
     pub scm: Scm,
+    pub accounts: Accounts,
     pub editors: Editors,
     pub bottom: BottomPanel,
     pub zone: Zone,
@@ -56,6 +58,7 @@ impl Halo {
             git: Git::new(),
             explorer: Explorer::new(),
             scm: Scm::new(),
+            accounts: Accounts::default(),
             editors: Editors::new(),
             bottom: BottomPanel::new(),
             zone: Zone::Editor,
@@ -247,7 +250,8 @@ impl Halo {
                     if activity_item(ui, &theme, icons::GEAR, false, "Settings (Ctrl+,)").clicked() {
                         self.cmds.push(Command::OpenSettings);
                     }
-                    activity_item(ui, &theme, icons::USER_CIRCLE, false, "Accounts - arrives in milestone 2");
+                    let accounts = activity_item(ui, &theme, icons::USER_CIRCLE, false, "Accounts");
+                    egui::Popup::menu(&accounts).show(|ui| self.accounts.menu(ui));
                     if cfg!(windows) {
                         activity_item(ui, &theme, icons::LINUX_LOGO, false, "Switch to WSL - arrives in milestone 3");
                     }
@@ -417,6 +421,9 @@ impl eframe::App for Halo {
         if self.git.poll() {
             self.explorer.refresh();
             self.editors.reload_clean();
+        }
+        if self.accounts.poll() {
+            self.git.refresh_prs();
         }
         for (title, text) in self.git.take_texts() {
             self.editors.open_text(&title, &text);
