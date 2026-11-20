@@ -9,9 +9,9 @@ An ultra-lightweight native code editor, laid out like VS Code. Written in Rust 
 | M1 | Window shell, explorer, editor, terminal, status bar, dark and light themes | done |
 | M2 | Source control, commit graph, conflict editor, pull request panel, GitHub accounts | done |
 | M3 | Claude and Codex CLI panel, WSL mode, search bar, settings page, key bindings, Run | done |
-| M4 | Windows installer and release pipeline | planned |
+| M4 | Windows installer, release pipeline, Linux and macOS builds | written, not yet run on GitHub |
 
-Windows 11 is the tested platform. The code is kept portable; Linux and macOS builds come later.
+Windows 11 is the tested platform. Linux and macOS compile and are built by the release workflow, but have never been run.
 
 ## Build and run
 
@@ -20,6 +20,12 @@ Needs a Rust toolchain (1.85 or newer) and `git` on `PATH`.
 ```bash
 cargo run --release
 ```
+
+## Install and release
+
+Each release has `halo-<version>-windows-x64-setup.exe` (per-user install, no admin: Start menu entry and "Open with Halo" on files, folders and folder backgrounds), a portable `halo-<version>-windows-x64.exe`, and `tar.gz` binaries for Linux x64 and macOS (arm64 and x64). Nothing is code signed.
+
+To release: set `version` in `Cargo.toml`, commit, then push a tag `v<version>`. [release.yml](.github/workflows/release.yml) builds every platform and attaches the files to a GitHub release; the tag must match the `Cargo.toml` version. To build the installer locally, install Inno Setup 6.3 or newer and run `ISCC /DAppVersion=<version> installer\halo.iss` after `cargo build --release`; the result lands in `dist`.
 
 ## Configuration
 

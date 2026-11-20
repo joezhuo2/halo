@@ -1,11 +1,11 @@
-# Handoff: end of milestone 3
+# Handoff: milestone 4 written
 
 Written 2026-11-20. Read [requirements.md](requirements.md), [decisions.md](decisions.md) and [architecture.md](architecture.md) first; [milestones.md](milestones.md) has the scope of what comes next.
 
 ## State
 
 - Repository: `C:\Users\Joe\Documents\halo`, remote `origin` = https://github.com/joezhuo2/halo.
-- Branches: `main` was created from `m1-shell` (all of milestone 1) and pushed. Milestone 2 is on `m2-scm` and milestone 3 on `m3-ai` (branched from `m2-scm`); neither is pushed or merged.
+- Branches: `main` was created from `m1-shell` (all of milestone 1) and pushed. Milestone 2 is on `m2-scm` and milestone 3 on `m3-ai` (branched from `m2-scm`); neither is pushed or merged. Milestone 4 is on `m4-packaging` (branched from `m3-ai`), also not pushed.
 - Build: `cargo build` is warning-free. `cargo test` passes 28 tests.
 - Run: `cargo run --release`, or `target\release\halo.exe [folder-or-file]`.
 - Config written by the app: `%APPDATA%\halo\settings.json`, `session.json` and, once opened, `keybindings.json`. eframe also stores window size and position under `%APPDATA%\Halo`.
@@ -69,7 +69,8 @@ Other limits:
 - WSL: Windows only. Deleting cannot use the recycle bin on a WSL folder, so it fails with an error. `gh` must be installed inside the distribution for pull requests; the Accounts menu still manages the Windows `gh`. Opening a WSL folder starts the distribution, which can take a few seconds. A file from a WSL folder opened while a Windows folder is open runs with its Windows path.
 - Settings page: lists and maps are edited in `settings.json`; grammar and association changes need a restart.
 - The caret blink repaints at 20 fps for 30 seconds after the last input, then stops.
-- Linux and macOS: code is portable in intent but has never been compiled there.
+- Linux and macOS: `cargo check` passes for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` from Windows without warnings. Nothing has been linked or run there. WSL mode, the recycle bin on WSL paths and the terminal profile defaults are the Windows-specific parts to look at first.
+- Packaging: the installer script and the release workflow have never run (see [milestones.md](milestones.md)). The executable has no icon or version resource, so the installer, Start menu entry and "Open with Halo" show the default icon. Releases are unsigned, so SmartScreen and Gatekeeper will warn.
 
 ## Notes from this session
 
@@ -86,4 +87,4 @@ Other limits:
 3. Milestone 2 is complete on `m2-scm`. Run it by hand against a real GitHub repository (see "Not verified").
 4. Milestone 3 is complete on `m3-ai`. Run it by hand through the milestone 3 entries in "Not verified", then merge `m2-scm` and `m3-ai` into `main` and push.
 5. App icon: the owner will supply one. Set it with `ViewportBuilder::with_icon` in `src/main.rs` and use it in place of the ring in the title bar, the welcome page and the About dialog.
-6. Milestone 4 from [milestones.md](milestones.md): installer and release pipeline.
+6. Milestone 4: push `m4-packaging`, then push a tag `v0.1.0` and watch the Release workflow. Install the produced setup file and check the Start menu entry, "Open with Halo" on a file and on a folder, and uninstall.

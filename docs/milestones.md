@@ -30,8 +30,9 @@
 - Run menu: Run File (`F5`) runs the per-extension command from `run` in `settings.json`, and tasks from `tasks`, in one reused terminal; the Debug Console tab mirrors that terminal's output.
 - Language servers (hover, completion, go to definition, Problems tab) were deferred out of v1 by the owner and are not built; schedule them after M4.
 
-## M4: packaging
+## M4: packaging (written, not yet run)
 
-- Windows installer with Start menu entry and "Open with Halo".
-- GitHub Actions: build and attach binaries to releases on version tags.
-- Linux and macOS builds once Windows is finished.
+- Windows installer (`installer/halo.iss`, Inno Setup): per-user, Start menu entry, "Open with Halo" on files, folders and folder backgrounds, uninstaller. Never compiled or installed: Inno Setup is not on the development machine.
+- GitHub Actions (`.github/workflows/release.yml`): on a `v*` tag, builds every platform and attaches the installer, a portable `halo.exe` and the `tar.gz` binaries to a GitHub release. It can also be started by hand, which builds without releasing. Never run: nothing from this milestone is pushed.
+- Linux x64 and macOS (arm64, x64) builds in the same workflow. `cargo check` passes for both targets from Windows; neither has been linked or run.
+- Not built: code signing, an app icon in the executable, a macOS `.app` bundle, Linux packages (`.deb`, AppImage) and a `.desktop` entry.
