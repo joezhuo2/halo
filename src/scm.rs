@@ -31,6 +31,9 @@ enum Action {
     Stash(bool),
     SelectRepo(PathBuf),
     ShowCommit(String),
+    Pr(Vec<String>),
+    ReviewPr(u64, bool),
+    NewPr,
 }
 
 pub struct Scm {
@@ -39,11 +42,13 @@ pub struct Scm {
     discard: Option<Option<String>>,
     new_branch: Option<String>,
     commit: Option<String>,
+    review: Option<(u64, bool, String)>,
+    new_pr: Option<(String, String)>,
 }
 
 impl Scm {
     pub fn new() -> Self {
-        Self { message: String::new(), committing: false, discard: None, new_branch: None, commit: None }
+        Self { message: String::new(), committing: false, discard: None, new_branch: None, commit: None, review: None, new_pr: None }
     }
 
     pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, git: &mut Git, cmds: &mut Vec<Command>) {
@@ -67,6 +72,7 @@ impl Scm {
         }
 
         let busy = git.busy();
+        git.load_prs();
         toolbar(ui, theme, git, &mut action);
         Frame::new().inner_margin(Margin::symmetric(10, 4)).show(ui, |ui| {
             let id = Id::new("scm_message");
@@ -110,6 +116,7 @@ impl Scm {
                     group(ui, theme, &top, changes, staged, busy, &mut action, cmds);
                 }
             }
+            pull_requests(ui, theme, git, busy, &mut action);
             graph(ui, theme, git, self.commit.as_deref(), &mut action, cmds);
         });
         self.dialogs(ui, git, &top, cmds);
@@ -130,7 +137,16 @@ impl Scm {
             Some(Action::Push) => git.push(),
             Some(Action::Switch(branch)) => git.switch(&branch, false),
             Some(Action::NewBranch) => self.new_branch = Some(String::new()),
-            Some(Action::Refresh) => git.refresh(ui.ctx()),
+            Some(Action::Refresh) => {
+                git.refresh_prs();
+                git.refresh(ui.ctx());
+            }
+            Some(Action::Pr(args)) => git.pr(&args.iter().map(String::as_str).collect::<Vec<_>>()),
+            Some(Action::ReviewPr(number, changes)) => self.review = Some((number, changes, String::new())),
+            Some(Action::NewPr) => {
+                let title = git.log().first().map(|c| c.subject.clone()).unwrap_or_default();
+                self.new_pr = Some((title, String::new()));
+            }
             Some(Action::Stash(pop)) => git.stash(pop),
             Some(Action::SelectRepo(repo)) => {
                 self.commit = None;
@@ -178,37 +194,140 @@ impl Scm {
         }
 
         if let Some(mut name) = self.new_branch.take() {
-            let mut choice = None;
-            let modal = egui::Modal::new(Id::new("scm_new_branch")).show(ui.ctx(), |ui| {
-                ui.set_width(320.0);
-                ui.heading("Create branch");
-                ui.label(format!("Starts from {}.", git.branch().unwrap_or("the current commit")));
-                ui.add_space(6.0);
-                let edit = ui.add(egui::TextEdit::singleline(&mut name).hint_text("Branch name").desired_width(f32::INFINITY));
-                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                if !enter && ui.memory(|m| m.focused().is_none()) {
-                    edit.request_focus();
-                }
-                let valid = !name.trim().is_empty();
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if (ui.add_enabled(valid, egui::Button::new("Create")).clicked() || enter) && valid {
-                        choice = Some(true);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        choice = Some(false);
-                    }
-                });
-            });
-            if choice.is_none() && modal.should_close() {
-                choice = Some(false);
-            }
-            match choice {
+            let note = format!("Starts from {}.", git.branch().unwrap_or("the current commit"));
+            match prompt(ui, "Create branch", &note, &mut [("Branch name", &mut name, 1)], "Create") {
                 Some(true) => git.switch(name.trim(), true),
                 Some(false) => {}
                 None => self.new_branch = Some(name),
             }
         }
+        if let Some((number, changes, mut body)) = self.review.take() {
+            let (heading, flag) = if changes { ("Request changes", "--request-changes") } else { ("Comment", "--comment") };
+            let note = format!("Posts a review on pull request #{number}.");
+            match prompt(ui, heading, &note, &mut [("Review comment", &mut body, 4)], "Submit") {
+                Some(true) => git.pr(&["review", &number.to_string(), flag, "--body", body.trim()]),
+                Some(false) => {}
+                None => self.review = Some((number, changes, body)),
+            }
+        }
+        if let Some((mut title, mut body)) = self.new_pr.take() {
+            let note = format!("Pushes {} to origin, then opens a pull request on GitHub.", git.branch().unwrap_or("HEAD"));
+            let fields = &mut [("Title", &mut title, 1), ("Description", &mut body, 5)];
+            match prompt(ui, "Create pull request", &note, fields, "Create") {
+                Some(true) => git.create_pr(title.trim(), body.trim()),
+                Some(false) => {}
+                None => self.new_pr = Some((title, body)),
+            }
+        }
+    }
+}
+
+fn prompt(ui: &Ui, heading: &str, note: &str, fields: &mut [(&str, &mut String, usize)], ok: &str) -> Option<bool> {
+    let mut choice = None;
+    let modal = egui::Modal::new(Id::new(("scm_prompt", heading))).show(ui.ctx(), |ui| {
+        ui.set_width(360.0);
+        ui.heading(heading);
+        ui.label(note);
+        let mut enter = false;
+        for (i, (hint, text, rows)) in fields.iter_mut().enumerate() {
+            ui.add_space(6.0);
+            let edit = if *rows == 1 {
+                egui::TextEdit::singleline(&mut **text)
+            } else {
+                egui::TextEdit::multiline(&mut **text).desired_rows(*rows)
+            };
+            let resp = ui.add(edit.hint_text(*hint).desired_width(f32::INFINITY));
+            enter |= *rows == 1 && resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            if i == 0 && !enter && ui.memory(|m| m.focused().is_none()) {
+                resp.request_focus();
+            }
+        }
+        let valid = !fields[0].1.trim().is_empty();
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if (ui.add_enabled(valid, egui::Button::new(ok)).clicked() || enter) && valid {
+                choice = Some(true);
+            }
+            if ui.button("Cancel").clicked() {
+                choice = Some(false);
+            }
+        });
+    });
+    if choice.is_none() && modal.should_close() {
+        choice = Some(false);
+    }
+    choice
+}
+
+fn pull_requests(ui: &mut Ui, theme: &Theme, git: &Git, busy: bool, action: &mut Option<Action>) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    ui.painter().rect_filled(rect, 0, ui::mix(theme.panel, theme.bar, 0.5));
+    let title = match git.prs() {
+        Some(Ok(prs)) => format!("PULL REQUESTS  {}", prs.len()),
+        _ => "PULL REQUESTS".to_owned(),
+    };
+    ui.painter().text(pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, title, FontId::proportional(11.5), theme.text);
+    if buttons(ui, theme, rect, !busy, &[(icons::PLUS, "Create Pull Request")]).is_some() {
+        *action = Some(Action::NewPr);
+    }
+
+    let note = |ui: &mut Ui, text: &str| {
+        Frame::new().inner_margin(Margin::symmetric(14, 5)).show(ui, |ui| {
+            ui.label(RichText::new(text).size(12.0).color(theme.text_dim));
+        });
+    };
+    let prs = match git.prs() {
+        None => return note(ui, "Loading..."),
+        Some(Err(error)) if error.starts_with("Could not run gh") => {
+            return note(ui, "Install the GitHub CLI (gh) to see pull requests.");
+        }
+        Some(Err(error)) => return note(ui, error.lines().next().unwrap_or_default()),
+        Some(Ok(prs)) if prs.is_empty() => return note(ui, "No open pull requests."),
+        Some(Ok(prs)) => prs,
+    };
+    for pr in prs {
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+        ui::row_bg(ui, theme, rect, Id::new(("scm_pr", pr.number)), resp.hovered(), false);
+        let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 28.0));
+        let (x, y) = (rect.left() + 14.0, rect.center().y);
+        let font = FontId::proportional(13.0);
+        let number = painter.text(pos2(x, y), Align2::LEFT_CENTER, format!("#{}", pr.number), font.clone(), theme.accent);
+        let color = if pr.is_draft { theme.text_dim } else { theme.text };
+        let title = painter.text(pos2(number.right() + 6.0, y), Align2::LEFT_CENTER, &pr.title, font.clone(), color);
+        painter.text(pos2(title.right() + 8.0, y), Align2::LEFT_CENTER, &pr.head_ref_name, FontId::proportional(11.5), theme.text_dim);
+        let (badge, color, merge) = match pr.mergeable.as_str() {
+            "CONFLICTING" => (icons::WARNING, theme.deleted, "conflicts with the base branch"),
+            "MERGEABLE" => (icons::CHECK, theme.added, "can be merged"),
+            _ => ("", theme.text_dim, "merge state not known yet"),
+        };
+        ui.painter().text(pos2(rect.right() - 14.0, y), Align2::CENTER_CENTER, badge, font, color);
+        let review = match pr.review_decision.as_str() {
+            "APPROVED" => "approved",
+            "CHANGES_REQUESTED" => "changes requested",
+            "REVIEW_REQUIRED" => "review required",
+            _ => "no review yet",
+        };
+        let draft = if pr.is_draft { ", draft" } else { "" };
+        let resp = resp.on_hover_text(format!("{}: {merge}, {review}{draft}", pr.head_ref_name));
+        let number = pr.number.to_string();
+        egui::Popup::menu(&resp).show(|ui| {
+            let run = |args: &[&str]| Some(Action::Pr(args.iter().map(|a| a.to_string()).collect()));
+            if ui.add_enabled(!busy, egui::Button::new("Check Out")).clicked() {
+                *action = run(&["checkout", &number]);
+            }
+            if ui.add_enabled(!busy, egui::Button::new("Approve")).clicked() {
+                *action = run(&["review", &number, "--approve"]);
+            }
+            if ui.button("Request Changes...").clicked() {
+                *action = Some(Action::ReviewPr(pr.number, true));
+            }
+            if ui.button("Comment...").clicked() {
+                *action = Some(Action::ReviewPr(pr.number, false));
+            }
+            if ui.add_enabled(!busy, egui::Button::new("Open on GitHub")).clicked() {
+                *action = run(&["view", &number, "--web"]);
+            }
+        });
     }
 }
 
