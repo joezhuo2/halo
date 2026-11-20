@@ -2,6 +2,7 @@ use crate::command::{self, Command, Scope};
 use crate::editor::Editors;
 use crate::explorer::Explorer;
 use crate::git::Git;
+use crate::scm::Scm;
 use crate::settings::{Session, Settings};
 use crate::terminal::BottomPanel;
 use crate::theme::Theme;
@@ -25,6 +26,7 @@ pub struct Halo {
     pub session: Session,
     pub git: Git,
     pub explorer: Explorer,
+    pub scm: Scm,
     pub editors: Editors,
     pub bottom: BottomPanel,
     pub zone: Zone,
@@ -53,6 +55,7 @@ impl Halo {
             session,
             git: Git::new(),
             explorer: Explorer::new(),
+            scm: Scm::new(),
             editors: Editors::new(),
             bottom: BottomPanel::new(),
             zone: Zone::Editor,
@@ -261,8 +264,7 @@ impl Halo {
             .frame(Frame::new().fill(self.theme.panel))
             .show_collapsible(ui, &mut open, |ui| {
                 if self.session.source_control {
-                    ui::section_header(ui, &self.theme, "Source Control");
-                    placeholder(ui, &self.theme, icons::GIT_BRANCH, "Source control arrives in milestone 2.");
+                    self.scm.ui(ui, &self.theme, &mut self.git, &mut self.cmds);
                 } else {
                     self.explorer.ui(ui, &self.theme, &self.git, active.as_deref(), &mut self.cmds);
                 }

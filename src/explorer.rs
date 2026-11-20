@@ -101,7 +101,7 @@ fn validate(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn file_icon(name: &str) -> &'static str {
+pub fn file_icon(name: &str) -> &'static str {
     let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
     match ext.as_str() {
         "rs" | "c" | "h" | "cpp" | "hpp" | "cc" | "ino" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "java" | "cs"
@@ -118,7 +118,7 @@ fn file_icon(name: &str) -> &'static str {
     }
 }
 
-fn state_color(theme: &Theme, state: Option<FileState>) -> Color32 {
+pub fn state_color(theme: &Theme, state: Option<FileState>) -> Color32 {
     match state {
         Some(FileState::Added) => theme.added,
         Some(FileState::Modified) => theme.modified,
@@ -128,7 +128,7 @@ fn state_color(theme: &Theme, state: Option<FileState>) -> Color32 {
     }
 }
 
-fn state_badge(state: Option<FileState>) -> &'static str {
+pub fn state_badge(state: Option<FileState>) -> &'static str {
     match state {
         Some(FileState::Added) => "U",
         Some(FileState::Modified) => "M",

@@ -5,6 +5,7 @@ mod command;
 mod editor;
 mod explorer;
 mod git;
+mod scm;
 mod settings;
 mod statusbar;
 mod terminal;
