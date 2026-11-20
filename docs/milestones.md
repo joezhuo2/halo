@@ -21,14 +21,14 @@
 - Pull requests through `gh` in the side bar: list with mergeable/conflict and review state, check out, approve, request changes, comment, open on GitHub, create (pushes the branch first).
 - Accounts button: lists `gh auth` accounts and switches the active one.
 
-## M3: AI panel, WSL, search, settings
+## M3: AI panel, WSL, search, settings (done)
 
-- Done: right panel with Claude and Codex tabs, each with Start session, restart and stop, reusing `terminal::Terminal`. Nothing starts until Start session is clicked.
-- Switch to WSL: pick a distro and folder; files, git, terminal, AI CLIs run through `wsl.exe`.
-- Title bar search: files by default, `>` commands, `%` text in files, `@` symbols, `:` line.
-- Settings page, `keybindings.json`, key chords, extra syntect grammars from a folder.
-- Run menu: per-language run command or task in the terminal; output mirrored in Debug Console.
-- Language servers (hover, completion, go to definition, Problems tab) were deferred out of v1 by the owner; schedule them here or after M4.
+- Right panel with Claude and Codex tabs, each with Start session, restart and stop, reusing `terminal::Terminal`. Nothing starts until Start session is clicked.
+- Switch to WSL: the activity bar button lists the installed distributions; reopen the current folder in one (through `/mnt/<drive>`) or pick a folder inside it. Files are read through `\\wsl.localhost`, and git, `gh`, new terminals, Run and the AI CLIs run through `wsl.exe` in that distribution.
+- Title bar search (`Ctrl+P`): files by default, `>` commands (`Ctrl+Shift+P`), `%` text in files (`Ctrl+Shift+F`), `@` symbols of the active editor (`Ctrl+Shift+O`), `:` line. `name:12` opens a file at a line.
+- Settings page (`Ctrl+,`) for the common settings, `keybindings.json` (`Ctrl+K Ctrl+S`), two-key chords, extra `.sublime-syntax` grammars from a folder and file associations.
+- Run menu: Run File (`F5`) runs the per-extension command from `run` in `settings.json`, and tasks from `tasks`, in one reused terminal; the Debug Console tab mirrors that terminal's output.
+- Language servers (hover, completion, go to definition, Problems tab) were deferred out of v1 by the owner and are not built; schedule them after M4.
 
 ## M4: packaging
 

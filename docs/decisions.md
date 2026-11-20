@@ -64,3 +64,12 @@ Confirmed by the owner on 2026-11-20 through 24 multiple-choice questions. Where
 - Global shortcuts are taken by Halo before the terminal sees them (for example `Ctrl+B`, `Ctrl+J`, `Ctrl+W`), mirroring VS Code's "commands to skip shell".
 - Deleting from the explorer moves items to the recycle bin and never falls back to permanent deletion.
 - `halo <path>` on the command line opens that folder or file.
+
+## Decisions made while building milestone 3
+
+- WSL mode has no state of its own: a folder under `\\wsl.localhost\<distro>` (or `\\wsl$`) is a WSL folder. Files go through that share with ordinary file calls; only processes (git, `gh`, shells, AI CLIs, Run) are wrapped in `wsl.exe -d <distro> --cd <dir>`.
+- Search uses `git ls-files` for the file list and `git grep --no-index --exclude-standard` for text, so both respect `.gitignore` and work outside a repository. Symbols come from syntect scopes (`entity.name`), not a language server.
+- `keybindings.json` replaces keys per command instead of VS Code's add/remove (`-command`) rules. Open Folder moved to `Ctrl+K Ctrl+O`, which frees `Ctrl+Shift+O` for Go to Symbol. `Ctrl+K` starts a chord everywhere, including in the terminal.
+- The settings page is a dialog over the window, not an editor tab. Lists and maps (terminal profiles, run commands, tasks, associations) are edited in `settings.json`.
+- Run types the command into a shell terminal that is reused for later runs, so the shell stays open after the program ends. The Debug Console shows the last 500 lines of that terminal as text.
+- The frost blue ring stays as the in-app logo for now. The taskbar shows egui's default icon; the owner will supply an icon (asked 2026-11-20).

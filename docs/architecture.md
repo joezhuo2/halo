@@ -8,12 +8,14 @@ Halo is a single Rust binary: eframe/egui 0.36 on the OpenGL (glow) renderer. No
 |------|------|
 | `src/main.rs` | Window options (frameless, sizes) and `eframe::run_native`. |
 | `src/app.rs` | `Halo`: owns every component, lays out the panels each frame, dispatches commands, session save, exit confirmation, window edge resizing. |
-| `src/titlebar.rs` | Title bar: menus, centered search box (placeholder until M3), window buttons, drag to move. |
+| `src/titlebar.rs` | Title bar: menus, centered search box (opens `Search`), window buttons, drag to move. |
+| `src/search.rs` | `Search`: the palette under the title bar. Modes by prefix, background file listing and text search, ranking. |
 | `src/statusbar.rs` | Status bar items. |
-| `src/command.rs` | `Command` enum, default key bindings with a `Scope` (Global or Editor), menu labels. |
-| `src/settings.rs` | `Settings` (`settings.json`) and `Session` (`session.json`) under the user config dir; terminal profile defaults. |
+| `src/command.rs` | `Command` enum, command ids, default key bindings with a `Scope` (Global or Editor) and optional chord key, `keybindings.json` loading, menu labels. |
+| `src/settings.rs` | `Settings` (`settings.json`) and `Session` (`session.json`) under the user config dir; terminal profile and run command defaults. |
+| `src/wsl.rs` | WSL path mapping (`parse`, `to_windows`, `shell_path`, `mount`), `wrap` (prefix a command with `wsl.exe`), and the Switch to WSL menu. |
 | `src/theme.rs` | `Theme` colours for dark and light, and `apply`, which also styles egui widgets, popups and tooltips. |
-| `src/ui.rs` | Shared helpers: `anim`, `mix`, `row_bg`, `icon_button`, `tabs` (the underlined tab strip of the bottom and AI panels), `fade_in`, `with_alpha`, `section_header`, and the `icons` re-export (Phosphor). |
+| `src/ui.rs` | Shared helpers: `notify` (queues a message for the app's notice toasts), `anim`, `mix`, `row_bg`, `icon_button`, `tabs` (the underlined tab strip of the bottom and AI panels), `fade_in`, `with_alpha`, `section_header`, and the `icons` re-export (Phosphor). |
 | `src/git.rs` | Git layer over the `git` and `gh` CLIs: status, change lists, commit log with lanes, nested repositories, pull requests, and the background operations (`Git::act`). |
 | `src/scm.rs` | Source Control side bar: repositories, branch toolbar, commit box, changes, pull requests, commit graph, and its dialogs. |
 | `src/accounts.rs` | Accounts menu on the activity bar: lists and switches `gh auth` accounts. |
@@ -37,7 +39,9 @@ Halo is a single Rust binary: eframe/egui 0.36 on the OpenGL (glow) renderer. No
 
 - Everything a menu or shortcut can do is a `Command`. Menus, the welcome page and shortcuts share labels and bindings from `command.rs`.
 - `Scope::Global` bindings are consumed by the app before any widget sees the key. `Scope::Editor` bindings are consumed by the editor view only while it has focus, so the terminal still receives `Ctrl+Z`, `Ctrl+D`, `Ctrl+A` and friends.
-- `bindings()` is ordered most-specific first because `consume_shortcut` matches modifiers loosely.
+- `bindings()` is sorted chords first, then by modifier count, because `consume_shortcut` matches modifiers loosely. It is built from the defaults plus `keybindings.json` and rebuilt after that file is saved.
+- A binding may have a second key (`chord`). `Halo::global_shortcuts` consumes the first key, remembers it in `Halo::chord`, and the next key press either completes a chord or is swallowed. Editor-scoped chords only start while the editor is the active zone.
+- Every parameterless command has an id (`Command::id`, the variant name in camelCase), used by `keybindings.json`, the `>` search mode and `HALO_COMMANDS`.
 - Cut, copy and paste arrive from egui as `Event::Cut/Copy/Paste`, not as key events. Menu paste sends `ViewportCommand::RequestPaste` after refocusing the target.
 
 ## Component contracts
@@ -46,7 +50,10 @@ Halo is a single Rust binary: eframe/egui 0.36 on the OpenGL (glow) renderer. No
 - `BottomPanel`: `ui`, `exec(...) -> bool`, `has_focus`, `blur`. `Terminal::spawn(id, name, program, args, cwd, ctx)` and `Terminal::ui(ui, theme, font_size)` are reused by the AI panel.
 - `AiPanel`: `ui(ui, theme, font_size, cwd, cmds)`, `exec(&Command, &Context) -> bool` (copy and paste), `has_focus`, `blur`. A session that exits stays on screen with a notice until it is restarted or stopped. `Zone::Ai` routes commands to it while its terminal has focus.
 - `Explorer`: `set_root`, `refresh`, `has_focus`, `ui(ui, theme, git, active_path, cmds)`. File operations are reported through `Command::OpenPath`, `RefreshExplorer` and `PathChanged(old, Option<new>)`.
-- `Git`: `set_root`, `refresh(ctx)`, `poll`, `branch`, `repo_name`, `state(path)`, `line_changes(path)`. `git::run(dir, args)` is the one place that shells out (hidden console window on Windows).
+- `Search`: `open(prefix)`, `ui(ui, theme, rect, folder, &Editors, cmds) -> bool` (true when cancelled with Escape). Results become commands: `OpenPath`, `GoTo(line, column)` or the picked command.
+- `BottomPanel::run(line, settings, cwd, ctx)` types a line into the run terminal (created on first use, reused while alive); `Terminal::text()` is what the Debug Console shows.
+- Errors that have no panel of their own go through `ui::notify`; `Halo::notices` shows them as dismissable toasts above the status bar.
+- `Git`: `set_root`, `refresh(ctx)`, `poll`, `branch`, `repo_name`, `state(path)`, `line_changes(path)`. `git::command(program, dir, args)` is the one place that shells out (hidden console window on Windows); when `dir` is a WSL folder it runs the program through `wsl.exe`, and paths git prints or receives are converted with `wsl::local` and `wsl::shell_path`.
 
 ## Editor internals
 
@@ -81,6 +88,8 @@ The API differs a lot from older egui. Check signatures in `~/.cargo/registry/sr
 
 ## Testing
 
-`cargo test` runs 23 tests, among them: the edit engine, highlighting, git parsing against a real temporary repository, explorer logic on a temp folder, key encoding and colour mapping for the terminal, a real shell round trip through the PTY, and a headless editor test that types through egui input.
+`cargo test` runs 28 tests, among them: the edit engine, highlighting, git parsing against a real temporary repository, explorer logic on a temp folder, key encoding and colour mapping for the terminal, a real shell round trip through the PTY, and a headless editor test that types through egui input.
 
-Rendering is checked by eye. During milestone 1 this was done by launching the debug build, sending keystrokes and capturing the window. Do not send keystrokes or capture the screen: if Halo is not in front they reach another application. Set the wanted state in `session.json` (restore it afterwards), capture with `PrintWindow(hwnd, dc, 2)`, and close by process id.
+Rendering is checked by eye. During milestone 1 this was done by launching the debug build, sending keystrokes and capturing the window. Do not send keystrokes or capture the screen: if Halo is not in front they reach another application, and a test window in front takes the owner's own keys and clicks.
+
+Test mode: when the `HALO_COMMANDS` environment variable is set (a comma-separated list of command ids, for example `showCommands` or `openSettings,toggleAi`; any other text runs nothing), Halo runs those commands on its first frame and opens unfocused, at the default size, with all but a few pixels off the left edge of the screen, using its own window-state file. Capture that window with `PrintWindow(hwnd, dc, 2)` (find it as the process's largest visible window), type with posted `WM_KEYDOWN`/`WM_KEYUP` messages that carry a scan code, and close by process id. Posted mouse clicks are not delivered while the pointer is elsewhere, and modifier keys cannot be posted. Back up and restore `settings.json` and `session.json` around a run, since commands such as `toggleTheme` save.
