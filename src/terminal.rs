@@ -240,6 +240,13 @@ impl Terminal {
         }
     }
 
+    pub fn text(&self) -> String {
+        let term = self.term.lock();
+        let first = term.topmost_line().max(term.bottommost_line() - 500);
+        let text = term.bounds_to_string(Point::new(first, Column(0)), Point::new(term.bottommost_line(), term.last_column()));
+        text.trim_end().to_owned()
+    }
+
     pub fn selection(&self) -> Option<String> {
         self.term.lock().selection_to_string().filter(|s| !s.is_empty())
     }
@@ -476,7 +483,7 @@ struct PortRow {
     process: String,
 }
 
-fn hidden_command(program: &str) -> std::process::Command {
+pub fn hidden_command(program: &str) -> std::process::Command {
     let mut command = std::process::Command::new(program);
     #[cfg(windows)]
     {
@@ -539,6 +546,13 @@ fn list_ports() -> Vec<PortRow> {
     rows
 }
 
+fn default_profile(settings: &Settings, cwd: Option<&Path>) -> Option<ShellProfile> {
+    match cwd.and_then(crate::wsl::parse) {
+        Some((distro, dir)) => Some(ShellProfile { name: distro.clone(), program: "wsl.exe".into(), args: vec!["-d".into(), distro, "--cd".into(), dir] }),
+        None => settings.default_profile().cloned(),
+    }
+}
+
 pub struct BottomPanel {
     tab: PanelTab,
     groups: Vec<Group>,
@@ -550,6 +564,9 @@ pub struct BottomPanel {
     ports: Vec<PortRow>,
     ports_rx: Option<Receiver<Vec<PortRow>>>,
     ports_loaded: bool,
+    run_id: Option<u64>,
+    run_line: String,
+    debug: String,
 }
 
 impl BottomPanel {
@@ -565,6 +582,9 @@ impl BottomPanel {
             ports: vec![],
             ports_rx: None,
             ports_loaded: false,
+            run_id: None,
+            run_line: String::new(),
+            debug: String::new(),
         }
     }
 
@@ -606,7 +626,7 @@ impl BottomPanel {
 
     fn split(&mut self, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) {
         let Some(profile) = self.groups.get(self.active).map(|g| g.profile.clone()) else {
-            self.new_group(settings.default_profile(), cwd, ctx);
+            self.new_group(default_profile(settings, cwd).as_ref(), cwd, ctx);
             return;
         };
         if let Some(terminal) = self.spawn(&profile, cwd, ctx) {
@@ -614,6 +634,40 @@ impl BottomPanel {
             group.panes.push(terminal);
             group.active = group.panes.len() - 1;
         }
+    }
+
+    pub fn run(&mut self, line: &str, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) {
+        let find = |groups: &[Group], id: Option<u64>| {
+            let pane = |g: &Group| g.panes.iter().position(|p| Some(p.id) == id && p.is_alive());
+            groups.iter().enumerate().find_map(|(index, g)| Some((index, pane(g)?)))
+        };
+        if find(&self.groups, self.run_id).is_none() {
+            self.run_id = Some(self.next_id);
+            self.new_group(default_profile(settings, cwd).as_ref(), cwd, ctx);
+        }
+        let Some((index, pane)) = find(&self.groups, self.run_id) else { return };
+        self.tab = PanelTab::Terminal;
+        self.active = index;
+        self.groups[index].active = pane;
+        self.groups[index].panes[pane].write(format!("{line}\r"));
+        self.groups[index].panes[pane].focus();
+        self.run_line = line.to_owned();
+    }
+
+    fn debug_ui(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, font_size: f32) {
+        if let Some(pane) = self.groups.iter().flat_map(|g| &g.panes).find(|p| Some(p.id) == self.run_id) {
+            self.debug = pane.text();
+        }
+        if self.run_line.is_empty() {
+            return empty(ui, theme, "Output of Run File and tasks is mirrored here.");
+        }
+        ui.scope_builder(UiBuilder::new().max_rect(body.shrink2(vec2(14.0, 4.0))), |ui| {
+            ui.label(RichText::new(format!("{}  {}", icons::PLAY, self.run_line)).color(theme.accent));
+            ui.add_space(4.0);
+            ScrollArea::vertical().auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
+                ui.label(RichText::new(&self.debug).font(FontId::monospace(font_size)).color(theme.text));
+            });
+        });
     }
 
     fn kill_active(&mut self) {
@@ -645,7 +699,7 @@ impl BottomPanel {
 
     pub fn exec(&mut self, cmd: &Command, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) -> bool {
         match cmd {
-            Command::NewTerminal => self.new_group(settings.default_profile(), cwd, ctx),
+            Command::NewTerminal => self.new_group(default_profile(settings, cwd).as_ref(), cwd, ctx),
             Command::NewTerminalWith(name) => self.new_group(settings.terminal(name), cwd, ctx),
             Command::SplitTerminal => {
                 self.tab = PanelTab::Terminal;
@@ -705,7 +759,7 @@ impl BottomPanel {
                         .response
                         .on_hover_text("Launch Profile...");
                         if ui::icon_button(ui, theme, icons::PLUS, 24.0, false, "New Terminal (Ctrl+Shift+`)").clicked() {
-                            self.new_group(settings.default_profile(), cwd, &ctx);
+                            self.new_group(default_profile(settings, cwd).as_ref(), cwd, &ctx);
                         }
                     } else if self.tab == PanelTab::Ports
                         && ui::icon_button(ui, theme, icons::ARROWS_CLOCKWISE, 24.0, false, "Refresh Ports").clicked()
@@ -722,7 +776,7 @@ impl BottomPanel {
                 PanelTab::Ports => self.ports_ui(ui, body, theme),
                 PanelTab::Problems => empty(ui, theme, "No problems have been detected in the workspace."),
                 PanelTab::Output => empty(ui, theme, "No output yet."),
-                PanelTab::Debug => empty(ui, theme, "Run output will appear here."),
+                PanelTab::Debug => self.debug_ui(ui, body, theme, settings.font_size),
             }
         });
     }
@@ -730,7 +784,7 @@ impl BottomPanel {
     fn terminals(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, settings: &Settings, cwd: Option<&Path>) {
         let ctx = ui.ctx().clone();
         if self.groups.is_empty() && !self.started {
-            self.new_group(settings.default_profile(), cwd, &ctx);
+            self.new_group(default_profile(settings, cwd).as_ref(), cwd, &ctx);
         }
         let mut area = body;
         if let Some(error) = self.error.clone() {
@@ -753,7 +807,7 @@ impl BottomPanel {
                     ui.label(RichText::new("No terminal is open.").color(theme.text_dim));
                     ui.add_space(6.0);
                     if ui.button(RichText::new("New Terminal").color(theme.accent)).clicked() {
-                        self.new_group(settings.default_profile(), cwd, &ctx);
+                        self.new_group(default_profile(settings, cwd).as_ref(), cwd, &ctx);
                     }
                 });
             });
@@ -915,5 +969,26 @@ mod tests {
         assert!(seen);
         assert!(terminal.is_alive());
         assert!(Terminal::spawn(2, "bad", "halo-no-such-program-xyz", &[], None, egui::Context::default()).is_err());
+    }
+
+    #[test]
+    fn runs_lines_in_one_reused_terminal_and_mirrors_them() {
+        let ctx = egui::Context::default();
+        let shell = if cfg!(windows) { "cmd.exe" } else { "sh" };
+        let profile = ShellProfile { name: "test".into(), program: shell.into(), args: vec![] };
+        let settings = Settings { terminals: vec![profile], default_terminal: "test".into(), ..Settings::default() };
+        let mut panel = BottomPanel::new();
+        panel.run("echo halo-run-1", &settings, None, &ctx);
+        panel.run("echo halo-run-2", &settings, None, &ctx);
+        assert_eq!(panel.groups.len(), 1);
+        assert_eq!(panel.run_line, "echo halo-run-2");
+        let mirrored = |p: &BottomPanel| p.groups[0].panes[0].text().matches("halo-run-2").count() >= 2;
+        let started = std::time::Instant::now();
+        while !mirrored(&panel) && started.elapsed() < std::time::Duration::from_secs(15) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(mirrored(&panel));
+        let wsl = default_profile(&settings, Some(Path::new(r"\\wsl.localhost\Ubuntu\home\joe"))).unwrap();
+        assert_eq!((wsl.program.as_str(), wsl.args.join(" ")), ("wsl.exe", "-d Ubuntu --cd /home/joe".to_owned()));
     }
 }

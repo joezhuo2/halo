@@ -18,6 +18,10 @@ impl Halo {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     ui.add_space(6.0);
 
+                    if let Some((distro, _)) = self.session.folder.as_deref().and_then(crate::wsl::parse) {
+                        item(ui, &theme, &format!("{} WSL: {distro}", icons::LINUX_LOGO), true, "This folder is open in WSL");
+                    }
+
                     let problems = format!("{} 0   {} 0", icons::X_CIRCLE, icons::WARNING);
                     if item(ui, &theme, &problems, false, "No problems").clicked() {
                         self.cmds.push(Command::TogglePanel);

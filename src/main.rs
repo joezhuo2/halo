@@ -15,17 +15,25 @@ mod terminal;
 mod theme;
 mod titlebar;
 mod ui;
+mod wsl;
 
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    let test = std::env::var_os("HALO_COMMANDS").is_some();
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Halo")
+        .with_app_id("halo")
+        .with_decorations(false)
+        .with_inner_size([1180.0, 720.0])
+        .with_min_inner_size([640.0, 400.0]);
+    if test {
+        viewport = viewport.with_active(false).with_position([-1177.0, 150.0]);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Halo")
-            .with_app_id("halo")
-            .with_decorations(false)
-            .with_inner_size([1180.0, 720.0])
-            .with_min_inner_size([640.0, 400.0]),
+        viewport,
+        persist_window: !test,
+        persistence_path: test.then(|| std::env::temp_dir().join("halo-test.ron")),
         ..Default::default()
     };
     eframe::run_native(

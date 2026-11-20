@@ -128,8 +128,10 @@ pub fn exec(dir: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 pub fn command(program: &str, dir: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = std::process::Command::new(program);
-    command.args(args).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0");
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let (program, args) = crate::wsl::wrap(Some(dir), program, &args);
+    let mut command = std::process::Command::new(&program);
+    command.args(args).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0").env("WSLENV", "GIT_TERMINAL_PROMPT");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -330,7 +332,7 @@ fn find_repos(folder: &Path) -> (Vec<PathBuf>, bool) {
 }
 
 fn load_status(root: &Path) -> Option<Status> {
-    let top = PathBuf::from(run(root, &["rev-parse", "--show-toplevel"])?.trim());
+    let top = crate::wsl::local(root, run(root, &["rev-parse", "--show-toplevel"])?.trim());
     let text = run(root, &["status", "--porcelain=v1", "-z", "--branch", "--ignored"])?;
     let (branch, tracking, entries) = parse_status(&text);
     let branches = run(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]).unwrap_or_default();
@@ -727,7 +729,7 @@ impl Git {
         let (Some(status), Some(ctx)) = (&self.status, &self.ctx) else { return None };
         let (top, tx, ctx, path) = (status.top.clone(), self.tx.clone(), ctx.clone(), path.to_path_buf());
         std::thread::spawn(move || {
-            let file = path.to_string_lossy().into_owned();
+            let file = crate::wsl::shell_path(&path);
             let text = run(&top, &["diff", "--no-color", "-U0", "HEAD", "--", &file]).unwrap_or_default();
             let _ = tx.send(Msg::Diff(path, parse_diff(&text)));
             ctx.request_repaint();

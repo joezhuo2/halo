@@ -8,6 +8,7 @@ pub enum Command {
     NewFile,
     OpenFile,
     OpenFolder,
+    OpenFolderIn(PathBuf),
     OpenPath(PathBuf),
     OpenDiff(String, Vec<String>),
     Save,
@@ -262,7 +263,7 @@ impl Command {
         match self {
             NewFile => "New File",
             OpenFile => "Open File...",
-            OpenFolder => "Open Folder...",
+            OpenFolder | OpenFolderIn(_) => "Open Folder...",
             OpenPath(_) => "Open",
             OpenDiff(..) => "Open Changes",
             Save => "Save",

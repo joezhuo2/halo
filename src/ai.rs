@@ -8,8 +8,10 @@ use std::path::Path;
 const CLIS: [(&str, &str); 2] = [("Claude", "claude"), ("Codex", "codex")];
 const TERMINAL_ID: u64 = 1 << 40;
 
-fn launch(cli: &str) -> (String, Vec<String>) {
-    if cfg!(windows) {
+fn launch(cli: &str, cwd: Option<&Path>) -> (String, Vec<String>) {
+    if cwd.and_then(crate::wsl::parse).is_some() {
+        crate::wsl::wrap(cwd, "bash", &["-lic".into(), cli.into()])
+    } else if cfg!(windows) {
         ("cmd.exe".into(), vec!["/c".into(), cli.into()])
     } else {
         (cli.into(), vec![])
@@ -34,7 +36,7 @@ impl AiPanel {
     }
 
     fn spawn(&mut self, cli: &str, cwd: Option<&Path>, ctx: &egui::Context) {
-        let (program, args) = launch(cli);
+        let (program, args) = launch(cli, cwd);
         match Terminal::spawn(TERMINAL_ID + self.tab as u64, CLIS[self.tab].0, &program, &args, cwd, ctx.clone()) {
             Ok(terminal) => {
                 self.sessions[self.tab] = Some(terminal);
