@@ -213,3 +213,17 @@ impl Session {
         self.recent.truncate(10);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_run_commands_and_keeps_old_settings_files_readable() {
+        let settings: Settings = serde_json::from_str(r#"{"theme":"light","tasks":[{"name":"build","command":"cargo build"}]}"#).unwrap();
+        assert_eq!(settings.theme, "light");
+        assert_eq!(settings.tasks[0].command, "cargo build");
+        assert_eq!(settings.run_command(Path::new("a/b.PY"), "x y.py").as_deref(), Some("python \"x y.py\""));
+        assert_eq!(settings.run_command(Path::new("notes.txt"), "notes.txt"), None);
+    }
+}

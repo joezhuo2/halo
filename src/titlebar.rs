@@ -102,7 +102,8 @@ impl Halo {
             Some(NewFile), Some(OpenFile), Some(OpenFolder), None,
             Some(Save), Some(SaveAs), Some(SaveAll), None,
             Some(CloseEditor), Some(CloseFolder), None,
-            Some(OpenSettings), Some(Exit),
+            Some(OpenSettings), Some(OpenSettingsJson), Some(OpenKeybindings), None,
+            Some(Exit),
         ]);
         self.menu(ui, "Edit", &[
             Some(Undo), Some(Redo), None,
@@ -120,10 +121,25 @@ impl Halo {
             Some(SplitEditor), Some(ToggleMinimap), None,
             Some(ToggleTheme), Some(ZoomIn), Some(ZoomOut), Some(ZoomReset),
         ]);
-        self.menu(ui, "Go", &[Some(GoToLine), None, Some(NextEditor), Some(PrevEditor)]);
+        self.menu(ui, "Go", &[
+            Some(GoToFile), Some(GoToSymbol), Some(GoToLine), Some(FindInFiles), Some(ShowCommands), None,
+            Some(NextEditor), Some(PrevEditor),
+        ]);
         ui.menu_button("Run", |ui| {
             ui.set_min_width(230.0);
-            ui.add_enabled(false, egui::Button::new("Run File - arrives in milestone 3"));
+            self.menu_item(ui, RunFile);
+            ui.separator();
+            let tasks: Vec<String> = self.settings.tasks.iter().map(|t| t.name.clone()).collect();
+            for name in tasks {
+                if ui.button(format!("Run Task: {name}")).clicked() {
+                    self.cmds.push(RunTask(name));
+                    ui.close();
+                }
+            }
+            if ui.button("Configure Run Commands and Tasks...").clicked() {
+                self.cmds.push(OpenSettingsJson);
+                ui.close();
+            }
         });
         ui.menu_button("Terminal", |ui| {
             ui.set_min_width(230.0);

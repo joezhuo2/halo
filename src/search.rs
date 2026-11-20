@@ -247,6 +247,7 @@ impl Search {
         if typed || std::mem::take(&mut self.stale) {
             self.items = (self.query.clone(), self.compute(folder));
             self.selected = if typed { 0 } else { self.selected.min(self.items.1.len().saturating_sub(1)) };
+            ctx.request_repaint();
         }
         let count = self.items.1.len();
         let (down, up, escape) = ui.input_mut(|i| {

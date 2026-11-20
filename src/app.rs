@@ -9,6 +9,7 @@ use crate::search::Search;
 use crate::settings::{Session, Settings};
 use crate::terminal::BottomPanel;
 use crate::theme::Theme;
+use crate::wsl::{self, Wsl};
 use crate::ui::{self, icons};
 use eframe::egui::{
     self, Align, Align2, CornerRadius, CursorIcon, FontId, Frame, Id, Layout, Panel, Response, RichText,
@@ -36,6 +37,9 @@ pub struct Halo {
     pub bottom: BottomPanel,
     pub ai: AiPanel,
     pub search: Search,
+    pub wsl: Wsl,
+    notices: Vec<String>,
+    settings_page: bool,
     pub zone: Zone,
     pub cmds: Vec<Command>,
     about: bool,
@@ -53,6 +57,7 @@ impl Halo {
         ctx.set_fonts(fonts);
 
         let settings = Settings::load();
+        crate::editor::configure(&settings);
         let theme = Theme::named(&settings.theme);
         theme.apply(ctx);
 
@@ -69,6 +74,9 @@ impl Halo {
             bottom: BottomPanel::new(),
             ai: AiPanel::default(),
             search: Search::default(),
+            wsl: Wsl::default(),
+            notices: vec![],
+            settings_page: false,
             zone: Zone::Editor,
             cmds: vec![],
             about: false,
@@ -78,12 +86,14 @@ impl Halo {
             chord: None,
         };
 
-        let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().ok()).map(strip_unc);
+        let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().or_else(|_| std::path::absolute(&p)).ok()).map(strip_unc);
         let (folder, files) = match arg {
             Some(path) if path.is_dir() => (Some(path), vec![]),
             Some(path) => (app.session.folder.clone().filter(|f| f.is_dir()), vec![path]),
             None => (app.session.folder.clone().filter(|f| f.is_dir()), app.session.files.clone()),
         };
+        let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
+        app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
         app.set_folder(folder, ctx);
         for file in files.iter().filter(|f| f.is_file()) {
             app.editors.open(file);
@@ -132,6 +142,11 @@ impl Halo {
                     self.set_folder(Some(folder), ctx);
                 }
             }
+            OpenFolderIn(start) => {
+                if let Some(folder) = rfd::FileDialog::new().set_directory(start).pick_folder() {
+                    self.set_folder(Some(folder), ctx);
+                }
+            }
             OpenFile => {
                 if let Some(file) = rfd::FileDialog::new().pick_file() {
                     self.editors.open(&file);
@@ -146,7 +161,42 @@ impl Halo {
             }
             OpenDiff(title, args) => self.git.diff(title, args),
             CloseFolder => self.set_folder(None, ctx),
-            OpenSettings => {
+            OpenSettings => self.settings_page = true,
+            OpenKeybindings => {
+                if !command::path().exists() {
+                    command::write_defaults();
+                }
+                self.editors.open(&command::path());
+            }
+            RunFile | RunTask(_) => {
+                let line = match &cmd {
+                    RunTask(name) => {
+                        let task = self.settings.tasks.iter().find(|t| &t.name == name);
+                        task.map(|t| t.command.clone()).ok_or_else(|| format!("There is no task named {name} in settings.json."))
+                    }
+                    _ => {
+                        self.dispatch(Save, ctx);
+                        match self.editors.active_path() {
+                            Some(path) => {
+                                let in_wsl = cwd.as_deref().and_then(wsl::parse).is_some();
+                                let shown = if in_wsl { wsl::shell_path(&path) } else { path.to_string_lossy().into_owned() };
+                                self.settings.run_command(&path, &shown).ok_or_else(|| {
+                                    format!("No run command is set for {}. Add one under \"run\" in settings.json.", path.display())
+                                })
+                            }
+                            None => Err("Open a saved file to run it.".to_owned()),
+                        }
+                    }
+                };
+                match line {
+                    Ok(line) => {
+                        self.session.panel = true;
+                        self.bottom.run(&line, &self.settings, cwd.as_deref(), ctx);
+                    }
+                    Err(error) => ui::notify(error),
+                }
+            }
+            OpenSettingsJson => {
                 let path = Settings::path();
                 if !path.exists() {
                     self.settings.save();
@@ -202,8 +252,12 @@ impl Halo {
                 self.editors.exec(&cmd, &self.settings, ctx);
                 self.git.refresh(ctx);
                 self.explorer.refresh();
-                if self.editors.active_path().is_some_and(|p| p == Settings::path()) {
+                let active = self.editors.active_path();
+                if active.as_ref().is_some_and(|p| *p == Settings::path()) {
                     self.reload_settings(ctx);
+                }
+                if active.is_some_and(|p| p == command::path()) {
+                    command::reload();
                 }
             }
             other => {
@@ -287,7 +341,10 @@ impl Halo {
                     let accounts = activity_item(ui, &theme, icons::USER_CIRCLE, false, "Accounts");
                     egui::Popup::menu(&accounts).show(|ui| self.accounts.menu(ui));
                     if cfg!(windows) {
-                        activity_item(ui, &theme, icons::LINUX_LOGO, false, "Switch to WSL - arrives in milestone 3");
+                        let folder = self.session.folder.clone();
+                        let in_wsl = folder.as_deref().and_then(wsl::parse).is_some();
+                        let button = activity_item(ui, &theme, icons::LINUX_LOGO, in_wsl, "Switch to WSL");
+                        egui::Popup::menu(&button).show(|ui| self.wsl.menu(ui, folder.as_deref(), &mut self.cmds));
                     }
                 });
             });
@@ -393,7 +450,108 @@ impl Halo {
         });
     }
 
+    fn settings_dialog(&mut self, ctx: &egui::Context) {
+        let mut edited = self.settings.clone();
+        let mut close = false;
+        let modal = egui::Modal::new(Id::new("settings_page")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.heading("Settings");
+            ui.add_space(8.0);
+            egui::Grid::new("settings_grid").num_columns(2).spacing(vec2(18.0, 8.0)).show(ui, |ui| {
+                ui.label("Theme");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut edited.theme, "dark".to_owned(), "Dark");
+                    ui.selectable_value(&mut edited.theme, "light".to_owned(), "Light");
+                });
+                ui.end_row();
+                ui.label("Font size");
+                ui.add(egui::DragValue::new(&mut edited.font_size).range(8.0..=32.0).speed(0.25));
+                ui.end_row();
+                ui.label("Tab size");
+                ui.add(egui::DragValue::new(&mut edited.tab_size).range(1..=8).speed(0.1));
+                ui.end_row();
+                ui.label("Indent with spaces");
+                ui.checkbox(&mut edited.insert_spaces, "");
+                ui.end_row();
+                ui.label("Minimap");
+                ui.checkbox(&mut edited.minimap, "");
+                ui.end_row();
+                ui.label("Default terminal");
+                egui::ComboBox::from_id_salt("default_terminal").selected_text(edited.default_terminal.clone()).show_ui(ui, |ui| {
+                    for name in self.settings.terminals.iter().map(|p| &p.name) {
+                        ui.selectable_value(&mut edited.default_terminal, name.clone(), name);
+                    }
+                });
+                ui.end_row();
+                ui.label("Grammars folder");
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut edited.grammars).desired_width(250.0));
+                    if ui.button("Browse...").clicked()
+                        && let Some(folder) = rfd::FileDialog::new().pick_folder()
+                    {
+                        edited.grammars = folder.to_string_lossy().into_owned();
+                    }
+                });
+                ui.end_row();
+            });
+            ui.add_space(6.0);
+            let note = "Grammars (.sublime-syntax files) and file associations load when Halo starts. Run commands, tasks, \
+                        terminal profiles and associations are edited in settings.json.";
+            ui.label(RichText::new(note).size(11.5).color(self.theme.text_dim));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                for cmd in [Command::OpenSettingsJson, Command::OpenKeybindings] {
+                    if ui.button(cmd.label()).clicked() {
+                        self.cmds.push(cmd);
+                        close = true;
+                    }
+                }
+                close |= ui.button("Close").clicked();
+            });
+        });
+        if edited != self.settings {
+            self.settings = edited;
+            self.settings.save();
+            self.theme = Theme::named(&self.settings.theme);
+            self.theme.apply(ctx);
+        }
+        if close || modal.should_close() {
+            self.settings_page = false;
+        }
+    }
+
+    fn notices(&mut self, ctx: &egui::Context) {
+        self.notices.extend(ui::take_notices());
+        if self.notices.is_empty() {
+            return;
+        }
+        let theme = self.theme.clone();
+        egui::Area::new(Id::new("notices")).order(egui::Order::Foreground).anchor(Align2::RIGHT_BOTTOM, vec2(-12.0, -34.0)).show(ctx, |ui| {
+            ui.set_opacity(ui::fade_in(ui, Id::new(("notice_fade", self.notices.len()))));
+            let mut dismiss = None;
+            for (index, text) in self.notices.iter().enumerate() {
+                Frame::new().fill(theme.raised).stroke(Stroke::new(1.0, theme.error)).corner_radius(CornerRadius::same(6)).inner_margin(8.0).show(ui, |ui| {
+                    ui.set_max_width(440.0);
+                    ui.horizontal(|ui| {
+                        if ui::icon_button(ui, &theme, icons::X, 20.0, false, "Dismiss").clicked() {
+                            dismiss = Some(index);
+                        }
+                        ui.add(egui::Label::new(RichText::new(text).color(theme.text)).wrap());
+                    });
+                });
+                ui.add_space(4.0);
+            }
+            if let Some(index) = dismiss {
+                self.notices.remove(index);
+            }
+        });
+    }
+
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.notices(ctx);
+        if self.settings_page {
+            self.settings_dialog(ctx);
+        }
         if self.about {
             let modal = egui::Modal::new(Id::new("about")).show(ctx, |ui| {
                 ui.set_width(280.0);
@@ -510,9 +668,10 @@ impl eframe::App for Halo {
 }
 
 fn strip_unc(path: PathBuf) -> PathBuf {
-    match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
-        Some(rest) => PathBuf::from(rest),
-        None => path,
+    match path.to_str().map(|s| (s.strip_prefix(r"\\?\UNC\"), s.strip_prefix(r"\\?\"))) {
+        Some((Some(share), _)) => PathBuf::from(format!(r"\\{share}")),
+        Some((_, Some(rest))) => PathBuf::from(rest),
+        _ => path,
     }
 }
 
