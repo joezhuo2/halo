@@ -44,7 +44,13 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: &str, size: f32, active: bo
 }
 
 pub fn fade_in(ui: &Ui, id: Id) -> f32 {
-    ui.ctx().animate_bool_with_time(id, true, ANIM * 1.5)
+    let now = ui.input(|i| i.time);
+    let start = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(id, || now));
+    let t = ((now - start) as f32 / (ANIM * 1.5)).clamp(0.0, 1.0);
+    if t < 1.0 {
+        ui.ctx().request_repaint();
+    }
+    t
 }
 
 pub fn with_alpha(color: Color32, t: f32) -> Color32 {

@@ -63,8 +63,12 @@ impl Halo {
             focused: true,
         };
 
-        let folder = app.session.folder.clone().filter(|f| f.is_dir());
-        let files = app.session.files.clone();
+        let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().ok()).map(strip_unc);
+        let (folder, files) = match arg {
+            Some(path) if path.is_dir() => (Some(path), vec![]),
+            Some(path) => (app.session.folder.clone().filter(|f| f.is_dir()), vec![path]),
+            None => (app.session.folder.clone().filter(|f| f.is_dir()), app.session.files.clone()),
+        };
         app.set_folder(folder, ctx);
         for file in files.iter().filter(|f| f.is_file()) {
             app.editors.open(file);
@@ -73,6 +77,7 @@ impl Halo {
     }
 
     fn set_folder(&mut self, folder: Option<PathBuf>, ctx: &egui::Context) {
+        let folder = folder.map(strip_unc);
         if let Some(folder) = &folder {
             self.session.remember(folder);
         }
@@ -440,6 +445,13 @@ impl eframe::App for Halo {
 
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         self.save_session();
+    }
+}
+
+fn strip_unc(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(rest) => PathBuf::from(rest),
+        None => path,
     }
 }
 

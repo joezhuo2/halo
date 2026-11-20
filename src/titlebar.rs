@@ -36,7 +36,7 @@ impl Halo {
                     menus_right = egui::MenuBar::new()
                         .ui(ui, |ui| {
                             self.menus(ui);
-                            ui.min_rect().right()
+                            ui.cursor().left()
                         })
                         .inner;
 
