@@ -14,8 +14,9 @@
 
 - Done: Source Control side bar with staged and unstaged changes, stage/unstage and discard (one file or all), commit box, click a file to open it.
 - Done: push (publishes to `origin` when there is no upstream), pull, fetch, refresh, switch/create branch; status bar sync button does pull + push; unmodified open editors reload after each git operation.
-- Remaining here: repositories list (root plus nested repos two levels deep), stash.
-- Commit graph with lanes for the branch and its remote; click a commit to see files and diffs.
+- Done: repositories list (the open folder's repository plus nested ones two levels deep; the selected one drives the side bar, status bar and explorer colours), stash and pop stash.
+- Done: commit graph of the last 200 commits with lanes for the branch and its upstream; click a commit to list its files.
+- Remaining here: per-file diffs for a commit, which arrive with the diff view.
 - Diff view and inline conflict editor (accept current, incoming, both).
 - Pull request panel through `gh`: list, check out, create, review, mergeable/conflict state.
 - Accounts button: list and switch `gh auth` accounts.
