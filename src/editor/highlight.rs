@@ -60,6 +60,9 @@ fn build_theme(theme: &Theme) -> SynTheme {
             item("punctuation, keyword.operator", s.punctuation),
             item("markup.heading, markup.bold", s.keyword),
             item("markup.raw, markup.inline.raw", s.string),
+            item("meta.diff", s.keyword),
+            item("markup.inserted", theme.added),
+            item("markup.deleted", theme.deleted),
         ],
     }
 }

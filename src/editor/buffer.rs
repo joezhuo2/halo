@@ -115,6 +115,7 @@ pub struct Document {
     redo: Vec<Transaction>,
     pub dirty_from: Option<usize>,
     pub note: Option<String>,
+    pub read_only: bool,
 }
 
 fn is_word(c: char) -> bool {
@@ -155,6 +156,7 @@ impl Document {
             redo: vec![],
             dirty_from: None,
             note: None,
+            read_only: false,
         }
     }
 
@@ -288,7 +290,7 @@ impl Document {
 
     pub fn apply(&mut self, sels: &mut Vec<Sel>, mut edits: EditList, kind: Kind, after: After) -> bool {
         edits.retain(|(s, e, t)| s != e || !t.is_empty());
-        if edits.is_empty() {
+        if edits.is_empty() || self.read_only {
             return false;
         }
         edits.sort_by_key(|e| (e.0, e.1));

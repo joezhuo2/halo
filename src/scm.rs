@@ -10,9 +10,10 @@ use eframe::egui::{
 use std::path::{Path, PathBuf};
 
 const ROW: f32 = 22.0;
-const STAGED: [(&str, &str); 1] = [(icons::MINUS, "Unstage")];
+const STAGED: [(&str, &str); 2] = [(icons::MINUS, "Unstage"), (icons::FILE, "Open File")];
 const STAGED_ALL: [(&str, &str); 1] = [(icons::MINUS, "Unstage All")];
-const UNSTAGED: [(&str, &str); 2] = [(icons::PLUS, "Stage"), (icons::ARROW_COUNTER_CLOCKWISE, "Discard Changes")];
+const UNSTAGED: [(&str, &str); 3] =
+    [(icons::PLUS, "Stage"), (icons::ARROW_COUNTER_CLOCKWISE, "Discard Changes"), (icons::FILE, "Open File")];
 const UNSTAGED_ALL: [(&str, &str); 2] =
     [(icons::PLUS, "Stage All"), (icons::ARROW_COUNTER_CLOCKWISE, "Discard All Changes")];
 
@@ -109,7 +110,7 @@ impl Scm {
                     group(ui, theme, &top, changes, staged, busy, &mut action, cmds);
                 }
             }
-            graph(ui, theme, &top, git, self.commit.as_deref(), &mut action, cmds);
+            graph(ui, theme, git, self.commit.as_deref(), &mut action, cmds);
         });
         self.dialogs(ui, git, &top, cmds);
         self.apply(action, git, ui);
@@ -318,7 +319,6 @@ fn repositories(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Actio
 fn graph(
     ui: &mut Ui,
     theme: &Theme,
-    top: &Path,
     git: &Git,
     open: Option<&str>,
     action: &mut Option<Action>,
@@ -387,9 +387,9 @@ fn graph(
             painter.text(pos2(drawn.right() + 8.0, y), Align2::LEFT_CENTER, dir, FontId::proportional(11.5), theme.text_dim);
             let badge = if change.state == FileState::Added { "A" } else { state_badge(Some(change.state)) };
             painter.text(pos2(rect.right() - 14.0, y), Align2::CENTER_CENTER, badge, FontId::proportional(11.5), color);
-            let full = top.join(&change.path);
-            if resp.clicked() && full.is_file() {
-                cmds.push(Command::OpenPath(full));
+            if resp.clicked() && files.is_some() {
+                let args = ["show", "--format=", "--diff-merges=first-parent", &commit.hash, "--", &change.path];
+                cmds.push(Command::OpenDiff(format!("{name} ({short})"), args.map(str::to_owned).to_vec()));
             }
         }
     }
@@ -465,10 +465,17 @@ fn group(
 
         let full = top.join(&change.path);
         let hit = if hovered { buttons(ui, theme, rect.with_max_x(rect.right() - 22.0), !busy, row_items) } else { None };
-        if let Some(index) = hit {
-            *action = Some(act(index, Some(change.path.clone())));
-        } else if resp.clicked() && full.is_file() {
-            cmds.push(Command::OpenPath(full));
+        let whole_file = !staged && matches!(change.state, FileState::Added | FileState::Conflicted);
+        match hit {
+            Some(index) if index + 1 == row_items.len() => cmds.push(Command::OpenPath(full)),
+            Some(index) => *action = Some(act(index, Some(change.path.clone()))),
+            None if resp.clicked() && whole_file && full.is_file() => cmds.push(Command::OpenPath(full)),
+            None if resp.clicked() && !whole_file => {
+                let (label, cached) = if staged { ("staged", Some("--cached")) } else { ("changes", None) };
+                let args = ["diff"].into_iter().chain(cached).chain(["--", &change.path]).map(str::to_owned).collect();
+                cmds.push(Command::OpenDiff(format!("{name} ({label})"), args));
+            }
+            None => {}
         }
     }
 }
@@ -524,7 +531,9 @@ mod tests {
             .find(|y| !click(&ctx, &mut scm, &mut git, 100.0, *y).is_empty())
             .expect("a row that opens its file")
             + 10.0;
-        assert_eq!(click(&ctx, &mut scm, &mut git, 100.0, row), [Command::OpenPath(git.top().unwrap().join("a.txt"))]);
+        let diff = Command::OpenDiff("a.txt (changes)".into(), ["diff", "--", "a.txt"].map(str::to_owned).to_vec());
+        assert_eq!(click(&ctx, &mut scm, &mut git, 100.0, row), [diff]);
+        assert_eq!(click(&ctx, &mut scm, &mut git, 222.0, row), [Command::OpenPath(git.top().unwrap().join("a.txt"))]);
 
         click(&ctx, &mut scm, &mut git, 242.0, row);
         assert_eq!(scm.discard, Some(Some("a.txt".into())));

@@ -242,15 +242,7 @@ impl Editors {
         self.active = self.active.min(self.groups.len() - 1);
         let existing = self.docs.iter().find(|(_, d)| d.buf.path.as_deref() == Some(path)).map(|(id, _)| *id);
         if let Some(id) = existing {
-            let group = &mut self.groups[self.active];
-            match group.tabs.iter().position(|t| t.doc == id) {
-                Some(t) => {
-                    group.active = t;
-                    self.want_focus = true;
-                }
-                None => self.add_tab(id, vec![Sel::caret(0)]),
-            }
-            return;
+            return self.show_doc(id);
         }
         match Document::load(path) {
             Ok(buf) => {
@@ -259,6 +251,32 @@ impl Editors {
             }
             Err(error) => self.banner = Some(error),
         }
+    }
+
+    fn show_doc(&mut self, id: u64) {
+        let group = &mut self.groups[self.active];
+        match group.tabs.iter().position(|t| t.doc == id) {
+            Some(t) => {
+                group.active = t;
+                self.want_focus = true;
+            }
+            None => self.add_tab(id, vec![Sel::caret(0)]),
+        }
+    }
+
+    pub fn open_text(&mut self, title: &str, text: &str) {
+        self.active = self.active.min(self.groups.len() - 1);
+        let text = if text.is_empty() { "No differences.\n".to_owned() } else { text.replace("\r\n", "\n") };
+        let mut buf = Document::from_text(&text, title.to_owned());
+        buf.read_only = true;
+        let existing = self.docs.iter().find(|(_, d)| d.buf.read_only && d.buf.title == title).map(|(id, _)| *id);
+        let id = existing.unwrap_or_else(|| self.insert_doc(Document::from_text("", String::new())));
+        if let Some(doc) = self.docs.get_mut(&id) {
+            doc.hl = Highlighter::new(Some(Path::new("changes.diff")), &buf.rope);
+            doc.max_cols = (0, 0);
+            doc.buf = buf;
+        }
+        self.show_doc(id);
     }
 
     fn references(&self, doc: u64) -> usize {
@@ -1259,6 +1277,23 @@ mod tests {
         frame(&ctx, &mut editors, vec![]);
         assert_eq!(editors.groups.len(), 1);
         assert_eq!(editors.docs.len(), 1);
+    }
+
+    #[test]
+    fn opens_read_only_diff_tabs_and_reuses_them() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        editors.open_text("a.txt (changes)", "@@ -1 +1 @@\r\n-one\r\n+two\r\n");
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Text("x".into())]);
+        editors.open_text("a.txt (changes)", "");
+        frame(&ctx, &mut editors, vec![Event::Text("x".into())]);
+        assert_eq!(editors.docs.len(), 1);
+        assert_eq!(editors.groups[0].tabs.len(), 1);
+        assert_eq!(editors.docs.values().next().unwrap().buf.rope.to_string(), "No differences.\n");
+        assert_eq!(editors.status().unwrap().language, "Diff");
+        assert!(!editors.any_dirty());
     }
 
     #[test]

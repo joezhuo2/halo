@@ -132,6 +132,7 @@ impl Halo {
                     self.editors.open(&path);
                 }
             }
+            OpenDiff(title, args) => self.git.diff(title, args),
             CloseFolder => self.set_folder(None, ctx),
             OpenSettings => {
                 let path = Settings::path();
@@ -416,6 +417,9 @@ impl eframe::App for Halo {
         if self.git.poll() {
             self.explorer.refresh();
             self.editors.reload_clean();
+        }
+        for (title, text) in self.git.take_texts() {
+            self.editors.open_text(&title, &text);
         }
         self.handle_window_events(&ctx);
         self.global_shortcuts(&ctx);

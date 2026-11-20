@@ -55,6 +55,19 @@ pub struct Commit {
     pub down: Vec<usize>,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pr {
+    pub number: u64,
+    pub title: String,
+    pub head_ref_name: String,
+    pub mergeable: String,
+    pub review_decision: String,
+    pub is_draft: bool,
+}
+
+const PR_FIELDS: &str = "number,title,headRefName,mergeable,reviewDecision,isDraft";
+
 #[derive(PartialEq, Eq, Debug)]
 struct Entry {
     path: String,
@@ -81,12 +94,18 @@ enum Msg {
     Done(Option<String>),
     Repos(PathBuf, Vec<PathBuf>, bool),
     Files(String, Vec<Change>),
+    Text(String, String),
+    Prs(PathBuf, Result<Vec<Pr>, String>),
 }
 
 pub struct Git {
     folder: Option<PathBuf>,
     repos: Vec<PathBuf>,
     shown: Option<(String, Vec<Change>)>,
+    texts: Vec<(String, String)>,
+    prs: Option<Result<Vec<Pr>, String>>,
+    prs_loading: bool,
+    prs_stale: bool,
     root: Option<PathBuf>,
     ctx: Option<egui::Context>,
     status: Option<Status>,
@@ -105,14 +124,18 @@ pub fn run(dir: &Path, args: &[&str]) -> Option<String> {
 }
 
 pub fn exec(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = std::process::Command::new("git");
+    command("git", dir, args)
+}
+
+pub fn command(program: &str, dir: &Path, args: &[&str]) -> Result<String, String> {
+    let mut command = std::process::Command::new(program);
     command.args(args).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let output = command.output().map_err(|e| format!("Could not run git: {e}"))?;
+    let output = command.output().map_err(|e| format!("Could not run {program}: {e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     if output.status.success() {
         return Ok(stdout);
@@ -355,6 +378,10 @@ impl Git {
             folder: None,
             repos: vec![],
             shown: None,
+            texts: vec![],
+            prs: None,
+            prs_loading: false,
+            prs_stale: false,
             root: None,
             ctx: None,
             status: None,
@@ -388,6 +415,7 @@ impl Git {
         self.status = None;
         self.repo_name = None;
         self.shown = None;
+        self.prs = None;
         self.error = None;
         self.diffs.borrow_mut().clear();
         self.refresh(ctx);
@@ -418,6 +446,52 @@ impl Git {
             let _ = tx.send(Msg::Files(hash, files));
             ctx.request_repaint();
         });
+    }
+
+    pub fn diff(&mut self, title: String, args: Vec<String>) {
+        let (Some(status), Some(ctx)) = (&self.status, &self.ctx) else { return };
+        let (top, tx, ctx) = (status.top.clone(), self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let text = exec(&top, &args).unwrap_or_else(|error| error);
+            let _ = tx.send(Msg::Text(title, text));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn take_texts(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.texts)
+    }
+
+    pub fn prs(&self) -> Option<&Result<Vec<Pr>, String>> {
+        self.prs.as_ref()
+    }
+
+    pub fn refresh_prs(&mut self) {
+        self.prs = None;
+    }
+
+    pub fn load_prs(&mut self) {
+        let (Some(status), Some(ctx)) = (&self.status, &self.ctx) else { return };
+        if self.prs.is_some() || self.prs_loading {
+            return;
+        }
+        self.prs_loading = true;
+        let (top, tx, ctx) = (status.top.clone(), self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let prs = command("gh", &top, &["pr", "list", "--limit", "30", "--json", PR_FIELDS])
+                .and_then(|text| serde_json::from_str(&text).map_err(|e| format!("Could not read the pull request list: {e}")));
+            let _ = tx.send(Msg::Prs(top, prs));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn pr(&mut self, args: &[&str]) {
+        self.act(&[&[&["gh", "pr"], args].concat()]);
+    }
+
+    pub fn create_pr(&mut self, title: &str, body: &str) {
+        self.act(&[&["push", "-u", "origin", "HEAD"], &["gh", "pr", "create", "--title", title, "--body", body]]);
     }
 
     pub fn stash(&mut self, pop: bool) {
@@ -480,9 +554,19 @@ impl Git {
                     }
                 }
                 Msg::Files(hash, files) => self.shown = Some((hash, files)),
+                Msg::Text(title, text) => self.texts.push((title, text)),
+                Msg::Prs(top, prs) => {
+                    self.prs_loading = false;
+                    if self.top() == Some(top.as_path()) {
+                        self.prs = Some(prs);
+                    }
+                }
                 Msg::Done(error) => {
                     acted = true;
                     self.busy = false;
+                    if std::mem::take(&mut self.prs_stale) {
+                        self.prs = None;
+                    }
                     self.error = error;
                     if let Some(ctx) = self.ctx.clone() {
                         self.refresh(&ctx);
@@ -585,12 +669,16 @@ impl Git {
         }
         self.busy = true;
         self.error = None;
+        self.prs_stale = steps.iter().any(|s| ["gh", "push", "pull", "fetch"].contains(&s[0]));
         let (top, tx, ctx) = (status.top.clone(), self.tx.clone(), ctx.clone());
         let steps: Vec<Vec<String>> = steps.iter().map(|s| s.iter().map(|a| a.to_string()).collect()).collect();
         std::thread::spawn(move || {
             let error = steps.iter().find_map(|args| {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                exec(&top, &args).err()
+                match args.split_first() {
+                    Some((&"gh", rest)) => command("gh", &top, rest).err(),
+                    _ => exec(&top, &args).err(),
+                }
             });
             let _ = tx.send(Msg::Done(error));
             ctx.request_repaint();
@@ -751,6 +839,10 @@ mod tests {
         assert_eq!(lanes(4), (0, vec![0], vec![1], vec![1]));
         assert_eq!(lanes(5), (1, vec![1], vec![], vec![]));
 
+        let json = r#"[{"headRefName":"fix","isDraft":false,"mergeable":"CONFLICTING","number":7,"reviewDecision":"","title":"Fix it"}]"#;
+        let prs: Vec<Pr> = serde_json::from_str(json).unwrap();
+        assert_eq!((prs[0].number, prs[0].head_ref_name.as_str(), prs[0].mergeable.as_str()), (7, "fix", "CONFLICTING"));
+
         let files = parse_name_status("M\0src/a.rs\0A\0new.txt\0R100\0old.rs\0b.rs\0D\0gone.rs\0");
         let expect = [("src/a.rs", FileState::Modified), ("new.txt", FileState::Added), ("b.rs", FileState::Modified), ("gone.rs", FileState::Deleted)];
         assert_eq!(files, expect.map(|(path, state)| Change { path: path.into(), state }));
@@ -795,6 +887,11 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
         g.refresh(&egui::Context::default());
         g.wait(|g| g.changes(false).len() == 1);
+        g.diff("a.txt (changes)".into(), vec!["diff".into(), "--".into(), "a.txt".into()]);
+        g.wait(|g| !g.texts.is_empty());
+        let texts = g.take_texts();
+        assert_eq!(texts[0].0, "a.txt (changes)");
+        assert!(texts[0].1.contains("-one") && texts[0].1.contains("+changed"));
         g.discard(Some("a.txt"));
         g.wait(|g| !g.busy() && g.changes(false).is_empty());
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap().replace('\r', ""), "one\n");
