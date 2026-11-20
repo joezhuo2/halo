@@ -6,7 +6,7 @@ use crate::git::{Git, LineChange};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use buffer::{After, Document, Kind, Motion, Sel, merge_sels};
+use buffer::{After, Document, Kind, Motion, Sel, Take, merge_sels};
 use eframe::egui::text::{CCursor, LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, CursorIcon, Event, EventFilter, FontId, Id, Key, Layout, PointerButton,
@@ -33,6 +33,7 @@ struct Doc {
     buf: Document,
     hl: Highlighter,
     max_cols: (u64, usize),
+    conflicts: (u64, Vec<[usize; 4]>),
 }
 
 #[derive(Default)]
@@ -226,7 +227,7 @@ impl Editors {
             self.banner = Some(note.clone());
         }
         let hl = Highlighter::new(buf.path.as_deref(), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0) });
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]) });
         id
     }
 
@@ -776,7 +777,7 @@ impl Editors {
         let font = FontId::monospace(settings.font_size);
         let (char_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
         let line_h = (row_h * 1.25).round();
-        let Doc { buf, hl, max_cols } = doc;
+        let Doc { buf, hl, max_cols, conflicts } = doc;
         if let Some(line) = buf.dirty_from.take() {
             hl.invalidate(line);
         }
@@ -1067,6 +1068,37 @@ impl Editors {
             }
         }
 
+        if conflicts.0 != buf.version {
+            *conflicts = (buf.version, buf.conflicts());
+        }
+        if !conflicts.1.is_empty() {
+            let line = buf.line_of(tab.sels.first().map_or(0, |s| s.head.min(buf.len())));
+            let index = conflicts.1.iter().position(|c| c[3] >= line).unwrap_or(0);
+            let bottom = body.bottom() - if is_active && self.banner.is_some() { 30.0 } else { 0.0 };
+            let rect = Rect::from_min_max(pos2(body.left(), bottom - 30.0), pos2(text_rect.right(), bottom));
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, ui::mix(theme.raised, theme.accent, 0.15));
+            let (mut take, mut next) = (None, false);
+            ui.scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(10.0, 3.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+                ui.label(RichText::new(format!("Conflict {} of {}", index + 1, conflicts.1.len())).color(theme.text));
+                for (label, choice) in [("Accept Current", Take::Current), ("Accept Incoming", Take::Incoming), ("Accept Both", Take::Both)] {
+                    if ui.button(label).clicked() {
+                        take = Some(choice);
+                    }
+                }
+                next = ui.button("Next").clicked();
+            });
+            if let Some(take) = take {
+                buf.resolve(&mut tab.sels, conflicts.1[index], take);
+                tab.reveal = tab.sels.last().map(|s| s.head);
+                self.want_focus = true;
+            } else if next {
+                let pos = buf.line_start(conflicts.1[(index + 1) % conflicts.1.len()][0]);
+                tab.sels = vec![Sel::caret(pos)];
+                tab.reveal = Some(pos);
+                self.want_focus = true;
+            }
+        }
+
         if is_active && let Some(message) = self.banner.clone() {
             let rect = Rect::from_min_max(pos2(body.left(), body.bottom() - 30.0), pos2(text_rect.right(), body.bottom()));
             ui.painter().rect_filled(rect, CornerRadius::ZERO, ui::mix(theme.raised, theme.warning, 0.2));
@@ -1294,6 +1326,31 @@ mod tests {
         assert_eq!(editors.docs.values().next().unwrap().buf.rope.to_string(), "No differences.\n");
         assert_eq!(editors.status().unwrap().language, "Diff");
         assert!(!editors.any_dirty());
+    }
+
+    #[test]
+    fn accepts_a_conflict_side_from_the_bar() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &Settings::default(), &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Paste("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\nend\n".into())]);
+        frame(&ctx, &mut editors, vec![]);
+        let click = |editors: &mut Editors, x: f32| {
+            let pos = pos2(x, 585.0);
+            let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
+            frame(&ctx, editors, vec![Event::PointerMoved(pos)]);
+            frame(&ctx, editors, vec![button(true)]);
+            frame(&ctx, editors, vec![button(false)]);
+        };
+        let text = |e: &Editors| e.docs.values().next().unwrap().buf.rope.to_string();
+        let resolved = (60..500).step_by(10).any(|x| {
+            click(&mut editors, x as f32);
+            !text(&editors).contains("<<<<<<<")
+        });
+        assert!(resolved, "an accept button in the conflict bar");
+        assert_eq!(text(&editors), "ours\nend\n");
     }
 
     #[test]

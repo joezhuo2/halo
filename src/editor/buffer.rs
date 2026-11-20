@@ -65,6 +65,13 @@ pub enum Kind {
     Other,
 }
 
+#[derive(Clone, Copy)]
+pub enum Take {
+    Current,
+    Incoming,
+    Both,
+}
+
 pub enum After {
     Carets,
     Map,
@@ -772,6 +779,40 @@ impl Document {
         Some(next.1)
     }
 
+    pub fn conflicts(&self) -> Vec<[usize; 4]> {
+        let mut out = vec![];
+        let mut open: Option<[usize; 3]> = None;
+        for (i, line) in self.rope.lines().enumerate() {
+            if !matches!(line.get_char(0), Some('<' | '|' | '=' | '>')) {
+                continue;
+            }
+            let marker: String = line.chars().take(7).collect();
+            match (marker.as_str(), &mut open) {
+                ("<<<<<<<", _) => open = Some([i, usize::MAX, usize::MAX]),
+                ("|||||||", Some(o)) if o[2] == usize::MAX => o[1] = i,
+                ("=======", Some(o)) if o[2] == usize::MAX => o[2] = i,
+                (">>>>>>>", Some(o)) if o[2] != usize::MAX => {
+                    out.push([o[0], o[1].min(o[2]), o[2], i]);
+                    open = None;
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    pub fn resolve(&mut self, sels: &mut Vec<Sel>, [start, base, mid, end]: [usize; 4], take: Take) -> bool {
+        let lines = |a: usize, b: usize| self.text_of(self.line_start(a), self.line_start(b));
+        let text = match take {
+            Take::Current => lines(start + 1, base),
+            Take::Incoming => lines(mid + 1, end),
+            Take::Both => lines(start + 1, base) + &lines(mid + 1, end),
+        };
+        let from = self.line_start(start);
+        let to = if end + 1 < self.lines() { self.line_start(end + 1) } else { self.len() };
+        self.apply(sels, vec![(from, to, text)], Kind::Other, After::Carets)
+    }
+
     pub fn matching_bracket(&self, pos: usize) -> Option<(usize, usize)> {
         const PAIRS: [(char, char); 3] = [('(', ')'), ('[', ']'), ('{', '}')];
         let len = self.len();
@@ -907,6 +948,22 @@ mod tests {
         f.select_next_occurrence(&mut sels);
         f.select_next_occurrence(&mut sels);
         assert_eq!(sels.iter().map(|s| s.start()).collect::<Vec<_>>(), [4, 8, 13]);
+    }
+
+    #[test]
+    fn finds_and_resolves_conflicts() {
+        let text = "a\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\nb\n<<<<<<< HEAD\nx\n||||||| base\no\n=======\ny\n>>>>>>> branch";
+        let mut d = doc(text);
+        let mut sels = vec![Sel::caret(0)];
+        assert_eq!(d.conflicts(), [[1, 3, 3, 5], [7, 9, 11, 13]]);
+        d.resolve(&mut sels, [7, 9, 11, 13], Take::Both);
+        d.resolve(&mut sels, [1, 3, 3, 5], Take::Incoming);
+        assert_eq!(d.rope.to_string(), "a\ntheirs\nb\nx\ny\n");
+        assert!(d.conflicts().is_empty());
+        d.undo(&mut sels);
+        assert_eq!(d.conflicts(), [[1, 3, 3, 5]]);
+        d.resolve(&mut sels, [1, 3, 3, 5], Take::Current);
+        assert_eq!(d.rope.to_string(), "a\nours\nb\nx\ny\n");
     }
 
     #[test]
