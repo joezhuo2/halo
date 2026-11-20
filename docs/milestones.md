@@ -12,9 +12,9 @@
 
 ## M2: source control
 
-- Done: Source Control side bar with staged and unstaged changes, stage/unstage (one file or all), commit box, click a file to open it.
-- Source Control side bar, remaining: repositories list (root plus nested repos two levels deep), discard changes.
-- Push, pull, fetch, stash, switch/create branch, refresh; status bar sync button does pull + push.
+- Done: Source Control side bar with staged and unstaged changes, stage/unstage and discard (one file or all), commit box, click a file to open it.
+- Done: push (publishes to `origin` when there is no upstream), pull, fetch, refresh, switch/create branch; status bar sync button does pull + push; unmodified open editors reload after each git operation.
+- Remaining here: repositories list (root plus nested repos two levels deep), stash.
 - Commit graph with lanes for the branch and its remote; click a commit to see files and diffs.
 - Diff view and inline conflict editor (accept current, incoming, both).
 - Pull request panel through `gh`: list, check out, create, review, mergeable/conflict state.

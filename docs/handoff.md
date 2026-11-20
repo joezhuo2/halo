@@ -6,7 +6,7 @@ Written 2026-11-20. Read [requirements.md](requirements.md), [decisions.md](deci
 
 - Repository: `C:\Users\Joe\Documents\halo`, remote `origin` = https://github.com/joezhuo2/halo.
 - Branches: `main` was created from `m1-shell` (all of milestone 1) and pushed. Milestone 2 work is on `m2-scm`, not pushed yet.
-- Build: `cargo build` is warning-free. `cargo test` passes 15 tests.
+- Build: `cargo build` is warning-free. `cargo test` passes 17 tests.
 - Run: `cargo run --release`, or `target\release\halo.exe [folder-or-file]`.
 - Config written by the app: `%APPDATA%\halo\settings.json` and `session.json`. eframe also stores window size and position under `%APPDATA%\Halo`.
 
@@ -29,6 +29,7 @@ Mouse interactions were not exercised (only keyboard input and screenshots). Cov
 - Menus: every item dispatches a command, but only keyboard paths were run.
 - Window: drag to move, edge resize, maximize/restore, minimize. Whether a maximized frameless window covers the taskbar is unknown.
 - Unsaved-changes prompt on exit.
+- Source Control (milestone 2): the side bar was checked by screenshot only. Stage, discard prompt and commit are covered by a headless egui test, push/pull/switch by a test against a local bare remote. Not run by hand: the branch menu, the Create branch and Discard dialogs, moving untracked files to the recycle bin, and push/pull against GitHub with real credentials.
 
 ## Known gaps and limits
 
@@ -48,6 +49,7 @@ Other limits:
 - Editor: no word wrap, no regex find, no auto-closing brackets, no IME composition, no word-wise drag after double click; a tab renders as four spaces wide rather than aligning to tab stops; git gutter marks reflect the file as last saved; lines are drawn up to 5000 characters.
 - Syntax: syntect's bundled grammars only. TypeScript/JSX fall back to JavaScript, `.ino`/headers to C++; TOML and some others show as plain text. Loading extra grammars from settings is M3.
 - Terminal: no bold or italic font variants, no mouse reporting to terminal programs, no scrollbar, wide characters are placed per cell without width correction. Shortcuts bound globally (`Ctrl+B`, `Ctrl+J`, `Ctrl+W`, `Ctrl+N`, `Ctrl+O`, `Ctrl+S`, `Ctrl+,`) do not reach the shell.
+- Source Control: `git pull` uses the user's git config, and a pull that conflicts leaves the merge to be finished in the terminal until the conflict editor exists. Editors with unsaved changes are not reloaded after a git operation. A git command that waits for input (an SSH passphrase, a GPG pinentry) keeps the side bar busy until it ends.
 - Explorer: no file watcher (it refreshes when the window regains focus and after saves), no drag and drop, rename does not preselect the name stem.
 - Key chords are not supported; Open Folder is `Ctrl+Shift+O`.
 - The caret blink repaints at 20 fps for 30 seconds after the last input, then stops.
@@ -63,4 +65,4 @@ Other limits:
 
 1. Run the app by hand through the "Not verified" list and fix what breaks.
 2. Memory: the renderer stays on glow (see above); the remaining ideas are 2 to 4.
-3. Continue M2 from [milestones.md](milestones.md): the Source Control side bar has changes, stage/unstage and commit. Next are discard, push/pull/fetch and branches; keep every git call on a background thread through `Git::act`.
+3. Continue M2 from [milestones.md](milestones.md): the Source Control side bar has changes, stage/unstage and commit. Discard, push/pull/fetch/sync and branch switching are in. Next are stash, nested repositories and the commit graph; keep every git call on a background thread through `Git::act`.
