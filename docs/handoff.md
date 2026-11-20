@@ -6,7 +6,7 @@ Written 2026-11-20. Read [requirements.md](requirements.md), [decisions.md](deci
 
 - Repository: `C:\Users\Joe\Documents\halo`, remote `origin` = https://github.com/joezhuo2/halo.
 - Branches: `main` was created from `m1-shell` (all of milestone 1) and pushed. Milestone 2 work is on `m2-scm`, not pushed yet.
-- Build: `cargo build` is warning-free. `cargo test` passes 22 tests.
+- Build: `cargo build` is warning-free. `cargo test` passes 23 tests.
 - Run: `cargo run --release`, or `target\release\halo.exe [folder-or-file]`.
 - Config written by the app: `%APPDATA%\halo\settings.json` and `session.json`. eframe also stores window size and position under `%APPDATA%\Halo`.
 
@@ -30,6 +30,7 @@ Mouse interactions were not exercised (only keyboard input and screenshots). Cov
 - Window: drag to move, edge resize, maximize/restore, minimize. Whether a maximized frameless window covers the taskbar is unknown.
 - Unsaved-changes prompt on exit.
 - Source Control (milestone 2): the side bar was checked by screenshot only. Stage, discard prompt and commit are covered by a headless egui test, push/pull/switch by a test against a local bare remote. Not run by hand: the repositories list, stash, clicking a commit, the branch menu, the Create branch and Discard dialogs, moving untracked files to the recycle bin, and push/pull against GitHub with real credentials. The pull request list was seen loading from GitHub (an empty list); pull request rows, their menu, review and create dialogs, the accounts menu and account switching have never run against real data. Diff tabs and the conflict bar are covered by headless tests and one screenshot.
+- AI panel (milestone 3): the Claude tab with its Start session screen was checked by screenshot. A test runs a missing CLI through the real PTY and checks the ended session is kept. Never run: Start session with the real `claude` or `codex`, restart, stop, switching tabs with sessions running, copy and paste.
 
 ## Known gaps and limits
 
@@ -40,7 +41,7 @@ Mouse interactions were not exercised (only keyboard input and screenshots). Cov
 3. Check which GPU is selected on hybrid laptops; an integrated GPU driver may be smaller.
 4. Trim the working set when idle (`SetProcessWorkingSetSize`), which improves the Task Manager number but not real use.
 
-Placeholders that say which milestone they arrive in: title bar search box, AI panel, Accounts button, Switch to WSL button, Run menu.
+Placeholders that say which milestone they arrive in: title bar search box, Switch to WSL button, Run menu.
 
 Other limits:
 
@@ -50,6 +51,7 @@ Other limits:
 - Syntax: syntect's bundled grammars only. TypeScript/JSX fall back to JavaScript, `.ino`/headers to C++; TOML and some others show as plain text. Loading extra grammars from settings is M3.
 - Terminal: no bold or italic font variants, no mouse reporting to terminal programs, no scrollbar, wide characters are placed per cell without width correction. Shortcuts bound globally (`Ctrl+B`, `Ctrl+J`, `Ctrl+W`, `Ctrl+N`, `Ctrl+O`, `Ctrl+S`, `Ctrl+,`) do not reach the shell.
 - Source Control: only one repository is active at a time, so explorer colours follow the repository selected in the side bar. The selection is not saved in the session. Repository discovery skips dot folders, `node_modules` and `target`. The graph shows the first 8 lanes; wider histories draw on top of the last lane. `git pull` uses the user's git config, and after a pull that conflicts, resolve each file with the conflict bar, stage it and commit. Diffs are unified text only and binary files show git's one-line notice. Creating a pull request always pushes to `origin` and uses the repository's default base branch. `gh` commands inherit the side bar's busy state and errors. Editors with unsaved changes are not reloaded after a git operation. A git command that waits for input (an SSH passphrase, a GPG pinentry) keeps the side bar busy until it ends.
+- AI panel: the commands are fixed (`claude`, `codex`) with no extra arguments. A session keeps the folder it was started in when another folder is opened. A CLI that is not installed shows the shell's "not recognized" message and the session-ended notice.
 - Explorer: no file watcher (it refreshes when the window regains focus and after saves), no drag and drop, rename does not preselect the name stem.
 - Key chords are not supported; Open Folder is `Ctrl+Shift+O`.
 - The caret blink repaints at 20 fps for 30 seconds after the last input, then stops.
@@ -65,4 +67,5 @@ Other limits:
 
 1. Run the app by hand through the "Not verified" list and fix what breaks.
 2. Memory: the renderer stays on glow (see above); the remaining ideas are 2 to 4.
-3. Milestone 2 is complete on `m2-scm`. Run it by hand against a real GitHub repository (see "Not verified"), then start M3 from [milestones.md](milestones.md).
+3. Milestone 2 is complete on `m2-scm`. Run it by hand against a real GitHub repository (see "Not verified").
+4. Milestone 3 is on `m3-ai` (branched from `m2-scm`): the AI panel is built; next in [milestones.md](milestones.md) are Switch to WSL, title bar search, settings and key chords, and the Run menu.

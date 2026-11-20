@@ -13,7 +13,7 @@ Halo is a single Rust binary: eframe/egui 0.36 on the OpenGL (glow) renderer. No
 | `src/command.rs` | `Command` enum, default key bindings with a `Scope` (Global or Editor), menu labels. |
 | `src/settings.rs` | `Settings` (`settings.json`) and `Session` (`session.json`) under the user config dir; terminal profile defaults. |
 | `src/theme.rs` | `Theme` colours for dark and light, and `apply`, which also styles egui widgets, popups and tooltips. |
-| `src/ui.rs` | Shared helpers: `anim`, `mix`, `row_bg`, `icon_button`, `fade_in`, `with_alpha`, `section_header`, and the `icons` re-export (Phosphor). |
+| `src/ui.rs` | Shared helpers: `anim`, `mix`, `row_bg`, `icon_button`, `tabs` (the underlined tab strip of the bottom and AI panels), `fade_in`, `with_alpha`, `section_header`, and the `icons` re-export (Phosphor). |
 | `src/git.rs` | Git layer over the `git` and `gh` CLIs: status, change lists, commit log with lanes, nested repositories, pull requests, and the background operations (`Git::act`). |
 | `src/scm.rs` | Source Control side bar: repositories, branch toolbar, commit box, changes, pull requests, commit graph, and its dialogs. |
 | `src/accounts.rs` | Accounts menu on the activity bar: lists and switches `gh auth` accounts. |
@@ -22,6 +22,7 @@ Halo is a single Rust binary: eframe/egui 0.36 on the OpenGL (glow) renderer. No
 | `src/editor/buffer.rs` | `Document`: rope, selections, edit engine, undo/redo, motions, find, load/save. |
 | `src/editor/highlight.rs` | syntect highlighting with checkpoints and a per-frame time budget. |
 | `src/terminal.rs` | `Terminal` (reusable PTY terminal widget) and `BottomPanel` (panel tabs, terminal groups, Ports). |
+| `src/ai.rs` | `AiPanel`: the right panel. One `Terminal` per CLI (`claude`, `codex`), started on demand; on Windows through `cmd.exe /c` so `.cmd` shims on `PATH` resolve. |
 
 ## Frame flow
 
@@ -42,7 +43,8 @@ Halo is a single Rust binary: eframe/egui 0.36 on the OpenGL (glow) renderer. No
 ## Component contracts
 
 - `Editors`: `ui`, `open(path)`, `exec(&Command, &Settings, &Context) -> bool`, `is_empty`, `open_paths`, `active_path`, `status`, `has_focus`, `any_dirty`, `discard_all`, `path_changed(old, new)`.
-- `BottomPanel`: `ui`, `exec(...) -> bool`, `has_focus`, `blur`. `Terminal::spawn(id, name, program, args, cwd, ctx)` and `Terminal::ui(ui, theme, font_size)` are meant to be reused by the M3 AI panel.
+- `BottomPanel`: `ui`, `exec(...) -> bool`, `has_focus`, `blur`. `Terminal::spawn(id, name, program, args, cwd, ctx)` and `Terminal::ui(ui, theme, font_size)` are reused by the AI panel.
+- `AiPanel`: `ui(ui, theme, font_size, cwd, cmds)`, `exec(&Command, &Context) -> bool` (copy and paste), `has_focus`, `blur`. A session that exits stays on screen with a notice until it is restarted or stopped. `Zone::Ai` routes commands to it while its terminal has focus.
 - `Explorer`: `set_root`, `refresh`, `has_focus`, `ui(ui, theme, git, active_path, cmds)`. File operations are reported through `Command::OpenPath`, `RefreshExplorer` and `PathChanged(old, Option<new>)`.
 - `Git`: `set_root`, `refresh(ctx)`, `poll`, `branch`, `repo_name`, `state(path)`, `line_changes(path)`. `git::run(dir, args)` is the one place that shells out (hidden console window on Windows).
 
@@ -79,6 +81,6 @@ The API differs a lot from older egui. Check signatures in `~/.cargo/registry/sr
 
 ## Testing
 
-`cargo test` runs 14 tests: the edit engine, highlighting, git parsing against a real temporary repository, explorer logic on a temp folder, key encoding and colour mapping for the terminal, a real shell round trip through the PTY, and a headless editor test that types through egui input.
+`cargo test` runs 23 tests, among them: the edit engine, highlighting, git parsing against a real temporary repository, explorer logic on a temp folder, key encoding and colour mapping for the terminal, a real shell round trip through the PTY, and a headless editor test that types through egui input.
 
-Rendering is checked by eye. During milestone 1 this was done by launching the debug build, sending keystrokes and capturing the window.
+Rendering is checked by eye. During milestone 1 this was done by launching the debug build, sending keystrokes and capturing the window. Do not send keystrokes or capture the screen: if Halo is not in front they reach another application. Set the wanted state in `session.json` (restore it afterwards), capture with `PrintWindow(hwnd, dc, 2)`, and close by process id.

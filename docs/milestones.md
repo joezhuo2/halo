@@ -23,7 +23,7 @@
 
 ## M3: AI panel, WSL, search, settings
 
-- Right panel: Claude and Codex tabs, each with Start session, restart and stop, reusing `terminal::Terminal`.
+- Done: right panel with Claude and Codex tabs, each with Start session, restart and stop, reusing `terminal::Terminal`. Nothing starts until Start session is clicked.
 - Switch to WSL: pick a distro and folder; files, git, terminal, AI CLIs run through `wsl.exe`.
 - Title bar search: files by default, `>` commands, `%` text in files, `@` symbols, `:` line.
 - Settings page, `keybindings.json`, key chords, extra syntect grammars from a folder.
