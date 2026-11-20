@@ -14,7 +14,9 @@ Halo is a single Rust binary: eframe/egui 0.36 on the OpenGL (glow) renderer. No
 | `src/settings.rs` | `Settings` (`settings.json`) and `Session` (`session.json`) under the user config dir; terminal profile defaults. |
 | `src/theme.rs` | `Theme` colours for dark and light, and `apply`, which also styles egui widgets, popups and tooltips. |
 | `src/ui.rs` | Shared helpers: `anim`, `mix`, `row_bg`, `icon_button`, `fade_in`, `with_alpha`, `section_header`, and the `icons` re-export (Phosphor). |
-| `src/git.rs` | Git status layer over the `git` CLI: branch, repo name, per-path state, line changes for the gutter. |
+| `src/git.rs` | Git layer over the `git` and `gh` CLIs: status, change lists, commit log with lanes, nested repositories, pull requests, and the background operations (`Git::act`). |
+| `src/scm.rs` | Source Control side bar: repositories, branch toolbar, commit box, changes, pull requests, commit graph, and its dialogs. |
+| `src/accounts.rs` | Accounts menu on the activity bar: lists and switches `gh auth` accounts. |
 | `src/explorer.rs` | Explorer side bar. |
 | `src/editor/mod.rs` | `Editors`: groups (splits), tabs, the editor view, find bar, go to line, minimap, close dialog. |
 | `src/editor/buffer.rs` | `Document`: rope, selections, edit engine, undo/redo, motions, find, load/save. |

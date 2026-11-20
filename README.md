@@ -7,7 +7,7 @@ An ultra-lightweight native code editor, laid out like VS Code. Written in Rust 
 | Milestone | Scope | State |
 |-----------|-------|-------|
 | M1 | Window shell, explorer, editor, terminal, status bar, dark and light themes | done |
-| M2 | Source control, commit graph, conflict editor, pull request panel, GitHub accounts | planned |
+| M2 | Source control, commit graph, conflict editor, pull request panel, GitHub accounts | done |
 | M3 | Claude and Codex CLI panel, WSL mode, search bar, settings page | planned |
 | M4 | Windows installer and release pipeline | planned |
 

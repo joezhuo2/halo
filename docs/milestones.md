@@ -10,16 +10,16 @@
 - Terminal: PowerShell, Command Prompt, Git Bash, WSL profiles; new, split, kill; selection, copy/paste, scrollback; Ports tab.
 - Session restore (folder, open files, panel visibility), `settings.json`.
 
-## M2: source control
+## M2: source control (done)
 
-- Done: Source Control side bar with staged and unstaged changes, stage/unstage and discard (one file or all), commit box, click a file to open it.
-- Done: push (publishes to `origin` when there is no upstream), pull, fetch, refresh, switch/create branch; status bar sync button does pull + push; unmodified open editors reload after each git operation.
-- Done: repositories list (the open folder's repository plus nested ones two levels deep; the selected one drives the side bar, status bar and explorer colours), stash and pop stash.
-- Done: commit graph of the last 200 commits with lanes for the branch and its upstream; click a commit to list its files.
-- Remaining here: per-file diffs for a commit, which arrive with the diff view.
-- Diff view and inline conflict editor (accept current, incoming, both).
-- Pull request panel through `gh`: list, check out, create, review, mergeable/conflict state.
-- Accounts button: list and switch `gh auth` accounts.
+- Source Control side bar with staged and unstaged changes, stage/unstage and discard (one file or all), commit box; click a change to open its diff.
+- Push (publishes to `origin` when there is no upstream), pull, fetch, refresh, switch/create branch; status bar sync button does pull + push; unmodified open editors reload after each git operation.
+- Repositories list (the open folder's repository plus nested ones two levels deep; the selected one drives the side bar, status bar and explorer colours), stash and pop stash.
+- Commit graph of the last 200 commits with lanes for the branch and its upstream; click a commit to list its files, click a file for its diff.
+- Diff view: a read-only tab with the unified diff, coloured by the Diff grammar. A side-by-side view is not built.
+- Conflict editor: a bar at the bottom of any editor whose text has conflict markers, with Accept Current, Accept Incoming, Accept Both and Next; staging the file marks it resolved.
+- Pull requests through `gh` in the side bar: list with mergeable/conflict and review state, check out, approve, request changes, comment, open on GitHub, create (pushes the branch first).
+- Accounts button: lists `gh auth` accounts and switches the active one.
 
 ## M3: AI panel, WSL, search, settings
 
