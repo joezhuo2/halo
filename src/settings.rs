@@ -89,7 +89,7 @@ pub fn dir() -> PathBuf {
 }
 
 fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+    serde_json::from_str(std::fs::read_to_string(path).ok()?.trim_start_matches('\u{feff}')).ok()
 }
 
 fn write<T: Serialize>(path: &Path, value: &T) {

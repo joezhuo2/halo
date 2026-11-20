@@ -294,7 +294,9 @@ impl Halo {
             .frame(Frame::new().fill(self.theme.panel))
             .show_collapsible(ui, &mut open, |ui| {
                 self.bottom.ui(ui, &self.theme, &self.settings, cwd.as_deref(), &mut self.cmds);
-            });
+            })
+            .is_none()
+            .then(|| self.bottom.blur());
         self.session.panel = open;
     }
 
@@ -393,7 +395,10 @@ impl Halo {
                 if save {
                     self.editors.exec(&Command::SaveAll, &self.settings, ctx);
                 }
-                if !save || !self.editors.any_dirty() {
+                if !save {
+                    self.editors.discard_all();
+                }
+                if !self.editors.any_dirty() {
                     self.exiting = true;
                     ctx.send_viewport_cmd(ViewportCommand::Close);
                 }
