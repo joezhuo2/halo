@@ -9,15 +9,16 @@ use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use buffer::{After, Document, Kind, Motion, Sel, Take, is_word, merge_sels};
-use eframe::egui::text::{CCursor, LayoutJob, TextFormat};
+use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, CursorIcon, Event, EventFilter, FontId, Id, Key, Layout, PointerButton,
     Pos2, Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, ViewportCommand, pos2,
     scroll_area::ScrollBarVisibility, vec2,
 };
 use highlight::{Highlighter, Spans};
-use intel::{Intel, Lang, Queued, Row, display, from_lsp, undisplay};
+use intel::{Intel, Lang, Piece, Queued, Row, from_lsp};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -54,6 +55,7 @@ struct Tab {
     set_scroll: Option<f32>,
     drag_anchor: Option<usize>,
     pinned: bool,
+    rows: (u64, Vec<u32>),
 }
 
 #[derive(Default)]
@@ -135,8 +137,34 @@ fn visible_text(buf: &Document, line: usize) -> String {
     text.chars().take(MAX_COLS).collect()
 }
 
+fn build_rows(buf: &Document, wrap: Option<usize>, folds: &[(usize, usize)], lens: &[(usize, usize)]) -> Vec<u32> {
+    let mut starts = Vec::with_capacity(buf.lines() + 1);
+    let (mut at, mut f, mut l, mut hide_to) = (0u32, 0, 0, 0);
+    for (line, slice) in buf.rope.lines().enumerate() {
+        starts.push(at);
+        while f < folds.len() && folds[f].0 < line {
+            hide_to = hide_to.max(folds[f].1);
+            f += 1;
+        }
+        while l < lens.len() && lens[l].0 < line {
+            l += 1;
+        }
+        if line > 0 && line <= hide_to {
+            continue;
+        }
+        at += (l < lens.len() && lens[l].0 == line) as u32 + 1;
+        if let Some(cols) = wrap.filter(|cols| slice.len_bytes() * 4 > *cols) {
+            buffer::wrap(slice.chars().filter(|c| *c != '\n').take(MAX_COLS), cols, |_| at += 1);
+        }
+    }
+    starts.push(at);
+    starts
+}
+
+#[allow(clippy::too_many_arguments)]
 fn job(
     text: &str,
+    range: std::ops::Range<usize>,
     spans: Option<&Spans>,
     font: &FontId,
     color: Color32,
@@ -146,9 +174,9 @@ fn job(
 ) -> LayoutJob {
     let spans = spans.filter(|s| !s.is_empty());
     if spans.is_none() && over.is_empty() && inserts.is_empty() {
-        return LayoutJob::simple_singleline(text.to_owned(), font.clone(), color);
+        return LayoutJob::simple_singleline(text[range].to_owned(), font.clone(), color);
     }
-    let mut cuts = vec![0, text.len()];
+    let mut cuts = vec![range.start, range.end];
     let mut base: Vec<(usize, Color32)> = vec![];
     let mut at = 0;
     for (len, c) in spans.into_iter().flat_map(|s| s.iter()) {
@@ -158,6 +186,7 @@ fn job(
     }
     cuts.extend(over.iter().flat_map(|o| [o.0, o.1]));
     cuts.extend(inserts.iter().map(|i| i.0));
+    cuts.retain(|cut| range.contains(cut) || *cut == range.end);
     cuts.retain(|cut| text.is_char_boundary(*cut));
     cuts.sort_unstable();
     cuts.dedup();
@@ -196,7 +225,17 @@ fn settle(buf: &mut Document, hl: &mut Highlighter, lang: &mut Lang, lsp: &mut L
     }
 }
 
-fn handle_event(buf: &mut Document, tab: &mut Tab, event: &Event, settings: &Settings, page: usize, ctx: &egui::Context) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn handle_event(
+    buf: &mut Document,
+    tab: &mut Tab,
+    event: &Event,
+    settings: &Settings,
+    page: usize,
+    ctx: &egui::Context,
+    wrap: Option<usize>,
+    folds: &[(usize, usize)],
+) -> bool {
     let unit = if settings.insert_spaces { " ".repeat(settings.tab_size) } else { "\t".to_owned() };
     let sels = &mut tab.sels;
     match event {
@@ -228,7 +267,13 @@ fn handle_event(buf: &mut Document, tab: &mut Tab, event: &Event, settings: &Set
                 _ => None,
             };
             if let Some(motion) = motion {
-                buf.move_sels(sels, motion, extend);
+                match motion {
+                    Motion::Up | Motion::Down | Motion::PageUp(_) | Motion::PageDown(_) if wrap.is_some() || !folds.is_empty() => {
+                        let count = if matches!(motion, Motion::Up | Motion::Down) { 1 } else { page };
+                        buf.move_rows(sels, matches!(motion, Motion::Down | Motion::PageDown(_)), count, extend, wrap, folds);
+                    }
+                    _ => buf.move_sels(sels, motion, extend),
+                }
                 return true;
             }
             match key {
@@ -1012,6 +1057,9 @@ impl Editors {
         ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
         let minimap_w = if settings.minimap && body.width() > 420.0 { 78.0 } else { 0.0 };
         let text_rect = Rect::from_min_max(body.min, pos2(body.right() - minimap_w, body.bottom()));
+        let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 3.0) * char_w + 6.0;
+        let wrap_cols = settings.word_wrap.then(|| (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20));
+        let folds: Vec<(usize, usize)> = vec![];
 
         if self.want_focus && is_active && self.goto.is_none() {
             ui.memory_mut(|m| m.request_focus(id));
@@ -1035,7 +1083,7 @@ impl Editors {
             let (mut typed, mut pasted) = (None, None);
             for event in &events {
                 let from = tab.sels.first().map_or(0, |s| s.start());
-                if handle_event(buf, tab, event, settings, page, &ctx) {
+                if handle_event(buf, tab, event, settings, page, &ctx, wrap_cols, &folds) {
                     self.last_input = now;
                     tab.reveal = tab.sels.last().map(|s| s.head);
                     match event {
@@ -1068,27 +1116,29 @@ impl Editors {
         };
         lens_rows.sort_unstable();
         lens_rows.dedup_by_key(|row| row.0);
-        let rows = total + lens_rows.len();
-        let row_of = |line: usize| line + lens_rows.partition_point(|row| row.0 <= line);
-        let locate = |row: usize| -> (usize, Option<usize>) {
-            let (mut low, mut high) = (0, lens_rows.len());
-            while low < high {
-                let mid = (low + high) / 2;
-                if lens_rows[mid].0 + mid <= row {
-                    low = mid + 1;
-                } else {
-                    high = mid;
-                }
-            }
-            match low.checked_sub(1).map(|index| (index, lens_rows[index])) {
-                Some((index, (line, lens))) if line + index == row => (line, Some(lens)),
-                _ => ((row - low).min(total - 1), None),
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (buf.version, wrap_cols, &folds, &lens_rows).hash(&mut hasher);
+        if tab.rows.0 != hasher.finish() || tab.rows.1.len() != total + 1 {
+            tab.rows = (hasher.finish(), build_rows(buf, wrap_cols, &folds, &lens_rows));
+        }
+        let starts = std::mem::take(&mut tab.rows.1);
+        let rows = starts[total] as usize;
+        let lens_at = |line: usize| match starts[line + 1] > starts[line] {
+            true => lens_rows.binary_search_by_key(&line, |row| row.0).ok().map(|at| lens_rows[at].1),
+            false => None,
+        };
+        let top_of = |line: usize| starts[line] as usize + lens_at(line).is_some() as usize;
+        let locate = |row: usize| -> (usize, Option<usize>, usize) {
+            let line = starts[..total].partition_point(|start| *start as usize <= row).saturating_sub(1);
+            match lens_at(line) {
+                Some(lens) if row == starts[line] as usize => (line, Some(lens), 0),
+                _ => (line, None, row.saturating_sub(top_of(line))),
             }
         };
-        let digits = total.to_string().len().max(3) as f32;
-        let gutter_w = (digits + 3.0) * char_w + 6.0;
+        let gutter_w = gutter_of(total);
         let spare = if lang.hints.is_empty() { 10.0 } else { 40.0 };
-        let content = vec2(gutter_w + (max_cols.1 as f32 + spare) * char_w, rows as f32 * line_h + (text_rect.height() * 0.5).max(line_h));
+        let wide = if wrap_cols.is_some() { 0.0 } else { gutter_w + (max_cols.1 as f32 + spare) * char_w };
+        let content = vec2(wide, rows as f32 * line_h + (text_rect.height() * 0.5).max(line_h));
         let idle = now - self.last_input;
         let caret_alpha = if !has_focus {
             0.35
@@ -1158,17 +1208,30 @@ impl Editors {
                             inserts.push((text.char_indices().nth(col).map_or(text.len(), |c| c.0), hint.label.as_str()));
                             hints.push((col, hint.label.chars().count()));
                         }
-                        let galley = painter.layout_job(job(&text, hl.get(line), &font, theme.text, &over, &inserts, &hint_format));
-                        Row { len: text.chars().count(), galley, hints }
+                        let len = text.chars().count();
+                        let mut cuts = vec![0];
+                        if let Some(cols) = wrap_cols {
+                            buffer::wrap(text.chars(), cols, |at| cuts.push(at));
+                        }
+                        let byte = |col: usize| if col >= len { text.len() } else { text.char_indices().nth(col).map_or(text.len(), |c| c.0) };
+                        let pieces = (0..cuts.len())
+                            .map(|i| {
+                                let (start, end, last) = (cuts[i], cuts.get(i + 1).copied().unwrap_or(len), i + 1 == cuts.len());
+                                let span = byte(start)..byte(end);
+                                let within: Vec<(usize, &str)> = inserts.iter().filter(|x| x.0 >= span.start && (x.0 < span.end || last)).copied().collect();
+                                let hints = hints.iter().filter(|h| h.0 >= start && (h.0 < end || last)).map(|h| (h.0 - start, h.1)).collect();
+                                let galley = painter.layout_job(job(&text, span, hl.get(line), &font, theme.text, &over, &within, &hint_format));
+                                Piece { start, galley, hints }
+                            })
+                            .collect();
+                        Row { len, pieces }
                     };
                     let hit = |painter: &egui::Painter, pos: Pos2| -> usize {
-                        let (line, lens) = row_at(pos.y);
+                        let (line, lens, piece) = row_at(pos.y);
                         if lens.is_some() {
                             return buf_ref.line_start(line);
                         }
-                        let row = layout(painter, line);
-                        let column = usize::from(row.galley.cursor_from_pos(vec2(pos.x - text_x, 0.0)).index);
-                        buf_ref.line_start(line) + undisplay(&row.hints, column).min(row.len)
+                        buf_ref.line_start(line) + layout(painter, line).hit(piece, pos.x - text_x)
                     };
 
                     let painter = ui.painter().clone();
@@ -1235,7 +1298,9 @@ impl Editors {
                         if resp.hovered() && !down && !on_lens && pos.x > text_x && pos.y < origin.y + rows as f32 * line_h {
                             let p = hit(&painter, pos);
                             let (a, b) = buf_ref.word_at(p);
-                            let inside = pos.x - text_x <= layout(&painter, buf_ref.line_of(p)).galley.size().x;
+                            let (line, _, piece) = row_at(pos.y);
+                            let row = layout(&painter, line);
+                            let inside = pos.x - text_x <= row.pieces[piece.min(row.pieces.len() - 1)].galley.size().x;
                             if inside && a < b && buf_ref.rope.get_char(a).is_some_and(is_word) {
                                 over_word = Some((a, b));
                             }
@@ -1270,18 +1335,28 @@ impl Editors {
                     let current_line = single.then(|| buf_ref.line_of(tab.sels[0].head));
                     let bracket = if single { buf_ref.matching_bracket(tab.sels[0].head) } else { None };
 
-                    for line in first..last {
-                        let y = origin.y + row_of(line) as f32 * line_h;
+                    for line in (first..last).filter(|line| starts[line + 1] > starts[*line]) {
+                        let y = origin.y + top_of(line) as f32 * line_h;
                         let start = buf_ref.line_start(line);
                         let row = layout(&painter, line);
                         let len = row.len;
-                        let x_at = |column: usize| text_x + row.galley.pos_from_cursor(CCursor::new(display(&row.hints, column.min(len)))).min.x;
+                        let bottom = y + row.pieces.len() as f32 * line_h;
+                        let at = |column: usize| {
+                            let piece = row.piece(column.min(len));
+                            pos2(text_x + row.x(piece, column.min(len)), y + piece as f32 * line_h)
+                        };
+                        let spans = |from: usize, to: usize| -> Vec<(f32, f32, f32)> {
+                            let part = |piece: usize| {
+                                let (a, b) = (from.max(row.pieces[piece].start), to.min(row.end(piece)));
+                                (a < b).then(|| (text_x + row.x(piece, a), text_x + row.x(piece, b), y + piece as f32 * line_h))
+                            };
+                            (0..row.pieces.len()).filter_map(part).collect()
+                        };
                         let indent = buf_ref.rope.line(line).chars().take_while(|c| *c == ' ' || *c == '\t').count();
-                        if let Ok(at) = lens_rows.binary_search_by_key(&line, |row| row.0) {
-                            let index = lens_rows[at].1;
+                        if let Some(index) = lens_at(line) {
                             let lens = &lang_ref.lens[index];
                             let interface = lang_ref.symbols.get(lens.symbol).is_some_and(|s| s.kind == 11);
-                            let mut x = x_at(indent);
+                            let mut x = at(indent).x;
                             for (found, noun, impls) in [(&lens.refs, "reference", false), (&lens.impls, "implementation", true)] {
                                 if impls && !interface {
                                     continue;
@@ -1305,72 +1380,87 @@ impl Editors {
                             }
                         }
                         if current_line == Some(line) {
-                            let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), y + line_h));
+                            let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
                             painter.rect_filled(band, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
                         }
                         let from = matches.partition_point(|m| m.1 <= start);
                         for m in matches[from..].iter().take_while(|m| m.0 <= start + len) {
-                            let r = Rect::from_min_max(pos2(x_at(m.0.saturating_sub(start)), y), pos2(x_at(m.1 - start), y + line_h));
-                            painter.rect_filled(r, CornerRadius::same(2), ui::with_alpha(theme.accent, 0.25));
+                            for (x0, x1, y) in spans(m.0.saturating_sub(start), m.1 - start) {
+                                let r = Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h));
+                                painter.rect_filled(r, CornerRadius::same(2), ui::with_alpha(theme.accent, 0.25));
+                            }
                         }
                         for s in tab.sels.iter().filter(|s| !s.is_empty() && s.end() >= start && s.start() <= start + len) {
-                            let x0 = if s.start() <= start { text_x } else { x_at(s.start() - start) };
-                            let x1 = if s.end() > start + len { x_at(len) + char_w * 0.6 } else { x_at(s.end() - start) };
-                            painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), CornerRadius::same(2), theme.selection);
+                            for (x0, x1, y) in spans(s.start().saturating_sub(start), s.end() - start) {
+                                painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), CornerRadius::same(2), theme.selection);
+                            }
+                            if s.end() > start + len {
+                                painter.rect_filled(Rect::from_min_size(at(len), vec2(char_w * 0.6, line_h)), CornerRadius::same(2), theme.selection);
+                            }
                         }
                         if let Some((a, b)) = bracket {
                             for p in [a, b].into_iter().filter(|p| *p >= start && *p < start + len) {
-                                let r = Rect::from_min_max(pos2(x_at(p - start), y + 1.0), pos2(x_at(p - start + 1), y + line_h - 1.0));
-                                painter.rect(r, CornerRadius::same(2), ui::with_alpha(theme.accent, 0.12), Stroke::new(1.0, ui::with_alpha(theme.accent, 0.7)), StrokeKind::Inside);
+                                for (x0, x1, y) in spans(p - start, p - start + 1) {
+                                    let r = Rect::from_min_max(pos2(x0, y + 1.0), pos2(x1, y + line_h - 1.0));
+                                    painter.rect(r, CornerRadius::same(2), ui::with_alpha(theme.accent, 0.12), Stroke::new(1.0, ui::with_alpha(theme.accent, 0.7)), StrokeKind::Inside);
+                                }
                             }
                         }
-                        painter.galley(pos2(text_x, y + (line_h - row.galley.size().y) / 2.0), row.galley.clone(), theme.text);
+                        for (index, piece) in row.pieces.iter().enumerate() {
+                            let top = y + index as f32 * line_h + (line_h - piece.galley.size().y) / 2.0;
+                            painter.galley(pos2(text_x, top), piece.galley.clone(), theme.text);
+                        }
                         let upto = problems.partition_point(|d| d.start.0 <= line);
                         for problem in problems[..upto].iter().filter(|d| d.end.0 >= line) {
                             let column = |at: lsp::Pos| lsp::utf16_to_char(buf_ref.rope.line(line).chars(), at.1).min(len);
                             let from = if problem.start.0 == line { column(problem.start) } else { indent.min(len) };
                             let to = if problem.end.0 == line { column(problem.end) } else { len };
-                            let (x0, x1) = (x_at(from), x_at(to.max(from)).max(x_at(from) + char_w));
+                            let first = at(from);
                             let color = intel::severity_color(theme, problem.severity);
                             match problem.severity {
-                                4.. if problem.start.0 == line => intel::squiggle(&painter, x0, x0 + 5.0, y + line_h - 2.5, color),
+                                4.. if problem.start.0 == line => intel::squiggle(&painter, first.x, first.x + 5.0, first.y + line_h - 2.5, color),
                                 4.. => {}
-                                _ => intel::squiggle(&painter, x0, x1, y + line_h - 2.5, color),
+                                _ if to <= from => intel::squiggle(&painter, first.x, first.x + char_w, first.y + line_h - 2.5, color),
+                                _ => spans(from, to).into_iter().for_each(|(x0, x1, y)| intel::squiggle(&painter, x0, x1, y + line_h - 2.5, color)),
                             }
                         }
                         for s in tab.sels.iter().filter(|s| s.head >= start && s.head <= start + len) {
-                            let x = x_at(s.head - start);
-                            let caret = Rect::from_min_max(pos2(x - 0.75, y + 1.0), pos2(x + 0.75, y + line_h - 1.0));
+                            let p = at(s.head - start);
+                            let caret = Rect::from_min_max(pos2(p.x - 0.75, p.y + 1.0), pos2(p.x + 0.75, p.y + line_h - 1.0));
                             painter.rect_filled(caret, CornerRadius::ZERO, ui::with_alpha(theme.accent, caret_alpha));
                         }
                         let within = |pos: usize| pos >= start && pos <= start + len;
                         if let Some(head) = tab.sels.first().map(|s| s.head).filter(|head| within(*head)) {
-                            caret_at = Some(pos2(x_at(head - start), y));
+                            caret_at = Some(at(head - start));
                         }
                         if let Some((word, _)) = hover_word.filter(|word| within(word.0)) {
-                            hover_at = Some(pos2(x_at(word - start), y));
+                            hover_at = Some(at(word - start));
                         }
                         if peek_pos.is_some_and(within) {
-                            peek_y = Some(y + line_h);
+                            peek_y = Some(bottom);
                         }
                     }
 
                     let gutter = Rect::from_min_max(clip.min, pos2(clip.left() + gutter_w - 4.0, clip.bottom()));
                     painter.rect_filled(gutter, CornerRadius::ZERO, theme.bg);
                     let number_font = FontId::monospace(settings.font_size - 1.0);
-                    for line in first..last {
-                        let y = origin.y + row_of(line) as f32 * line_h + line_h / 2.0;
+                    for line in (first..last).filter(|line| starts[line + 1] > starts[*line]) {
+                        let y = origin.y + top_of(line) as f32 * line_h + line_h / 2.0;
                         let color = if current_line == Some(line) { theme.text } else { ui::with_alpha(theme.text_dim, 0.75) };
                         painter.text(pos2(gutter.right() - 12.0, y), Align2::RIGHT_CENTER, line + 1, number_font.clone(), color);
                     }
                     if let Some(changes) = path.as_deref().and_then(|p| git.line_changes(p)) {
                         let from = changes.partition_point(|c| c.0 < first);
                         for (line, kind) in changes[from..].iter().take_while(|c| c.0 <= last) {
-                            let y = origin.y + row_of(*line) as f32 * line_h;
+                            let (top, end) = if *line < total { (top_of(*line), starts[line + 1] as usize) } else { (rows, rows) };
+                            let (y, below) = (origin.y + top as f32 * line_h, origin.y + end as f32 * line_h);
                             let x = gutter.right() - 6.0;
+                            if end <= top && *line < total {
+                                continue;
+                            }
                             let (r, color) = match kind {
-                                LineChange::Added => (Rect::from_min_max(pos2(x, y), pos2(x + 3.0, y + line_h)), theme.added),
-                                LineChange::Modified => (Rect::from_min_max(pos2(x, y), pos2(x + 3.0, y + line_h)), theme.modified),
+                                LineChange::Added => (Rect::from_min_max(pos2(x, y), pos2(x + 3.0, below)), theme.added),
+                                LineChange::Modified => (Rect::from_min_max(pos2(x, y), pos2(x + 3.0, below)), theme.modified),
                                 LineChange::Deleted => (Rect::from_min_max(pos2(x, y - 2.0), pos2(x + 6.0, y + 2.0)), theme.deleted),
                             };
                             painter.rect_filled(r, CornerRadius::ZERO, color);
@@ -1379,8 +1469,11 @@ impl Editors {
 
                     if let Some(pos) = tab.reveal.take() {
                         let line = buf_ref.line_of(pos);
-                        let x = text_x + (pos - buf_ref.line_start(line)) as f32 * char_w;
-                        let top = origin.y + row_of(line) as f32 * line_h;
+                        let column = pos - buf_ref.line_start(line);
+                        let cuts = buf_ref.cuts(line, wrap_cols);
+                        let piece = cuts.partition_point(|cut| *cut <= column) - 1;
+                        let x = text_x + (column - cuts[piece]) as f32 * char_w;
+                        let top = origin.y + (top_of(line) + piece) as f32 * line_h;
                         let target = Rect::from_min_max(pos2(x - gutter_w - char_w * 3.0, top - line_h), pos2(x + char_w * 4.0, top + line_h * 2.0));
                         ui.scroll_to_rect(target, None);
                     }
@@ -1432,9 +1525,10 @@ impl Editors {
                 && let Some(pos) = resp.interact_pointer_pos()
             {
                 let line = (((pos.y - mm.top()) / scale - visible_lines / 2.0).max(0.0) as usize).min(total - 1);
-                tab.set_scroll = Some(row_of(line) as f32 * line_h);
+                tab.set_scroll = Some(top_of(line) as f32 * line_h);
             }
         }
+        tab.rows.1 = starts;
 
         lang.visible = visible;
         if pressed_text {
@@ -1687,8 +1781,15 @@ mod tests {
     use super::*;
 
     fn frame(ctx: &egui::Context, editors: &mut Editors, events: Vec<Event>) {
+        frame_with(ctx, editors, events, &Settings::default());
+    }
+
+    fn key(key: Key, modifiers: egui::Modifiers) -> Event {
+        Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    fn frame_with(ctx: &egui::Context, editors: &mut Editors, events: Vec<Event>, settings: &Settings) {
         let theme = Theme::dark();
-        let settings = Settings::default();
         let git = Git::new();
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 600.0))),
@@ -1698,9 +1799,29 @@ mod tests {
         };
         let mut out = ctx.run_ui(input, |ui| {
             let mut cmds = vec![];
-            editors.ui(ui, &theme, &settings, &git, &mut cmds);
+            editors.ui(ui, &theme, settings, &git, &mut cmds);
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn wraps_long_lines_and_moves_through_visual_rows() {
+        let ctx = egui::Context::default();
+        let settings = Settings { word_wrap: true, ..Settings::default() };
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![Event::Paste(format!("{}
+end", "word ".repeat(100)))], &settings);
+        frame_with(&ctx, &mut editors, vec![key(Key::Home, egui::Modifiers::COMMAND)], &settings);
+        frame_with(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default())], &settings);
+        let tab = &editors.groups[0].tabs[0];
+        let rows = tab.rows.1.clone();
+        assert!(rows.len() == 3 && rows[1] > 1 && rows[2] == rows[1] + 1, "{rows:?}");
+        assert!(tab.sels[0].head > 0 && tab.sels[0].head < 500);
+        frame_with(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default()); rows[1] as usize], &settings);
+        assert_eq!(editors.status().unwrap().line, 2);
     }
 
     #[test]

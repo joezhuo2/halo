@@ -144,6 +144,38 @@ fn map_pos(edits: &EditList, pos: usize) -> usize {
     (pos as isize + delta) as usize
 }
 
+pub fn wrap(text: impl Iterator<Item = char>, cols: usize, mut cut: impl FnMut(usize)) {
+    let (mut width, mut soft) = (0, None::<(usize, usize)>);
+    for (i, c) in text.enumerate() {
+        // shortcut: widths are guessed (tab 4, CJK 2), upgrade to measured glyphs if rows overflow
+        let w = match c {
+            '\t' => 4,
+            c if c as u32 >= 0x1100 => 2,
+            _ => 1,
+        };
+        if width + w > cols && width > 0 {
+            match soft.take() {
+                Some((at, upto)) if at <= i => {
+                    cut(at);
+                    width -= upto;
+                }
+                _ => {
+                    cut(i);
+                    width = 0;
+                }
+            }
+        }
+        width += w;
+        if c == ' ' || c == '\t' {
+            soft = Some((i + 1, width));
+        }
+    }
+}
+
+pub fn hidden(folds: &[(usize, usize)], line: usize) -> Option<usize> {
+    folds.iter().position(|f| f.0 < line && line <= f.1)
+}
+
 fn title_of(path: &Path) -> String {
     path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
 }
@@ -688,6 +720,52 @@ impl Document {
         merge_sels(sels);
     }
 
+    pub fn cuts(&self, line: usize, cols: Option<usize>) -> Vec<usize> {
+        let mut cuts = vec![0];
+        if let Some(cols) = cols.filter(|_| line < self.lines()) {
+            wrap(self.rope.line(line).chars().filter(|c| *c != '\n'), cols, |at| cuts.push(at));
+        }
+        cuts
+    }
+
+    pub fn move_rows(&self, sels: &mut Vec<Sel>, down: bool, count: usize, extend: bool, cols: Option<usize>, folds: &[(usize, usize)]) {
+        for s in sels.iter_mut() {
+            let mut line = self.line_of(s.head);
+            let mut cuts = self.cuts(line, cols);
+            let column = s.head - self.line_start(line);
+            let mut piece = cuts.partition_point(|c| *c <= column) - 1;
+            let goal = s.goal.unwrap_or(column - cuts[piece]);
+            let mut edge = None;
+            for _ in 0..count {
+                if down && piece + 1 < cuts.len() {
+                    piece += 1;
+                } else if !down && piece > 0 {
+                    piece -= 1;
+                } else {
+                    let next = if down {
+                        (line + 1..self.lines()).find(|l| hidden(folds, *l).is_none())
+                    } else {
+                        (0..line).rev().find(|l| hidden(folds, *l).is_none())
+                    };
+                    let Some(next) = next else {
+                        edge = Some(if down { self.len() } else { 0 });
+                        break;
+                    };
+                    line = next;
+                    cuts = self.cuts(line, cols);
+                    piece = if down { 0 } else { cuts.len() - 1 };
+                }
+            }
+            let last = cuts.get(piece + 1).map_or(self.line_len(line), |next| next - 1);
+            s.head = edge.unwrap_or(self.line_start(line) + (cuts[piece] + goal).min(last));
+            s.goal = Some(goal);
+            if !extend {
+                s.anchor = s.head;
+            }
+        }
+        merge_sels(sels);
+    }
+
     pub fn add_cursor(&self, sels: &mut Vec<Sel>, down: bool) -> Option<usize> {
         let reference = if down { *sels.last()? } else { *sels.first()? };
         let line = self.line_of(reference.head);
@@ -948,6 +1026,25 @@ mod tests {
         f.select_next_occurrence(&mut sels);
         f.select_next_occurrence(&mut sels);
         assert_eq!(sels.iter().map(|s| s.start()).collect::<Vec<_>>(), [4, 8, 13]);
+    }
+
+    #[test]
+    fn wraps_at_words_and_moves_by_visual_rows() {
+        let d = doc("alpha beta gamma\nabcdefghijklmno\nz");
+        assert_eq!(d.cuts(0, Some(10)), [0, 6]);
+        assert_eq!(d.cuts(1, Some(10)), [0, 10]);
+        assert_eq!(d.cuts(0, None), [0]);
+        let mut sels = vec![Sel::caret(2)];
+        let heads = |d: &Document, sels: &mut Vec<Sel>, down| {
+            d.move_rows(sels, down, 1, false, Some(10), &[]);
+            sels[0].head
+        };
+        assert_eq!([true, true, true, true, true].map(|down| heads(&d, &mut sels, down)), [8, 19, 29, 34, 34]);
+        assert_eq!([false, false].map(|down| heads(&d, &mut sels, down)), [29, 19]);
+        let mut sels = vec![Sel::caret(2)];
+        d.move_rows(&mut sels, true, 1, false, None, &[(0, 1)]);
+        assert_eq!(sels[0].head, 34);
+        assert_eq!((hidden(&[(0, 1)], 1), hidden(&[(0, 1)], 0), hidden(&[(0, 1)], 2)), (Some(0), None, None));
     }
 
     #[test]

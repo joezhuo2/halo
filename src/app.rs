@@ -234,6 +234,10 @@ impl Halo {
                 self.settings.minimap ^= true;
                 self.settings.save();
             }
+            ToggleWordWrap => {
+                self.settings.word_wrap ^= true;
+                self.settings.save();
+            }
             ToggleTheme => {
                 self.theme_fade = Some((ctx.input(|i| i.time), self.theme.bg));
                 self.settings.theme = if self.theme.dark { "light" } else { "dark" }.into();

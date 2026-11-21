@@ -43,6 +43,7 @@ pub struct Settings {
     pub breadcrumbs: bool,
     pub format_on_save: bool,
     pub format_on_paste: bool,
+    pub word_wrap: bool,
 }
 
 impl Default for Settings {
@@ -112,6 +113,7 @@ impl Default for Settings {
             breadcrumbs: true,
             format_on_save: false,
             format_on_paste: false,
+            word_wrap: false,
         }
     }
 }

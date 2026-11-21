@@ -5,7 +5,7 @@ use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use eframe::egui::text::{LayoutJob, TextFormat};
+use eframe::egui::text::{CCursor, LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Area, Color32, CornerRadius, Event, FontId, Frame, Galley, Id, Key, Layout, Order, Pos2, Rect, RichText,
     ScrollArea, Sense, Shape, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, pos2, vec2,
@@ -59,10 +59,38 @@ impl Lang {
     }
 }
 
-pub(super) struct Row {
+pub(super) struct Piece {
+    pub start: usize,
     pub galley: Arc<Galley>,
-    pub len: usize,
     pub hints: Vec<(usize, usize)>,
+}
+
+pub(super) struct Row {
+    pub len: usize,
+    pub pieces: Vec<Piece>,
+}
+
+impl Row {
+    pub fn piece(&self, col: usize) -> usize {
+        self.pieces.partition_point(|p| p.start <= col).saturating_sub(1)
+    }
+
+    pub fn end(&self, piece: usize) -> usize {
+        self.pieces.get(piece + 1).map_or(self.len, |next| next.start)
+    }
+
+    pub fn x(&self, piece: usize, col: usize) -> f32 {
+        let p = &self.pieces[piece];
+        p.galley.pos_from_cursor(CCursor::new(display(&p.hints, col.saturating_sub(p.start)))).min.x
+    }
+
+    pub fn hit(&self, piece: usize, x: f32) -> usize {
+        let piece = piece.min(self.pieces.len() - 1);
+        let p = &self.pieces[piece];
+        let shown = usize::from(p.galley.cursor_from_pos(vec2(x, 0.0)).index);
+        let last = if piece + 1 < self.pieces.len() { self.end(piece) - 1 } else { self.len };
+        (p.start + undisplay(&p.hints, shown)).min(last)
+    }
 }
 
 pub(super) fn display(hints: &[(usize, usize)], col: usize) -> usize {
