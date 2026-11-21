@@ -105,6 +105,8 @@ pub struct Settings {
     pub confirm_drag_and_drop: bool,
     #[serde(skip)]
     pub langs: BTreeMap<String, Settings>,
+    #[serde(skip)]
+    pub folders: BTreeMap<PathBuf, Settings>,
 }
 
 impl Default for Settings {
@@ -243,6 +245,7 @@ impl Default for Settings {
             compact_folders: true,
             confirm_drag_and_drop: true,
             langs: BTreeMap::new(),
+            folders: BTreeMap::new(),
         }
     }
 }
@@ -356,9 +359,11 @@ impl Settings {
     }
 
     pub fn of(&self, path: Option<&Path>) -> &Settings {
+        let folder = path.and_then(|p| self.folders.iter().filter(|(f, _)| p.starts_with(f)).max_by_key(|(f, _)| f.components().count()));
+        let base = folder.map_or(self, |(_, s)| s);
         match path {
-            Some(path) if !self.langs.is_empty() => self.lang(&crate::lsp::language_id(path)),
-            _ => self,
+            Some(path) if !base.langs.is_empty() => base.lang(&crate::lsp::language_id(path)),
+            _ => base,
         }
     }
 

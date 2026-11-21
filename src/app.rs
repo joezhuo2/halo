@@ -173,7 +173,7 @@ impl Halo {
         };
         ctx.send_viewport_cmd(ViewportCommand::Title(title));
         crate::workspace::set(&workspace);
-        crate::layers::set_folder(folder.as_deref());
+        crate::layers::set_workspace(&workspace);
         self.reload_settings(ctx);
         self.explorer.set_roots(workspace.roots(), workspace.names(), workspace.name().filter(|_| workspace.is_multi()));
         self.editors.set_root(folder.clone());
@@ -537,7 +537,7 @@ impl Halo {
         self.git.refresh(ctx);
         self.explorer.refresh();
         let active = self.editors.active_path();
-        if active.as_ref().is_some_and(|p| *p == Settings::path() || Some(p) == crate::layers::workspace_path().as_ref()) {
+        if active.as_ref().is_some_and(|p| crate::layers::watches(p)) {
             self.reload_settings(ctx);
         }
         if active.as_ref().is_some_and(|p| *p == command::path()) {
