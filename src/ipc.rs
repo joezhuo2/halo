@@ -131,12 +131,15 @@ impl Halo {
                 continue;
             }
             self.editors.open_kept(&target.path);
+            if crate::workspace::is_workspace_file(&target.path) {
+                crate::app::offer_workspace(&target.path);
+            }
             if let Some(line) = target.line {
                 self.editors.exec(&Command::GoTo(line, target.column.unwrap_or(1)), &self.settings, ctx);
             }
             files.push(target.path);
         }
-        self.cmds.extend(args.add.into_iter().map(Command::OpenPath));
+        self.cmds.extend(args.add.into_iter().map(|p| if p.is_dir() { Command::AddWorkspaceFolder(p) } else { Command::OpenPath(p) }));
         if let Some((left, right)) = args.diff {
             let name = |p: &Path| p.file_name().unwrap_or(p.as_os_str()).to_string_lossy().into_owned();
             self.cmds.push(Command::OpenDiff(format!("{} ↔ {}", name(&left), name(&right)), crate::history::diff_args(&left, &right)));

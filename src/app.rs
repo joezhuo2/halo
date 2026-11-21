@@ -15,6 +15,7 @@ use crate::timeline::Timeline;
 use crate::workbench::View;
 use crate::wsl::{self, Wsl};
 use crate::ui;
+use crate::workspace::Workspace;
 use eframe::egui::{
     self, Align2, CornerRadius, CursorIcon, FontId, Frame, Id, RichText, ScrollArea, Sense, Stroke, StrokeKind, Ui, ViewportCommand,
     pos2, vec2,
@@ -85,16 +86,25 @@ impl Halo {
 
         let arg = args.paths.iter().position(|t| t.path.is_dir()).map(|i| args.paths.remove(i).path);
         let restore = app.settings.restore_session && !crate::windows::secondary();
-        let last = app.session.folder.clone().filter(|f| restore && f.is_dir());
+        let saved = std::mem::take(&mut app.session.workspace);
+        let last = match &saved.file {
+            _ if !restore => Workspace::default(),
+            Some(file) => Workspace::open(file).unwrap_or_else(|error| {
+                ui::notify(error);
+                Workspace::default()
+            }),
+            None if saved.folders.len() > 1 => saved,
+            None => app.session.folder.clone().filter(|f| f.is_dir()).map(Workspace::single).unwrap_or_default(),
+        };
         let arg_is_none = arg.is_none() && args.paths.is_empty() && args.add.is_empty() && args.diff.is_none() && args.stdin.is_none();
-        let (folder, files) = match arg {
-            Some(path) => (Some(path), vec![]),
+        let (workspace, files) = match arg {
+            Some(path) => (Workspace::single(strip_unc(path)), vec![]),
             None if arg_is_none && restore => (last, app.session.files.clone()),
             None => (last, vec![]),
         };
         let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
         app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
-        app.set_folder(folder, ctx);
+        app.set_workspace(workspace, ctx);
         if arg_is_none && restore && !app.session.grid.as_ref().is_some_and(|grid| app.editors.restore_grid(grid)) {
             let pins: Vec<_> = app.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
             app.editors.restore_pins(&pins);
@@ -168,32 +178,99 @@ impl Halo {
     }
 
     fn set_folder(&mut self, folder: Option<PathBuf>, ctx: &egui::Context) {
-        let folder = folder.map(strip_unc);
+        self.set_workspace(folder.map(strip_unc).map(Workspace::single).unwrap_or_default(), ctx);
+    }
+
+    fn set_workspace(&mut self, workspace: Workspace, ctx: &egui::Context) {
+        let folder = workspace.first();
         if self.session.folder != folder {
             crate::terminal_restore::save(&self.bottom, &self.editors, &self.settings, self.session.folder.as_deref());
         }
         crate::debug::store(&mut self.session, &self.editors.marks);
-        if let Some(folder) = &folder {
-            self.session.remember(folder);
+        if let Some(remembered) = workspace.file.clone().or_else(|| folder.clone().filter(|_| !workspace.is_multi())) {
+            self.session.remember(&remembered);
         }
-        let title = match &folder {
-            Some(f) => format!("{} - Halo", f.file_name().unwrap_or(f.as_os_str()).to_string_lossy()),
+        let title = match workspace.name() {
+            Some(name) => format!("{name} - Halo"),
             None => "Halo".to_owned(),
         };
         ctx.send_viewport_cmd(ViewportCommand::Title(title));
-        crate::layers::set_folder(folder.as_deref());
+        crate::workspace::set(&workspace);
+        crate::layers::set_workspace(&workspace);
         self.reload_settings(ctx);
-        self.explorer.set_root(folder.clone());
+        self.explorer.set_roots(workspace.roots(), workspace.names(), workspace.name().filter(|_| workspace.is_multi()));
         self.editors.set_root(folder.clone());
-        self.git.set_root(folder.clone(), ctx);
+        self.editors.lsp.set_folders(workspace.roots().into_iter().zip(workspace.names()).collect());
+        self.git.set_roots(workspace.roots(), ctx);
         self.session.folder = folder;
+        self.session.workspace = workspace;
         crate::debug::restore(&self.session, &mut self.editors.marks);
         self.session.save();
     }
 
+    fn edit_workspace(&mut self, edit: impl FnOnce(&mut Workspace), ctx: &egui::Context) {
+        let mut workspace = self.session.workspace.clone();
+        edit(&mut workspace);
+        if let Err(error) = workspace.save() {
+            ui::notify(error);
+        }
+        self.set_workspace(workspace, ctx);
+    }
+
+    fn workspace_command(&mut self, cmd: Command, ctx: &egui::Context) {
+        use Command::*;
+        let filter = |dialog: rfd::FileDialog| dialog.add_filter("Code Workspace", &["code-workspace"]);
+        match cmd {
+            AddFolderToWorkspace => {
+                let folders = rfd::FileDialog::new().pick_folders().unwrap_or_default();
+                if !folders.is_empty() {
+                    self.edit_workspace(|w| folders.into_iter().for_each(|f| _ = w.add(strip_unc(f))), ctx);
+                }
+            }
+            RemoveFolderFromWorkspace if self.session.workspace.folders.is_empty() => ui::notify("There are no folders in the workspace."),
+            RemoveFolderFromWorkspace => {
+                let names = self.session.workspace.names().into_iter();
+                let items = names.zip(self.session.workspace.roots()).map(|(n, p)| (n, p.to_string_lossy().into_owned(), RemoveWorkspaceFolder(p)));
+                self.search.pick("Select a folder to remove from the workspace", items.collect());
+            }
+            AddWorkspaceFolder(path) => self.edit_workspace(|w| _ = w.add(strip_unc(path)), ctx),
+            RemoveWorkspaceFolder(path) => self.edit_workspace(|w| w.folders.retain(|f| f.path != path), ctx),
+            MoveWorkspaceFolder(from, to) => self.edit_workspace(|w| w.reorder(from, to), ctx),
+            SaveWorkspaceAs => {
+                let dir = self.session.workspace.file.as_ref().and_then(|f| f.parent().map(PathBuf::from)).or(self.session.folder.clone());
+                let dialog = filter(rfd::FileDialog::new()).set_file_name("workspace.code-workspace");
+                let dialog = match dir {
+                    Some(dir) => dialog.set_directory(dir),
+                    None => dialog,
+                };
+                if let Some(file) = dialog.save_file() {
+                    let mut workspace = self.session.workspace.clone();
+                    match workspace.save_as(&strip_unc(file)) {
+                        Ok(()) => self.set_workspace(workspace, ctx),
+                        Err(error) => ui::notify(error),
+                    }
+                }
+            }
+            OpenWorkspaceFromFile => {
+                if let Some(file) = filter(rfd::FileDialog::new()).pick_file() {
+                    self.workspace_command(OpenWorkspace(strip_unc(file)), ctx);
+                }
+            }
+            OpenWorkspace(file) => match Workspace::open(&file) {
+                Ok(workspace) => self.set_workspace(workspace, ctx),
+                Err(error) => ui::notify(error),
+            },
+            _ => self.set_folder(None, ctx),
+        }
+    }
+
+    pub fn active_root(&self) -> Option<PathBuf> {
+        let workspace = &self.session.workspace;
+        self.editors.active_path().and_then(|p| workspace.owner_path(&p)).or_else(|| workspace.first())
+    }
+
     pub fn folder_name(&self) -> Option<String> {
-        let folder = self.session.folder.as_ref()?;
-        Some(folder.file_name().unwrap_or(folder.as_os_str()).to_string_lossy().into_owned())
+        self.session.workspace.name()
     }
 
     fn save_session(&mut self) {
@@ -237,7 +314,7 @@ impl Halo {
 
     fn dispatch(&mut self, cmd: Command, ctx: &egui::Context) {
         use Command::*;
-        let cwd = self.session.folder.clone();
+        let cwd = self.active_root();
         match cmd {
             OpenFolder => {
                 if let Some(folder) = rfd::FileDialog::new().pick_folder() {
@@ -259,8 +336,13 @@ impl Halo {
                     self.set_folder(Some(path), ctx);
                 } else {
                     self.editors.open(&path);
+                    if crate::workspace::is_workspace_file(&path) {
+                        offer_workspace(&path);
+                    }
                 }
             }
+            AddFolderToWorkspace | AddWorkspaceFolder(_) | RemoveFolderFromWorkspace | RemoveWorkspaceFolder(_) | MoveWorkspaceFolder(..) | SaveWorkspaceAs
+            | OpenWorkspaceFromFile | OpenWorkspace(_) | CloseWorkspace => self.workspace_command(cmd, ctx),
             OpenDiff(title, args) => {
                 let inline = !self.settings.diff_side_by_side;
                 if !self.git.top().is_some_and(|top| self.editors.compare(&title, &args, top, inline, ctx)) {
@@ -449,6 +531,16 @@ impl Halo {
                 }
                 None => ui::notify("The active editor is not a terminal."),
             },
+            NewTerminal if self.session.workspace.folders.len() > 1 => {
+                let workspace = &self.session.workspace;
+                let mut items: Vec<_> = workspace.names().into_iter().zip(workspace.roots()).map(|(n, p)| (n, p.to_string_lossy().into_owned(), NewTerminalIn(p))).collect();
+                items.sort_by_key(|(_, path, _)| Some(std::path::Path::new(path)) != cwd.as_deref());
+                self.search.pick("Select the working directory for the new terminal", items);
+            }
+            NewTerminalIn(dir) => {
+                self.session.panel = true;
+                self.bottom.exec(&NewTerminal, &self.settings, Some(&dir), ctx);
+            }
             NewTerminal | NewTerminalWith(_) | SplitTerminal => {
                 self.session.panel = true;
                 self.bottom.exec(&cmd, &self.settings, cwd.as_deref(), ctx);
@@ -479,7 +571,7 @@ impl Halo {
         self.git.refresh(ctx);
         self.explorer.refresh();
         let active = self.editors.active_path();
-        if active.as_ref().is_some_and(|p| *p == Settings::path() || Some(p) == crate::layers::workspace_path().as_ref()) {
+        if active.as_ref().is_some_and(|p| crate::layers::watches(p)) {
             self.reload_settings(ctx);
         }
         if active.as_ref().is_some_and(|p| *p == command::path()) {
@@ -627,7 +719,9 @@ impl Halo {
                     let resp = ui
                         .add(egui::Button::new(RichText::new(name).color(theme.text)).frame(false))
                         .on_hover_text(folder.to_string_lossy());
-                    if resp.clicked() {
+                    if resp.clicked() && crate::workspace::is_workspace_file(folder) {
+                        self.cmds.push(Command::OpenWorkspace(folder.clone()));
+                    } else if resp.clicked() {
                         self.cmds.push(Command::OpenPath(folder.clone()));
                     }
                 }
@@ -716,6 +810,10 @@ impl Halo {
             self.editors.reload_clean();
             self.editors.refresh_blame();
             self.timeline.reload();
+        }
+        if self.session.workspace.is_multi() {
+            let active = self.editors.active_path();
+            self.git.follow(active.as_deref(), &ctx);
         }
         self.tasks.poll(&mut self.bottom, &ctx);
         if self.editors.history.changed() {
@@ -833,6 +931,11 @@ fn auto_save(mode: &str, due: impl FnOnce() -> bool, was: (bool, bool), now: (bo
         "onWindowChange" => was.1 && !now.1,
         _ => false,
     }
+}
+
+pub(crate) fn offer_workspace(file: &std::path::Path) {
+    let text = format!("{} is a workspace file. Open the workspace?", file.file_name().unwrap_or_default().to_string_lossy());
+    ui::notify_with(crate::notifications::Severity::Info, text, vec![("Open Workspace".into(), Command::OpenWorkspace(file.to_path_buf()))]);
 }
 
 pub(crate) fn strip_unc(path: PathBuf) -> PathBuf {

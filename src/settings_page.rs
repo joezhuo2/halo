@@ -277,7 +277,7 @@ impl View {
     fn modified(&self, key: &str, values: &Map<String, Value>) -> bool {
         match (&self.lang, self.layer) {
             (Some(id), layer) => layers::sets(layer, Some(id), key),
-            (None, Layer::Workspace) => layers::sets(Layer::Workspace, None, key),
+            (None, layer @ (Layer::Workspace | Layer::Folder)) => layers::sets(layer, None, key),
             (None, Layer::User) => values.get(key) != self.defaults.get(key),
         }
     }
@@ -287,10 +287,13 @@ impl View {
         if self.layer == Layer::User && self.lang.is_none() && layers::sets(Layer::Workspace, None, key) {
             notes.push("Overridden by Workspace".to_owned());
         }
+        if self.layer != Layer::Folder && self.lang.is_none() && !layers::folders().is_empty() && layers::sets(Layer::Folder, None, key) {
+            notes.push("Overridden by Folder".to_owned());
+        }
         if self.lang.is_none() {
             let langs: Vec<String> = layers::languages()
                 .into_iter()
-                .filter(|id| [Layer::User, Layer::Workspace].iter().any(|l| layers::sets(*l, Some(id), key)))
+                .filter(|id| [Layer::User, Layer::Workspace, Layer::Folder].iter().any(|l| layers::sets(*l, Some(id), key)))
                 .map(|id| format!("[{id}]"))
                 .collect();
             if !langs.is_empty() {
@@ -320,10 +323,14 @@ impl Halo {
         let size = vec2((screen.width() - 120.0).clamp(520.0, 920.0), (screen.height() - 120.0).clamp(320.0, 640.0));
         let query = parse_query(&self.page.query);
         let has_folder = self.session.folder.is_some();
+        let folders = layers::folders();
         if !has_folder {
             self.page.layer = 0;
         }
-        let layer = if self.page.layer == 1 { Layer::Workspace } else { Layer::User };
+        if folders.is_empty() {
+            self.page.layer = self.page.layer.min(1);
+        }
+        let layer = [Layer::User, Layer::Workspace, Layer::Folder][self.page.layer.min(2)];
         let view = View { layer, lang: query.lang.clone(), defaults: to_map(&Settings::default()) };
         let before = layers::scoped(layer, view.lang.as_deref());
         let mut edited = before.clone();
@@ -347,24 +354,33 @@ impl Halo {
                     if std::mem::take(&mut self.page.focus) {
                         resp.request_focus();
                     }
-                    let labels = ["User", "Workspace"];
+                    let labels: &[&str] = if folders.is_empty() { &["User", "Workspace"] } else { &["User", "Workspace", "Folder"] };
                     let mut picked = self.page.layer;
-                    ui.add_enabled_ui(has_folder, |ui| ui::tabs(ui, &theme, Id::new("settings_layer"), &labels, &mut picked))
+                    ui.add_enabled_ui(has_folder, |ui| ui::tabs(ui, &theme, Id::new("settings_layer"), labels, &mut picked))
                         .response
                         .on_disabled_hover_text("Open a folder to edit its .vscode/settings.json");
                     self.page.layer = picked;
+                    if layer == Layer::Folder && folders.len() > 1 {
+                        let names = crate::workspace::current().names();
+                        let mut target = layers::target();
+                        let shown = names.get(target).cloned().unwrap_or_default();
+                        egui::ComboBox::from_id_salt("settings_folder").selected_text(shown).show_index(ui, &mut target, names.len(), |i| names[i].clone());
+                        if target != layers::target() {
+                            layers::set_target(target);
+                        }
+                    }
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     close |= ui::icon_button(ui, &theme, icons::X, 24.0, false, "Close").clicked();
                     if ui::icon_button(ui, &theme, icons::BRACKETS_CURLY, 24.0, false, "Open settings.json").clicked() {
-                        match (layer, layers::workspace_path()) {
-                            (Layer::Workspace, Some(path)) => {
+                        match layers::path(layer).filter(|_| layer != Layer::User) {
+                            Some(path) => {
                                 if !path.exists() {
                                     crate::settings::write(&path, &json!({}));
                                 }
                                 self.cmds.push(Command::OpenPath(path));
                             }
-                            _ => self.cmds.push(Command::OpenSettingsJson),
+                            None => self.cmds.push(Command::OpenSettingsJson),
                         }
                         close = true;
                     }
@@ -422,7 +438,7 @@ impl Halo {
                             n => format!("{n} settings found"),
                         };
                         let scope = match &view.lang {
-                            Some(id) => format!("{found} in [{id}] of the {} settings", if layer == Layer::User { "User" } else { "Workspace" }),
+                            Some(id) => format!("{found} in [{id}] of the {layer:?} settings"),
                             None => found,
                         };
                         ui.label(RichText::new(scope).size(13.0).color(theme.text_dim));

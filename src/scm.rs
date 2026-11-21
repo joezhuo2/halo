@@ -783,7 +783,7 @@ mod tests {
 
         let ctx = egui::Context::default();
         let (mut scm, mut git) = (Scm::new(), Git::new());
-        git.set_root(Some(dir.clone()), &ctx);
+        git.set_roots(vec![dir.clone()], &ctx);
         git.wait(|g| g.changes(false).len() == 1);
 
         frame(&ctx, &mut scm, &mut git, vec![]);
@@ -862,7 +862,7 @@ mod tests {
 
         let ctx = egui::Context::default();
         let (mut scm, mut git) = (Scm::new(), Git::new());
-        git.set_root(Some(dir.clone()), &ctx);
+        git.set_roots(vec![dir.clone()], &ctx);
         git.wait(|g| g.changes(false).iter().any(|c| c.state == FileState::Conflicted));
         frame(&ctx, &mut scm, &mut git, vec![]);
         let row = ctx.read_response(Id::new(("scm_row", false, "a.txt"))).unwrap().rect.center().y;

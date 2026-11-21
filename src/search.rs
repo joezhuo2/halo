@@ -33,8 +33,8 @@ pub struct Search {
     query: String,
     selected: usize,
     reveal: bool,
-    files: Option<(PathBuf, Vec<String>)>,
-    files_rx: Option<Receiver<(PathBuf, Vec<String>)>>,
+    files: Option<(Vec<PathBuf>, Vec<String>)>,
+    files_rx: Option<Receiver<(Vec<PathBuf>, Vec<String>)>>,
     hits: (String, Vec<Item>),
     hits_rx: Option<(String, Receiver<Vec<Item>>)>,
     symbols: Option<Vec<(usize, String)>>,
@@ -119,6 +119,20 @@ fn grep(folder: &Path, needle: &str) -> Vec<Item> {
     parse_grep(&git::run(folder, &args).unwrap_or_default())
 }
 
+fn list_roots(roots: &[(PathBuf, String)]) -> Vec<String> {
+    roots.iter().flat_map(|(root, prefix)| list_files(root).into_iter().map(move |f| format!("{prefix}{f}"))).collect()
+}
+
+fn grep_roots(roots: &[(PathBuf, String)], needle: &str) -> Vec<Item> {
+    let hits = roots.iter().flat_map(|(root, prefix)| {
+        grep(root, needle).into_iter().map(move |item| match item {
+            Item::Hit(path, line, text) => Item::Hit(format!("{prefix}{path}"), line, text),
+            other => other,
+        })
+    });
+    hits.take(SHOWN * 4).collect()
+}
+
 fn line_suffix(query: &str) -> (&str, usize) {
     match query.rsplit_once(':') {
         Some((head, line)) if !head.is_empty() => line.parse().map_or((query, 0), |line| (head, line)),
@@ -172,7 +186,7 @@ impl Search {
         }
     }
 
-    fn load(&mut self, folder: Option<&Path>, editors: &mut Editors, ctx: &egui::Context) {
+    fn load(&mut self, roots: &[(PathBuf, String)], editors: &mut Editors, ctx: &egui::Context) {
         self.load_globals(editors, ctx);
         if let Some((folder, files)) = self.files_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.files = Some((folder, files));
@@ -186,15 +200,18 @@ impl Search {
             self.hits_rx = None;
             self.stale = true;
         }
-        let Some(folder) = folder else { return };
+        if roots.is_empty() {
+            return;
+        }
         let mode = self.query.chars().next();
-        let listed = self.files.as_ref().is_some_and(|(f, _)| f == folder);
+        let paths: Vec<PathBuf> = roots.iter().map(|(r, _)| r.clone()).collect();
+        let listed = self.files.as_ref().is_some_and(|(f, _)| *f == paths);
         if !listed && self.files_rx.is_none() && self.pick.is_none() && !matches!(mode, Some('>' | '%' | '@' | '#' | ':')) {
             let (tx, rx) = channel();
-            let (folder, ctx) = (folder.to_path_buf(), ctx.clone());
+            let (roots, ctx) = (roots.to_vec(), ctx.clone());
             std::thread::spawn(move || {
-                let files = list_files(&folder);
-                let _ = tx.send((folder, files));
+                let files = list_roots(&roots);
+                let _ = tx.send((paths, files));
                 ctx.request_repaint();
             });
             self.files_rx = Some(rx);
@@ -202,9 +219,9 @@ impl Search {
         let needle = self.query.strip_prefix('%').map(str::trim).unwrap_or_default();
         if needle.chars().count() >= 2 && self.hits.0 != needle && self.hits_rx.is_none() {
             let (tx, rx) = channel();
-            let (folder, ctx, text) = (folder.to_path_buf(), ctx.clone(), needle.to_owned());
+            let (roots, ctx, text) = (roots.to_vec(), ctx.clone(), needle.to_owned());
             std::thread::spawn(move || {
-                let _ = tx.send(grep(&folder, &text));
+                let _ = tx.send(grep_roots(&roots, &text));
                 ctx.request_repaint();
             });
             self.hits_rx = Some((needle.to_owned(), rx));
@@ -215,7 +232,8 @@ impl Search {
         }
     }
 
-    fn compute(&self, folder: Option<&Path>) -> Vec<Item> {
+    fn compute(&self, roots: &[(PathBuf, String)]) -> Vec<Item> {
+        let folder = roots.first().map(|(r, _)| r);
         let query = self.query.as_str();
         if let Some((_, items)) = &self.pick {
             let items = items.iter().map(|(label, detail, command)| Item::Pick(label.clone(), detail.clone(), command.clone()));
@@ -265,7 +283,7 @@ impl Search {
         let (q, line) = line_suffix(query);
         match (&self.files, folder) {
             (_, None) => vec![Item::Note("Open a folder to search files. > commands, @ symbols, : line")],
-            (Some((listed, files)), Some(folder)) if listed == folder => none(
+            (Some((listed, files)), Some(_)) if listed.iter().eq(roots.iter().map(|(r, _)| r)) => none(
                 rank(q, files.iter().map(|f| Item::File(f.clone(), line)), |i| match i {
                     Item::File(path, _) => score_path(q, path),
                     _ => None,
@@ -276,8 +294,8 @@ impl Search {
         }
     }
 
-    fn accept(&mut self, item: &Item, folder: Option<&Path>, cmds: &mut Vec<Command>) {
-        let full = |rel: &str| folder.map(|f| f.join(rel));
+    fn accept(&mut self, item: &Item, roots: &[(PathBuf, String)], cmds: &mut Vec<Command>) {
+        let full = |rel: &str| crate::workspace::resolve(roots, rel);
         match item {
             Item::File(rel, line) => {
                 cmds.extend(full(rel).map(Command::OpenPath));
@@ -301,12 +319,12 @@ impl Search {
         self.open = false;
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, rect: Rect, folder: Option<&Path>, editors: &mut Editors, cmds: &mut Vec<Command>) -> bool {
+    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, rect: Rect, roots: &[(PathBuf, String)], editors: &mut Editors, cmds: &mut Vec<Command>) -> bool {
         let ctx = ui.ctx().clone();
-        self.load(folder, editors, &ctx);
+        self.load(roots, editors, &ctx);
         let typed = self.items.0 != self.query;
         if typed || std::mem::take(&mut self.stale) {
-            self.items = (self.query.clone(), self.compute(folder));
+            self.items = (self.query.clone(), self.compute(roots));
             self.selected = if typed { 0 } else { self.selected.min(self.items.1.len().saturating_sub(1)) };
             ctx.request_repaint();
         }
@@ -387,7 +405,7 @@ impl Search {
         });
 
         if let Some(item) = accepted.and_then(|index| self.items.1.get(index).cloned()) {
-            self.accept(&item, folder, cmds);
+            self.accept(&item, roots, cmds);
             self.focus = true;
             return false;
         }
@@ -415,18 +433,27 @@ mod tests {
 
         let mut search = Search::default();
         search.open(">toggle ai");
-        assert_eq!(search.compute(None)[0], Item::Command(Command::ToggleAi));
+        assert_eq!(search.compute(&[])[0], Item::Command(Command::ToggleAi));
         search.query = ":12:4".into();
-        assert_eq!(search.compute(None), vec![Item::Line(12, 4)]);
+        assert_eq!(search.compute(&[]), vec![Item::Line(12, 4)]);
         let folder = Path::new("x");
-        search.files = Some((folder.into(), vec!["src/app.rs".into(), "README.md".into()]));
+        let single = [(folder.to_path_buf(), String::new())];
+        search.files = Some((vec![folder.into()], vec!["src/app.rs".into(), "README.md".into()]));
         search.query = "app:7".into();
-        let found = search.compute(Some(folder));
+        let found = search.compute(&single);
         assert_eq!(found, vec![Item::File("src/app.rs".into(), 7)]);
         let mut cmds = vec![];
-        search.accept(&found[0], Some(folder), &mut cmds);
+        search.accept(&found[0], &single, &mut cmds);
         assert_eq!(cmds, vec![Command::OpenPath(folder.join("src/app.rs")), Command::GoTo(7, 1)]);
         assert!(!search.is_open());
+        let two = [(PathBuf::from("x"), "api/".to_owned()), (PathBuf::from("y"), "web/".to_owned())];
+        search.files = Some((vec!["x".into(), "y".into()], vec!["api/src/app.rs".into(), "web/src/app.rs".into()]));
+        search.query = "webapp".into();
+        let found = search.compute(&two);
+        assert_eq!(found[0], Item::File("web/src/app.rs".into(), 0));
+        let mut cmds = vec![];
+        search.accept(&found[0], &two, &mut cmds);
+        assert_eq!(cmds, vec![Command::OpenPath(PathBuf::from("y").join("src/app.rs"))]);
 
         let here = Path::new(env!("CARGO_MANIFEST_DIR"));
         assert!(list_files(here).contains(&"src/search.rs".to_owned()));

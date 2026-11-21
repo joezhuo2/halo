@@ -27,6 +27,16 @@ pub enum Command {
     SaveAll,
     CloseEditor,
     CloseFolder,
+    AddFolderToWorkspace,
+    RemoveFolderFromWorkspace,
+    RemoveWorkspaceFolder(PathBuf),
+    AddWorkspaceFolder(PathBuf),
+    MoveWorkspaceFolder(usize, usize),
+    SaveWorkspaceAs,
+    OpenWorkspaceFromFile,
+    OpenWorkspace(PathBuf),
+    CloseWorkspace,
+    NewTerminalIn(PathBuf),
     OpenSettings,
     OpenSettingsJson,
     OpenKeybindings,
@@ -561,7 +571,8 @@ fn defaults() -> Vec<Binding> {
 pub fn all() -> Vec<Command> {
     use Command::*;
     let mut commands = vec![
-        NewFile, NewWindow, OpenFile, OpenFolder, OpenFolderInNewWindow, DuplicateWorkspace, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, OpenSettings, OpenSettingsJson,
+        NewFile, NewWindow, OpenFile, OpenFolder, OpenFolderInNewWindow, DuplicateWorkspace, Save, SaveAs, SaveAll, CloseEditor, CloseFolder,
+        AddFolderToWorkspace, RemoveFolderFromWorkspace, SaveWorkspaceAs, OpenWorkspaceFromFile, CloseWorkspace, OpenSettings, OpenSettingsJson,
         OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected,
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
@@ -754,7 +765,8 @@ impl Command {
         use Command::*;
         match self {
             NewFile | OpenFile | OpenFolder | OpenFolderIn(_) | OpenPath(_) | Save | SaveAs | SaveAll | CloseEditor
-            | CloseFolder | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit | ImportTheme
+            | CloseFolder | AddFolderToWorkspace | RemoveFolderFromWorkspace | RemoveWorkspaceFolder(_) | AddWorkspaceFolder(_) | MoveWorkspaceFolder(..)
+            | SaveWorkspaceAs | OpenWorkspaceFromFile | OpenWorkspace(_) | CloseWorkspace | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit | ImportTheme
             | BrowseThemes | SelectTheme | ImportThemeFile(_) | SetTheme(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
             | ImportIconThemeFile(_) | SetIconTheme(_) | CutFiles | CopyFiles | PasteFiles | CloseAllEditors | ShowTab(..) | CloseTab(..)
             | NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => "File",
@@ -783,7 +795,7 @@ impl Command {
             | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
             | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
-            NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
+            NewTerminal | NewTerminalWith(_) | NewTerminalIn(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
             | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
             | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel | ClearRestoredHistory => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
@@ -818,6 +830,15 @@ impl Command {
             SaveAll => "Save All",
             CloseEditor => "Close Editor",
             CloseFolder => "Close Folder",
+            AddFolderToWorkspace => "Add Folder to Workspace...",
+            AddWorkspaceFolder(_) => "Add Folder to Workspace",
+            RemoveFolderFromWorkspace | RemoveWorkspaceFolder(_) => "Remove Folder from Workspace",
+            MoveWorkspaceFolder(..) => "Move Workspace Folder",
+            SaveWorkspaceAs => "Save Workspace As...",
+            OpenWorkspaceFromFile => "Open Workspace from File...",
+            OpenWorkspace(_) => "Open Workspace",
+            CloseWorkspace => "Close Workspace",
+            NewTerminalIn(_) => "Terminal: Create New Terminal",
             OpenSettings => "Settings",
             OpenSettingsJson => "Open settings.json",
             OpenKeybindings => "Keyboard Shortcuts (keybindings.json)",

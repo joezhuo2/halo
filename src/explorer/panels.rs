@@ -219,7 +219,7 @@ impl Explorer {
             self.hover_dir = None;
             match (over_dir, root_target, ctx.pointer_latest_pos()) {
                 (Some(dir), _, _) => *action = Some(Action::Drop(paths, dir)),
-                (None, true, _) => *action = self.root.clone().map(|root| Action::Drop(paths, root)),
+                (None, true, _) => *action = self.root.clone().or_else(|| self.roots.first().map(|(r, _)| r.clone())).map(|root| Action::Drop(paths, root)),
                 (None, false, Some(pos)) => self.dropped = Some((paths, pos)),
                 _ => {}
             }

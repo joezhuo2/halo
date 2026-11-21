@@ -116,6 +116,8 @@ pub struct Settings {
     pub zen_restore: bool,
     #[serde(skip)]
     pub langs: BTreeMap<String, Settings>,
+    #[serde(skip)]
+    pub folders: BTreeMap<PathBuf, Settings>,
 }
 
 impl Default for Settings {
@@ -265,6 +267,7 @@ impl Default for Settings {
             zen_hide_line_numbers: true,
             zen_restore: true,
             langs: BTreeMap::new(),
+            folders: BTreeMap::new(),
         }
     }
 }
@@ -378,9 +381,11 @@ impl Settings {
     }
 
     pub fn of(&self, path: Option<&Path>) -> &Settings {
+        let folder = path.and_then(|p| self.folders.iter().filter(|(f, _)| p.starts_with(f)).max_by_key(|(f, _)| f.components().count()));
+        let base = folder.map_or(self, |(_, s)| s);
         match path {
-            Some(path) if !self.langs.is_empty() => self.lang(&crate::lsp::language_id(path)),
-            _ => self,
+            Some(path) if !base.langs.is_empty() => base.lang(&crate::lsp::language_id(path)),
+            _ => base,
         }
     }
 
@@ -409,6 +414,7 @@ pub struct Backup {
 #[serde(default)]
 pub struct Session {
     pub folder: Option<PathBuf>,
+    pub workspace: crate::workspace::Workspace,
     pub files: Vec<PathBuf>,
     pub pinned: Vec<(usize, PathBuf)>,
     pub grid: Option<serde_json::Value>,
@@ -427,6 +433,7 @@ impl Default for Session {
     fn default() -> Self {
         Self {
             folder: None,
+            workspace: Default::default(),
             files: vec![],
             pinned: vec![],
             grid: None,

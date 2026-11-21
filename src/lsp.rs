@@ -507,7 +507,18 @@ pub(crate) fn find_program(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&paths).find_map(|dir| extensions.iter().map(|e| dir.join(format!("{name}{e}"))).find(|p| p.is_file()))
 }
 
-fn initialize(id: u64, root: &Path) -> Value {
+fn workspace_folders(folders: &[(PathBuf, String)]) -> Value {
+    Value::Array(folders.iter().map(|(path, name)| json!({"uri": uri(path), "name": name})).collect())
+}
+
+fn folders_changed(old: &[(PathBuf, String)], new: &[(PathBuf, String)]) -> Option<Value> {
+    let added: Vec<(PathBuf, String)> = new.iter().filter(|f| !old.iter().any(|o| o.0 == f.0)).cloned().collect();
+    let removed: Vec<(PathBuf, String)> = old.iter().filter(|f| !new.iter().any(|n| n.0 == f.0)).cloned().collect();
+    let event = json!({"added": workspace_folders(&added), "removed": workspace_folders(&removed)});
+    (!added.is_empty() || !removed.is_empty()).then(|| json!({"event": event}))
+}
+
+fn initialize(id: u64, root: &Path, folders: &[(PathBuf, String)]) -> Value {
     let name = root.file_name().unwrap_or(root.as_os_str()).to_string_lossy();
     let link = json!({"linkSupport": true});
     let completion = json!({
@@ -565,7 +576,7 @@ fn initialize(id: u64, root: &Path) -> Value {
         "clientInfo": {"name": "Halo", "version": env!("CARGO_PKG_VERSION")},
         "rootPath": root.to_string_lossy(),
         "rootUri": uri(root),
-        "workspaceFolders": [{"uri": uri(root), "name": name}],
+        "workspaceFolders": if folders.is_empty() { json!([{"uri": uri(root), "name": name}]) } else { workspace_folders(folders) },
         "capabilities": capabilities,
     });
     json!({"jsonrpc": "2.0", "id": id, "method": "initialize", "params": params})
@@ -710,6 +721,7 @@ fn spawn(command: &str, root: &Path, ctx: &egui::Context) -> Result<Server, Stri
 #[derive(Default)]
 pub struct Lsp {
     root: Option<PathBuf>,
+    folders: Vec<(PathBuf, String)>,
     config: (bool, BTreeMap<String, String>),
     servers: Vec<Server>,
     failed: HashSet<String>,
@@ -730,6 +742,13 @@ impl Lsp {
         self.config = (settings.lsp, settings.servers.clone());
         self.root = root.map(Path::to_path_buf);
         self.restart();
+    }
+
+    pub fn set_folders(&mut self, folders: Vec<(PathBuf, String)>) {
+        if let Some(change) = folders_changed(&self.folders, &folders) {
+            self.servers.iter_mut().for_each(|s| s.notify("workspace/didChangeWorkspaceFolders", change.clone()));
+        }
+        self.folders = folders;
     }
 
     pub fn restart(&mut self) {
@@ -770,12 +789,13 @@ impl Lsp {
             Some(index) => index,
             None if self.failed.contains(&command) => return false,
             None => {
-                let root = self.root.clone().or_else(|| path.parent().map(Path::to_path_buf)).unwrap_or_default();
+                let owner = self.folders.iter().map(|(f, _)| f).filter(|f| path.starts_with(f)).max_by_key(|f| f.components().count());
+                let root = owner.cloned().or_else(|| self.root.clone()).or_else(|| path.parent().map(Path::to_path_buf)).unwrap_or_default();
                 match spawn(&command, &root, ctx) {
                     Ok(mut server) => {
                         self.next_id += 1;
                         server.init = self.next_id;
-                        server.write(&initialize(server.init, &root));
+                        server.write(&initialize(server.init, &root, &self.folders));
                         self.note(format!("Started {command} in {}", root.display()));
                         self.servers.push(server);
                         self.servers.len() - 1
@@ -927,6 +947,7 @@ impl Lsp {
             (_, Some(id)) => {
                 let result = match method.as_str() {
                     "workspace/configuration" => Value::Array(vec![Value::Null; params["items"].as_array().map_or(0, Vec::len)]),
+                    "workspace/workspaceFolders" => workspace_folders(&self.folders),
                     "workspace/applyEdit" => {
                         self.edits.push(params["edit"].clone());
                         json!({"applied": true})
@@ -985,6 +1006,22 @@ impl Lsp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sends_workspace_folders_and_their_changes() {
+        let (api, web) = (PathBuf::from("/w/api"), PathBuf::from("/w/web"));
+        let two = [(api.clone(), "api".to_owned()), (web.clone(), "web".to_owned())];
+        let init = initialize(1, &web, &two);
+        assert_eq!(init["params"]["rootUri"], json!(uri(&web)));
+        assert_eq!(init["params"]["workspaceFolders"], json!([{"uri": uri(&api), "name": "api"}, {"uri": uri(&web), "name": "web"}]));
+        assert_eq!(initialize(1, &api, &[])["params"]["workspaceFolders"], json!([{"uri": uri(&api), "name": "api"}]));
+        let change = folders_changed(&two[..1], &two[1..]).unwrap();
+        assert_eq!(change, json!({"event": {"added": [{"uri": uri(&web), "name": "web"}], "removed": [{"uri": uri(&api), "name": "api"}]}}));
+        assert!(folders_changed(&two, &two).is_none());
+        let mut lsp = Lsp::default();
+        lsp.set_folders(two.to_vec());
+        assert_eq!(workspace_folders(&lsp.folders).as_array().unwrap().len(), 2);
+    }
 
     #[test]
     fn maps_paths_positions_and_frames() {

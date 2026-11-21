@@ -232,14 +232,20 @@ type Langs = BTreeMap<String, Map<String, Value>>;
 pub enum Layer {
     User,
     Workspace,
+    Folder,
 }
 
 #[derive(Default)]
 struct Layers {
     folder: Option<PathBuf>,
-    raw: [Option<Map<String, Value>>; 2],
-    plain: [Map<String, Value>; 2],
-    langs: [Langs; 2],
+    multi: bool,
+    file: Option<PathBuf>,
+    untitled: Map<String, Value>,
+    roots: Vec<PathBuf>,
+    target: usize,
+    raw: [Option<Map<String, Value>>; 3],
+    plain: [Map<String, Value>; 3],
+    langs: [Langs; 3],
     effective: Map<String, Value>,
     scoped: BTreeMap<(usize, String), Settings>,
 }
@@ -250,12 +256,47 @@ fn with<R>(f: impl FnOnce(&mut Layers) -> R) -> R {
     f(LAYERS.lock().unwrap().get_or_insert_with(Default::default))
 }
 
-pub fn workspace_path() -> Option<PathBuf> {
-    with(|l| l.folder.as_ref().map(|f| f.join(".vscode").join("settings.json")))
+fn settings_file(folder: &Path) -> PathBuf {
+    folder.join(".vscode").join("settings.json")
 }
 
-pub fn set_folder(folder: Option<&Path>) {
-    with(|l| l.folder = folder.map(Path::to_path_buf));
+pub fn path(layer: Layer) -> Option<PathBuf> {
+    with(|l| match (layer, l.multi) {
+        (Layer::User, _) => Some(Settings::path()),
+        (Layer::Workspace, false) => l.folder.as_deref().map(settings_file),
+        (Layer::Workspace, true) => l.file.clone(),
+        (Layer::Folder, true) => l.roots.get(l.target).map(|f| settings_file(f)),
+        (Layer::Folder, false) => None,
+    })
+}
+
+pub fn workspace_path() -> Option<PathBuf> {
+    path(Layer::Workspace)
+}
+
+pub fn watches(file: &Path) -> bool {
+    file == Settings::path() || Some(file) == workspace_path().as_deref() || with(|l| l.roots.iter().any(|r| settings_file(r) == file))
+}
+
+pub fn set_workspace(workspace: &crate::workspace::Workspace) {
+    with(|l| {
+        (l.multi, l.file, l.untitled, l.target) = (workspace.is_multi(), workspace.file.clone(), workspace.settings(), 0);
+        l.folder = workspace.first();
+        l.roots = if l.multi { workspace.roots() } else { vec![] };
+    });
+}
+
+pub fn folders() -> Vec<PathBuf> {
+    with(|l| l.roots.clone())
+}
+
+pub fn target() -> usize {
+    with(|l| l.target)
+}
+
+pub fn set_target(index: usize) {
+    with(|l| l.target = index);
+    load();
 }
 
 fn read_file(path: &Path, errors: &mut Vec<String>) -> Option<Map<String, Value>> {
@@ -282,10 +323,10 @@ fn layered(plain: &[Map<String, Value>], langs: &[Langs], lang: Option<&str>) ->
     map
 }
 
-pub fn resolve(user: &Map<String, Value>, workspace: &Map<String, Value>, errors: &mut Vec<String>) -> (Settings, [Map<String, Value>; 2], [Langs; 2]) {
-    let mut plain = [Map::new(), Map::new()];
-    let mut langs = [Langs::new(), Langs::new()];
-    for (index, (raw, origin)) in [(user, "settings.json"), (workspace, ".vscode/settings.json")].into_iter().enumerate() {
+pub fn resolve(raws: &[(&Map<String, Value>, &str)], errors: &mut Vec<String>) -> (Settings, Vec<Map<String, Value>>, Vec<Langs>) {
+    let mut plain = vec![Map::new(); raws.len()];
+    let mut langs = vec![Langs::new(); raws.len()];
+    for (index, (raw, origin)) in raws.iter().enumerate() {
         let (p, l) = split(raw);
         plain[index] = valid(p, origin, errors);
         langs[index] = l.into_iter().map(|(id, m)| (id.clone(), valid(m, &format!("{origin} [{id}]"), errors))).collect();
@@ -303,13 +344,38 @@ pub fn load() -> Settings {
         crate::settings::write(&path, &Settings::default());
     }
     let mut errors = vec![];
+    let (multi, file, untitled, roots, target) = with(|l| (l.multi, l.file.clone(), l.untitled.clone(), l.roots.clone(), l.target));
     let user = read_file(&path, &mut errors);
-    let workspace = workspace_path().and_then(|p| read_file(&p, &mut errors));
-    let (settings, plain, langs) = resolve(user.as_ref().unwrap_or(&Map::new()), workspace.as_ref().unwrap_or(&Map::new()), &mut errors);
+    let workspace = match (multi, &file) {
+        (false, _) => workspace_path().and_then(|p| read_file(&p, &mut errors)),
+        (true, Some(file)) => read_file(file, &mut errors).map(|m| m.get("settings").and_then(Value::as_object).cloned().unwrap_or_default()),
+        (true, None) => Some(untitled),
+    };
+    let empty = Map::new();
+    let origin = if multi { "workspace settings" } else { ".vscode/settings.json" };
+    let base = [(user.as_ref().unwrap_or(&empty), "settings.json"), (workspace.as_ref().unwrap_or(&empty), origin)];
+    let (mut settings, plain, langs) = resolve(&base, &mut errors);
+    let (mut folder_raw, mut folder_plain, mut folder_langs) = (None, Map::new(), Langs::new());
+    for (index, root) in roots.iter().enumerate() {
+        let raw = read_file(&settings_file(root), &mut errors);
+        let origin = settings_file(root).display().to_string();
+        let mut found = vec![];
+        let (scoped, mut p, mut l) = resolve(&[base[0], base[1], (raw.as_ref().unwrap_or(&empty), &origin)], &mut found);
+        errors.extend(found.into_iter().filter(|e| e.starts_with(&origin)));
+        settings.folders.insert(root.clone(), scoped);
+        if index == target {
+            (folder_raw, folder_plain, folder_langs) = (raw, p.remove(2), l.remove(2));
+        }
+    }
     errors.into_iter().for_each(crate::ui::notify);
+    let [user_plain, workspace_plain]: [Map<String, Value>; 2] = plain.try_into().unwrap_or_default();
+    let [user_langs, workspace_langs]: [Langs; 2] = langs.try_into().unwrap_or_default();
     with(|l| {
         l.effective = serde_json::to_value(&settings).ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
-        (l.raw, l.plain, l.langs, l.scoped) = ([user, workspace], plain, langs, BTreeMap::new());
+        l.raw = [user, workspace, folder_raw];
+        l.plain = [user_plain, workspace_plain, folder_plain];
+        l.langs = [user_langs, workspace_langs, folder_langs];
+        l.scoped = BTreeMap::new();
     });
     settings
 }
@@ -345,7 +411,7 @@ pub fn apply(raw: &mut Map<String, Value>, layer: Layer, lang: Option<&str>, edi
             names.iter().for_each(|n| drop(target.remove(n)));
             continue;
         };
-        let name = existing.unwrap_or_else(|| if layer == Layer::Workspace { code.clone().unwrap_or(key.clone()) } else { key.clone() });
+        let name = existing.unwrap_or_else(|| if layer != Layer::User { code.clone().unwrap_or(key.clone()) } else { key.clone() });
         let value = if Some(&name) == code.as_ref() { to_vscode(key, value.clone()) } else { value.clone() };
         target.insert(name, value);
     }
@@ -360,16 +426,27 @@ pub fn write(layer: Layer, lang: Option<&str>, edits: &[(String, Option<Value>)]
     if edits.is_empty() {
         return;
     }
-    let path = match layer {
-        Layer::User => Some(Settings::path()),
-        Layer::Workspace => workspace_path(),
+    let multi = with(|l| l.multi);
+    let Some(path) = path(layer) else {
+        return crate::ui::notify(match multi {
+            true => "Save the workspace (File: Save Workspace As...) to change workspace settings.".to_owned(),
+            false => "Open a folder to change workspace settings.".to_owned(),
+        });
     };
-    let Some(path) = path else { return crate::ui::notify("Open a folder to change workspace settings.".to_owned()) };
     let Some(mut raw) = with(|l| l.raw[layer as usize].clone()) else {
         return crate::ui::notify(format!("{} could not be read, so it was not changed.", path.display()));
     };
     apply(&mut raw, layer, lang, edits);
-    crate::settings::write(&path, &raw);
+    if multi && layer == Layer::Workspace {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let Ok(Value::Object(mut whole)) = crate::jsonc::parse(&text) else {
+            return crate::ui::notify(format!("{} could not be read, so it was not changed.", path.display()));
+        };
+        whole.insert("settings".into(), Value::Object(raw.clone()));
+        crate::settings::write(&path, &whole);
+    } else {
+        crate::settings::write(&path, &raw);
+    }
     with(|l| l.raw[layer as usize] = Some(raw));
 }
 
@@ -415,7 +492,7 @@ mod tests {
             "[rust]": {"editor.rulers": [120]}, "[python]": {"editor.tabSize": 4},
         }));
         let mut errors = vec![];
-        let (s, _, langs) = resolve(&user, &workspace, &mut errors);
+        let (s, _, langs) = resolve(&[(&user, "settings.json"), (&workspace, ".vscode/settings.json")], &mut errors);
         assert_eq!((s.tab_size, s.font_size, s.insert_spaces, s.auto_save.as_str()), (2, 15.0, false, "afterDelay"));
         assert_eq!(s.rulers, [80]);
         assert_eq!(errors.len(), 1);
@@ -426,6 +503,19 @@ mod tests {
         assert_eq!((s.lang("markdown").word_wrap.as_str(), s.lang("plaintext").word_wrap.as_str(), s.word_wrap.as_str()), ("on", "on", "off"));
         assert_eq!(s.lang("go").tab_size, 2);
         assert_eq!(langs[0]["rust"]["tab_size"], json!(8));
+
+        let folder = obj(json!({"editor.tabSize": 6, "[rust]": {"editor.tabSize": 7}, "bad": 1, "editor.minimap.enabled": "x"}));
+        let (f, plain, _) = resolve(&[(&user, "settings.json"), (&workspace, "workspace"), (&folder, "api")], &mut errors);
+        assert_eq!((f.tab_size, f.auto_save.as_str(), f.font_size), (6, "afterDelay", 15.0));
+        assert_eq!((f.lang("rust").tab_size, f.lang("python").tab_size), (7, 4));
+        assert_eq!(plain[2].len(), 1);
+        assert!(errors.last().unwrap().starts_with("api:"));
+        let mut s = s;
+        s.folders.insert(PathBuf::from("/w/api"), f);
+        assert_eq!(s.of(Some(Path::new("/w/api/src/main.rs"))).tab_size, 7);
+        assert_eq!(s.of(Some(Path::new("/w/api/notes.txt"))).tab_size, 6);
+        assert_eq!(s.of(Some(Path::new("/w/web/main.rs"))).tab_size, 8);
+        assert_eq!(s.of(None).tab_size, 2);
     }
 
     #[test]

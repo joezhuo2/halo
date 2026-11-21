@@ -54,7 +54,7 @@ fn sorts_loads_lazily_and_keeps_expansion_on_refresh() {
         std::fs::write(dir.join(file), "").unwrap();
     }
     let mut explorer = Explorer::new();
-    explorer.set_root(Some(dir.clone()));
+    explorer.set_roots(vec![dir.clone()], vec![String::new()], None);
     explorer.exclude = vec!["**/.git".into()];
     explorer.build();
     assert_eq!(names(&explorer), ["src", "A.txt", "b.txt"]);
@@ -89,7 +89,7 @@ fn excluded_names_are_hidden() {
     std::fs::write(dir.join("keep/b.log"), "").unwrap();
     std::fs::write(dir.join("keep/c.rs"), "").unwrap();
     let mut explorer = Explorer::new();
-    explorer.set_root(Some(dir.clone()));
+    explorer.set_roots(vec![dir.clone()], vec![String::new()], None);
     explorer.exclude = vec!["**/node_modules".into(), "**/*.log".into()];
     explorer.expand(&dir.join("keep"));
     explorer.build();
@@ -106,7 +106,7 @@ fn single_folder_chains_become_one_row() {
     std::fs::write(dir.join("x/y/g.txt"), "").unwrap();
     std::fs::write(dir.join("x/h.txt"), "").unwrap();
     let mut explorer = Explorer::new();
-    explorer.set_root(Some(dir.clone()));
+    explorer.set_roots(vec![dir.clone()], vec![String::new()], None);
     explorer.compact = true;
     explorer.build();
     assert_eq!(names(&explorer), ["a/b/c", "x"]);
@@ -147,7 +147,7 @@ fn filtering_hides_rows_or_highlights_them() {
         std::fs::write(dir.join(file), "").unwrap();
     }
     let mut explorer = Explorer::new();
-    explorer.set_root(Some(dir.clone()));
+    explorer.set_roots(vec![dir.clone()], vec![String::new()], None);
     explorer.expand(&dir.join("src"));
     explorer.expand(&dir.join("src/ui"));
     explorer.expand(&dir.join("docs"));
@@ -220,7 +220,7 @@ mod headless {
         }
         let ctx = egui::Context::default();
         let mut explorer = Explorer::new();
-        explorer.set_root(Some(dir.clone()));
+        explorer.set_roots(vec![dir.clone()], vec![String::new()], None);
         frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
         frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
         (dir, ctx, explorer)
@@ -315,6 +315,55 @@ mod headless {
         explorer.request_move(vec![dir.join("a.txt")], dir.join("f"), &ctx);
         assert_eq!(explorer.confirm_drop, Some((vec![dir.join("a.txt")], dir.join("f"))));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_roots_are_top_level_nodes_that_reorder_by_drag_and_are_never_deleted() {
+        let (a, b) = (temp("root-a"), temp("root-b"));
+        std::fs::write(a.join("one.txt"), "").unwrap();
+        std::fs::write(b.join("two.txt"), "").unwrap();
+        let ctx = egui::Context::default();
+        let mut explorer = Explorer::new();
+        explorer.set_roots(vec![a.clone()], vec!["a".into()], None);
+        frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
+        assert_eq!(names(&explorer), ["one.txt"]);
+        explorer.set_roots(vec![a.clone(), b.clone()], vec!["api".into(), "web".into()], Some("Untitled (Workspace)".into()));
+        frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
+        frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
+        assert_eq!(names(&explorer), ["api", "one.txt", "web", "two.txt"]);
+        assert_eq!(explorer.dir_for_new(Some(&b.join("two.txt"))), b);
+
+        click(&ctx, &mut explorer, &b, Modifiers::NONE);
+        assert_eq!(names(&explorer), ["api", "one.txt", "web"]);
+        frame(&ctx, &mut explorer, vec![key(Key::Delete, Modifiers::NONE)], Modifiers::NONE);
+        frame(&ctx, &mut explorer, vec![key(Key::F2, Modifiers::NONE)], Modifiers::NONE);
+        assert!(explorer.confirm_delete.is_empty() && explorer.edit.is_none());
+        click(&ctx, &mut explorer, &a.join("one.txt"), Modifiers::NONE);
+        frame(&ctx, &mut explorer, vec![key(Key::ArrowLeft, Modifiers::NONE)], Modifiers::NONE);
+        assert_eq!(explorer.sel.cursor, Some(a.clone()));
+
+        let from = ctx.read_response(Id::new(("explorer_row", &b))).unwrap().rect.center();
+        let to = ctx.read_response(Id::new(("explorer_row", &a))).unwrap().rect.center();
+        let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        frame(&ctx, &mut explorer, vec![Event::PointerMoved(from)], Modifiers::NONE);
+        frame(&ctx, &mut explorer, vec![button(from, true)], Modifiers::NONE);
+        let mut cmds = vec![];
+        for step in 1..=4 {
+            let pos = from + (to - from) * (step as f32 / 4.0);
+            cmds.extend(frame(&ctx, &mut explorer, vec![Event::PointerMoved(pos)], Modifiers::NONE));
+        }
+        cmds.extend(frame(&ctx, &mut explorer, vec![button(to, false)], Modifiers::NONE));
+        cmds.extend(frame(&ctx, &mut explorer, vec![], Modifiers::NONE));
+        assert_eq!(cmds, [Command::MoveWorkspaceFolder(1, 0)]);
+        assert!(a.join("one.txt").exists() && b.join("two.txt").exists());
+
+        explorer.set_roots(vec![b.clone(), a.clone()], vec!["web".into(), "api".into()], Some("Untitled (Workspace)".into()));
+        explorer.build();
+        assert_eq!(names(&explorer), ["web", "api", "one.txt"]);
+        explorer.set_roots(vec![b.clone()], vec!["web".into()], None);
+        explorer.build();
+        assert_eq!(names(&explorer), ["two.txt"]);
+        let _ = (std::fs::remove_dir_all(&a), std::fs::remove_dir_all(&b));
     }
 }
 

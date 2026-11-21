@@ -730,7 +730,7 @@ impl Halo {
             ui.set_clip_rect(rect.intersect(ui.clip_rect()));
             match view {
                 Explorer => self.explorer_view(ui, active.as_deref()),
-                Search => self.find.ui(ui, &self.theme, cwd.as_deref(), &mut self.editors, &mut self.cmds),
+                Search => self.find.ui(ui, &self.theme, &self.session.workspace.prefixed(), &mut self.editors, &mut self.cmds),
                 SourceControl => self.scm.ui(ui, &self.theme, &mut self.git, &mut self.cmds),
                 RunAndDebug => self.debug_view(ui),
                 Testing => self.testing_view(ui),

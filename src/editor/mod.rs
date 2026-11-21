@@ -1675,9 +1675,11 @@ impl Editors {
                     let svg = self.docs.get(&tab.doc).is_some_and(|d| {
                         matches!(d.content, Content::Image(_)) && d.buf.path.as_deref().and_then(Path::extension).is_some_and(|e| e.eq_ignore_ascii_case("svg"))
                     });
+                    let workspace = crate::workspace::current();
+                    let shown = |p: &PathBuf| workspace.relative(p).filter(|_| workspace.folders.len() > 1).unwrap_or_else(|| p.to_string_lossy().into_owned());
                     let tip = match (self.terminals.get(&tab.doc), self.docs.get(&tab.doc)) {
                         (Some(terminal), _) => terminal.cwd().map_or_else(|| terminal.title(), |dir| dir.display().to_string()),
-                        (_, Some(doc)) => doc.buf.path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| doc.buf.title.clone()),
+                        (_, Some(doc)) => doc.buf.path.as_ref().map(shown).unwrap_or_else(|| doc.buf.title.clone()),
                         _ => String::new(),
                     };
                     resp.on_hover_text(tip).context_menu(|ui| {
