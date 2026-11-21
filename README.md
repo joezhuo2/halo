@@ -184,9 +184,14 @@ Each of these can be switched off under **Settings > Text Editor**.
 ### Explorer
 
 - Files and folders are colored by git state: green for new, yellow for
-  modified, red for deleted, gray for ignored.
+  modified, red for deleted, gray for ignored. A file with errors is red and
+  one with only warnings is yellow, in the tree, in Open Editors and on its
+  tab; folders that contain it are tinted too.
 - New file, new folder, rename, delete to the Recycle Bin, copy path and
-  reveal in the file manager, from the right-click menu.
+  reveal in the file manager, from the right-click menu. Where there is no
+  Recycle Bin (WSL folders), Halo asks before deleting permanently.
+- The Open Editors, folder, Outline and Timeline sections are resized by
+  dragging the line between them; double-click the line to reset.
 - Select several files (`Ctrl+Click`, `Shift+Click`), cut, copy and paste
   them, drag them to another folder, and drop files in from the operating
   system.
@@ -212,8 +217,9 @@ Each of these can be switched off under **Settings > Text Editor**.
   section with Show, Apply, Pop and Drop.
 - **Blame** for the current line in the status bar, and inline on the caret
   line if you turn it on.
-- The changes, pull requests and commits sections can be minimized, and
-  resized by dragging the line between them.
+- The stashes, changes, pull requests and commits sections can be minimized,
+  and resized by dragging the line between them. Commits load 10 at a time
+  as you scroll.
 - **Commit graph** with lanes and branch labels. Click a commit to list its
   files, and a file to open its diff.
 - **Pull requests** through the `gh` CLI: list, create, check out, approve,

@@ -6,6 +6,54 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-21
+
+Checked with tests on Windows, including WSL tests against a real clangd and
+git in Ubuntu. Not yet tried by hand in the running app.
+
+### Added
+
+- **Error markers**: a file with errors shows in red, and one with only
+  warnings in yellow, on its editor tab (with a dot), in the Explorer and in
+  Open Editors. Folders that contain it are tinted too.
+- **Resizable side bar sections**: drag the line between Open Editors, the
+  folder tree, Outline and Timeline, or between Stashes, Changes, Pull
+  Requests and Commits. Double-click the line to reset. Explorer section
+  sizes are remembered across restarts.
+- **Suggestion Rows** setting: the suggestion list shows 5 rows by default
+  (1 to 20), and opens above the line when there is no room below.
+- **Permanent delete**: when an item cannot be moved to the Recycle Bin (for
+  example in a WSL folder), Halo asks whether to delete it permanently.
+
+### Changed
+
+- **Popups**: Enter triggers the highlighted default button and Escape
+  cancels. Multi-line fields keep Enter for a new line and submit with
+  Ctrl+Enter.
+- **Commits and Timeline** load the 10 newest entries first and load more as
+  you scroll. The Outline draws only the visible rows.
+- **Git in WSL folders** refreshes several times faster: status reads run in
+  parallel, so the spinner settles and change bars appear soon after saving.
+- Clicking a Git change bar, and Next / Previous / Stage / Revert Change, no
+  longer wait about half a second in WSL folders.
+- Edits reach the language server in the frame they are typed, so errors and
+  warnings update as fast as the server allows.
+- Touchpad scrolling, and all wheel scrolling with Smooth Scrolling off,
+  stops where the input stops instead of drifting on.
+
+### Fixed
+
+- Deleting a file in a WSL folder did nothing.
+- A Git status call that fails or runs longer than 30 seconds ends loading
+  and shows the error, instead of spinning forever.
+- Git letters in the Explorer and the diff view work for folders opened
+  through `\\wsl$\`.
+- Terminal: Ctrl+Backspace deletes the previous word in WSL, bash, zsh and
+  fish, and a keyboard selection clears on the next key press or click.
+- The hover tooltip no longer flickers on a token with a warning or error.
+- Accepting a completion that adds an `#include`, or any edit above the
+  view, no longer shifts the text in the editor.
+
 ## [0.1.6] - 2026-11-21
 
 Checked with tests on Windows, including WSL tests against a real clangd and
