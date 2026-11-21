@@ -22,7 +22,7 @@ use intel::{Intel, Lang, Piece, Queued, Row, from_lsp};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub fn configure(settings: &Settings) {
     highlight::configure(&settings.grammars, &settings.associations);
@@ -137,7 +137,7 @@ pub struct Editors {
     goto: Option<String>,
     goto_focus: bool,
     closing: Option<(usize, usize)>,
-    banner: Option<String>,
+    banner: Option<(String, Instant)>,
     last_input: f64,
     drag: Option<(usize, usize)>,
     drop: Option<DropAt>,
@@ -214,6 +214,10 @@ fn links(text: &str) -> Vec<(usize, usize)> {
         from = at + len.max(4);
     }
     out
+}
+
+fn notice(text: String) -> Option<(String, Instant)> {
+    Some((text, Instant::now()))
 }
 
 fn visible_text(buf: &Document, line: usize) -> String {
@@ -477,7 +481,7 @@ impl Editors {
         let id = self.next_id;
         self.next_id += 1;
         if let Some(note) = &buf.note {
-            self.banner = Some(note.clone());
+            self.banner = notice(note.clone());
         }
         let hl = Highlighter::new(buf.path.as_deref(), &buf.rope);
         self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0, stale: false });
@@ -513,7 +517,7 @@ impl Editors {
                 let id = self.insert_doc(buf);
                 self.place(id, preview);
             }
-            Err(error) => self.banner = Some(error),
+            Err(error) => self.banner = notice(error),
         }
     }
 
@@ -691,7 +695,7 @@ impl Editors {
                 true
             }
             Err(error) => {
-                self.banner = Some(error);
+                self.banner = notice(error);
                 false
             }
         }
@@ -977,7 +981,7 @@ impl Editors {
                 Err(error) => Some(error),
             },
         };
-        self.banner = banner.or(self.banner.take());
+        self.banner = banner.and_then(notice).or(self.banner.take());
     }
 
     pub fn has_focus(&self) -> bool {
@@ -2300,7 +2304,7 @@ impl Editors {
                         tab.sels = vec![Sel::caret(0)];
                         *stale = false;
                     }
-                    Err(error) => self.banner = Some(error),
+                    Err(error) => self.banner = notice(error),
                 },
                 (Some(2), Some(path)) => {
                     buf.disk = buffer::disk_time(&path);
@@ -2311,10 +2315,18 @@ impl Editors {
             }
         }
 
-        if is_active && let Some(message) = self.banner.clone() {
+        if is_active && let Some((message, since)) = self.banner.clone() {
+            let left = 4.0 - since.elapsed().as_secs_f32();
+            let t = ui::anim(ui, Id::new("editor_banner"), left > 0.0);
+            if left > 0.0 {
+                ctx.request_repaint_after(Duration::from_secs_f32(left));
+            } else if t == 0.0 {
+                self.banner = None;
+            }
             let rect = Rect::from_min_max(pos2(body.left(), body.bottom() - 30.0), pos2(text_rect.right(), body.bottom()));
-            ui.painter().rect_filled(rect, CornerRadius::ZERO, ui::mix(theme.raised, theme.warning, 0.2));
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, ui::with_alpha(ui::mix(theme.raised, theme.warning, 0.2), t));
             ui.scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(10.0, 3.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
+                ui.set_opacity(t);
                 if ui::icon_button(ui, theme, icons::X, 22.0, false, "Dismiss").clicked() {
                     self.banner = None;
                 }
@@ -2537,6 +2549,19 @@ end", "word ".repeat(100)))], &settings);
         assert!(tab.sels[0].head > 0 && tab.sels[0].head < 500);
         frame_with(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default()); rows[1] as usize], &settings);
         assert_eq!(editors.status().unwrap().line, 2);
+    }
+
+    #[test]
+    fn banner_expires_on_its_own() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &Settings::default(), &ctx);
+        editors.banner = notice("fresh".into());
+        (0..3).for_each(|_| frame(&ctx, &mut editors, vec![]));
+        assert!(editors.banner.is_some());
+        editors.banner = Some(("old".into(), Instant::now().checked_sub(Duration::from_secs(5)).unwrap()));
+        (0..30).for_each(|_| frame(&ctx, &mut editors, vec![]));
+        assert!(editors.banner.is_none());
     }
 
     #[test]

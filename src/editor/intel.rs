@@ -1,5 +1,5 @@
 use super::buffer::{After, Document, Kind, Sel, is_word};
-use super::{Editors, Tab, links, snippet};
+use super::{Editors, Tab, links, notice, snippet};
 use crate::command::Command;
 use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
 use crate::settings::Settings;
@@ -620,7 +620,7 @@ impl Editors {
             Want::Locations { doc, pos, title, peek } => {
                 let found = lsp::locations(&value);
                 match found.as_slice() {
-                    [] => self.banner = Some(format!("No {} found.", title.to_lowercase())),
+                    [] => self.banner = notice(format!("No {} found.", title.to_lowercase())),
                     [only] if !peek => {
                         let (path, start) = (only.path.clone(), only.start);
                         self.jump(&path, start, true);
@@ -629,7 +629,7 @@ impl Editors {
                 }
             }
             Want::Rename => match lsp::workspace_edit(&value) {
-                changes if changes.is_empty() => self.banner = Some("The language server could not rename this symbol.".into()),
+                changes if changes.is_empty() => self.banner = notice("The language server could not rename this symbol.".into()),
                 changes => self.apply_workspace_edit(changes),
             },
             Want::Actions { doc, apply } => {
@@ -638,7 +638,7 @@ impl Editors {
                     Some((_, action)) if apply => self.run_action(doc, action.clone()),
                     Some(_) => self.intel.actions = Some(Actions { doc, items: found, selected: 0, reveal: true }),
                     None if apply => {}
-                    None => self.banner = Some("No code actions are available here.".into()),
+                    None => self.banner = notice("No code actions are available here.".into()),
                 }
             }
             Want::Format { doc, version, save } => {
@@ -653,7 +653,7 @@ impl Editors {
                 let item = value.as_array().and_then(|items| items.first());
                 let path = self.docs.get(&doc).and_then(|d| d.buf.path.clone());
                 let (Some(item), Some(path)) = (item, path) else {
-                    self.banner = Some("No hierarchy is available here.".into());
+                    self.banner = notice("No hierarchy is available here.".into());
                     return;
                 };
                 let method = match (call, outgoing) {
@@ -736,7 +736,7 @@ impl Editors {
                         id
                     }
                     Err(error) => {
-                        self.banner = Some(error);
+                        self.banner = notice(error);
                         continue;
                     }
                 },
@@ -776,7 +776,7 @@ impl Editors {
         let method = if call { "textDocument/prepareCallHierarchy" } else { "textDocument/prepareTypeHierarchy" };
         match self.lsp.request(&path, method, lsp::at(&path, to_lsp(&d.buf, pos))) {
             Some(request) => self.intel.wants.push((request, Want::Prepare { doc, pos, call, outgoing })),
-            None => self.banner = Some(format!("The language server does not provide {}.", hierarchy_title(call, outgoing).to_lowercase())),
+            None => self.banner = notice(format!("The language server does not provide {}.", hierarchy_title(call, outgoing).to_lowercase())),
         }
     }
 
@@ -848,7 +848,7 @@ impl Editors {
         sync(&mut self.lsp, &doc.buf, &mut doc.lang, ctx);
         let buf = &doc.buf;
         let Some(path) = buf.path.clone().filter(|_| doc.lang.attached) else {
-            self.banner = Some("No language server is running for this file. Servers are listed under Languages in Settings.".into());
+            self.banner = notice("No language server is running for this file. Servers are listed under Languages in Settings.".into());
             return true;
         };
         let head = sel.head.min(buf.len());
@@ -911,7 +911,7 @@ impl Editors {
         };
         match self.lsp.request(&path, method, params) {
             Some(request) => self.intel.wants.push((request, want)),
-            None => self.banner = Some(format!("The language server does not support {}.", cmd.label())),
+            None => self.banner = notice(format!("The language server does not support {}.", cmd.label())),
         }
         true
     }
@@ -1213,7 +1213,7 @@ impl Editors {
                     params["newName"] = json!(name);
                     match self.lsp.request(&path, "textDocument/rename", params) {
                         Some(request) => self.intel.wants.push((request, Want::Rename)),
-                        None => self.banner = Some("The language server does not support Rename Symbol.".into()),
+                        None => self.banner = notice("The language server does not support Rename Symbol.".into()),
                     }
                 }
             }
