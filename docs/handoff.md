@@ -6,7 +6,8 @@ Written 2026-11-20. Read [requirements.md](requirements.md), [decisions.md](deci
 
 - Repository: `C:\Users\Joe\Documents\halo`, remote `origin` = https://github.com/joezhuo2/halo.
 - Branches: `main` was created from `m1-shell` (all of milestone 1) and pushed. Milestone 2 is on `m2-scm` and milestone 3 on `m3-ai` (branched from `m2-scm`); neither is pushed or merged. Milestone 4 is on `m4-packaging` (branched from `m3-ai`), also not pushed.
-- Build: `cargo build` is warning-free. `cargo test` passes 31 tests.
+- Build: `cargo build` is warning-free. `cargo test` passes 35 tests; `cargo test -- --ignored` adds one that needs `rust-analyzer`.
+- Version 0.1.1 (language servers and the community files) is on `main`, tagged `v0.1.1`. The Release workflow builds it and leaves a draft GitHub release to publish.
 - Run: `cargo run --release`, or `target\release\halo.exe [folder-or-file]`.
 - Config written by the app: `%APPDATA%\halo\settings.json`, `session.json` and, once opened, `keybindings.json`. eframe also stores window size and position under `%APPDATA%\Halo`.
 
@@ -53,6 +54,12 @@ Not exercised, because posted mouse input is not delivered: dragging tabs to reo
 
 Pinned tabs are not saved in `session.json`. The AI toggle only shows in the tab strip, so it is hidden while no file is open (the View menu and `Ctrl+Alt+B` still work).
 
+## Language servers (0.1.1, 2026-11-20)
+
+Checked in test mode against `rust-analyzer` on this repository, by window capture and posted keys: breadcrumbs with the enclosing symbol, the Outline section, semantic highlighting, inlay hints, reference counts above functions, the status bar server status and problem counts, the references peek list, hover from the keyboard, call hierarchy, completion while typing and accepting an item, rename with `F2`, the code action list, Format Document, and the Problems panel with a syntax error.
+
+Not exercised, because posted mouse input and modifier keys are not delivered: hover with the mouse, `Ctrl+Click`, clicking a reference count (covered by a headless test), clicking rows in the peek list, Problems panel and Outline, the editor context menu, signature help, `Ctrl+Space`, organize imports, format on save and on paste, type hierarchy, and Go Back. Never run: any server other than `rust-analyzer` (`typescript-language-server` is installed here; the others are not), two servers at once, a server crashing, and the settings page controls for servers.
+
 ## Known gaps and limits
 
 **Memory target is missed.** Release build, maximized on a high-DPI display: about 90 MB private working set with a folder open, about 100 MB with a file and a terminal (133 MB working set). The target is 80 MB. The largest single piece is the AMD OpenGL driver (`atio6axx.dll`, 62 MB image) loaded into the process. Ideas:
@@ -64,7 +71,7 @@ Pinned tabs are not saved in `session.json`. The AI toggle only shows in the tab
 
 Other limits:
 
-- No hover, completion or diagnostics (deferred by decision 18). Problems tab is an empty state.
+- Language features depend on servers the user installs; see the limits in the README.
 - Editor: no word wrap, no regex find, no auto-closing brackets, no IME composition, no word-wise drag after double click; a tab renders as four spaces wide rather than aligning to tab stops; git gutter marks reflect the file as last saved; lines are drawn up to 5000 characters.
 - Syntax: syntect's bundled grammars only. TypeScript/JSX fall back to JavaScript, `.ino`/headers to C++; TOML and some others show as plain text. Add grammars with the `grammars` folder and map extensions with `associations`; both are read once at startup.
 - Terminal: no bold or italic font variants, no mouse reporting to terminal programs, no scrollbar, wide characters are placed per cell without width correction. Shortcuts bound globally (`Ctrl+B`, `Ctrl+J`, `Ctrl+W`, `Ctrl+N`, `Ctrl+O`, `Ctrl+S`, `Ctrl+,`) do not reach the shell.

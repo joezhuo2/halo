@@ -26,9 +26,10 @@
 > Halo is an ultra-lightweight native code editor laid out like VS Code. It is
 > written in Rust with egui on OpenGL, with no Electron and no web view, and
 > ships as one executable. It has an explorer, a multi-cursor editor with split
-> views, an integrated terminal, source control with a commit graph and pull
-> requests, a panel that runs the Claude and Codex CLIs, and a settings page
-> for fonts, colors, languages and key bindings.
+> views and language server support, an integrated terminal, source control
+> with a commit graph and pull requests, a panel that runs the Claude and
+> Codex CLIs, and a settings page for fonts, colors, languages and key
+> bindings.
 
 <p align="center"><img src="assets/halo-demo.gif" alt="Halo tour: the editor with explorer and terminal, a split editor, the command list, source control with the commit graph, the AI panel, the settings pages for the editor, colors and keyboard shortcuts, and the light theme" width="100%"></p>
 
@@ -65,8 +66,9 @@ so you can check what went into them.
 - **Linux:** unpack and run `./halo`. It needs OpenGL and either X11 or
   Wayland.
 
-Halo needs `git` on `PATH` for source control, and the `gh`, `claude` and
-`codex` CLIs for pull requests and the AI panel. Each is optional.
+Halo needs `git` on `PATH` for source control, the `gh`, `claude` and `codex`
+CLIs for pull requests and the AI panel, and a language server for each
+language you want diagnostics and completion in. Each is optional.
 
 ## Features
 
@@ -87,6 +89,41 @@ Halo needs `git` on `PATH` for source control, and the `gh`, `claude` and
   Both and Next.
 - **Auto save** (off by default) saves changed files one second after the
   last edit.
+
+### Language servers
+
+Halo starts the language server of a file when you open it, if that server is
+on `PATH`. Nothing is bundled and nothing is downloaded. The defaults cover
+`rust-analyzer`, `pyright-langserver`, `typescript-language-server`, `gopls`,
+`clangd`, `csharp-ls`, `jdtls`, `lua-language-server`, `zls` and the VS Code
+JSON, HTML and CSS servers; **Settings > Languages** sets the command for each
+file extension.
+
+- **Diagnostics:** errors and warnings are underlined in the text and marked
+  in the minimap, listed in the **Problems** panel (`Ctrl+Shift+M`) and
+  counted in the status bar. Click a problem to go to it.
+- **Completion** as you type or with `Ctrl+Space`, **signature help** inside
+  a call, and **hover** when the pointer rests on a name.
+- **Go to Definition** (`F12` or `Ctrl+Click`), declaration, type definition
+  and implementations, **Peek Definition** (`Alt+F12`) and **Find All
+  References** (`Shift+F12`). Several results open a peek list with a preview
+  of each place. `Alt+Left` goes back.
+- **Reference counts** sit on a line above each function, method and type.
+  Click one to peek at the places that use it. Interfaces and traits also
+  show their implementations.
+- **Rename Symbol** (`F2`) across files, **Quick Fix** and refactorings
+  (`Ctrl+.`), and **Organize Imports** (`Shift+Alt+O`).
+- **Format Document** (`Shift+Alt+F`) and **Format Selection**
+  (`Ctrl+K Ctrl+F`), with optional format on save and on paste.
+- **Symbols:** `Ctrl+T` searches the workspace, the **Outline** section under
+  the explorer lists the active file, and the breadcrumbs above the text show
+  the path and the enclosing symbols.
+- **Semantic highlighting**, **inlay hints** for inferred types and parameter
+  names, and **call** (`Shift+Alt+H`) and **type hierarchy** in the peek list.
+- Server messages go to the **Output** panel, and the status bar shows what
+  the servers are doing. **Restart Language Servers** is in the command list.
+
+Each of these can be switched off under **Settings > Text Editor**.
 
 ### Explorer
 
@@ -134,6 +171,7 @@ what it searches:
 | `>` | Commands |
 | `%` | Text in files |
 | `@` | Symbols in the current file |
+| `#` | Symbols in the workspace, from the language servers |
 | `:` | A line number |
 
 ### Run
@@ -152,12 +190,12 @@ what it searches:
 
 | Category | What it sets |
 | --- | --- |
-| Text Editor | Font family, font size, tab size, spaces or tabs, minimap |
+| Text Editor | Font family, font size, tab size, spaces or tabs, minimap, breadcrumbs, code lens, inlay hints, semantic highlighting, format on save and paste, diagnostics and the status bar counts |
 | Files | Auto save |
 | Appearance | Dark or light theme, and every interface and syntax color for each theme |
 | Terminal | Default profile and the list of profiles |
 | Run and Tasks | The run command for each file extension, and named tasks |
-| Languages | Grammars folder, file associations and the installed languages |
+| Languages | Grammars folder, file associations, language servers and their commands, and the installed languages |
 | Keyboard Shortcuts | Every command with its key |
 
 To change a key, click it in **Keyboard Shortcuts** and press the new one.
@@ -172,6 +210,14 @@ The defaults follow VS Code:
 | `Ctrl+Shift+P` | Show all commands |
 | `Ctrl+Shift+F` | Find in files |
 | `Ctrl+Shift+O` | Go to symbol |
+| `Ctrl+T` | Go to symbol in workspace |
+| `F12` | Go to definition |
+| `Shift+F12` | Find all references |
+| `F2` | Rename symbol |
+| `Ctrl+.` | Quick fix |
+| `Shift+Alt+F` | Format document |
+| `Ctrl+Space` | Trigger suggest |
+| `Ctrl+Shift+M` | Problems |
 | `Ctrl+B` | Toggle side bar |
 | `Ctrl+J` | Toggle panel |
 | `Ctrl+Alt+B` | Toggle AI panel |
@@ -185,8 +231,12 @@ The sun or moon at the right end of the status bar also switches the theme.
 
 ### Limits
 
-- **Problems** and **Output** are placeholders: Halo has no language server,
-  so there are no diagnostics, hovers or completions.
+- Language features need a server that is installed and on `PATH`, and they
+  are off in WSL folders.
+- The peek list and the popups sit over the text instead of pushing it down.
+- Completions insert plain text, without snippet tab stops. Server code
+  lenses such as Run and Debug, and the quick fix lightbulb, are not shown.
+- Call and type hierarchy list one level at a time.
 - Pinned tabs are not remembered after a restart.
 - New grammars and file associations load when Halo starts.
 
@@ -247,11 +297,13 @@ no section for it.
 cargo test
 ```
 
-31 tests: the edit engine, highlighting, git parsing against a real temporary
+35 tests: the edit engine, highlighting, git parsing against a real temporary
 repository, explorer logic on a temporary folder, tab moves and pins, key
 bindings, terminal key encoding and colors, a real shell round trip through
-the PTY, theme colors, the logo, and headless editor tests that type through
-egui input.
+the PTY, theme colors, the logo, language server messages and result parsing,
+and headless editor tests that type and click through egui input, including
+through code lens rows and inlay hints. `cargo test -- --ignored` adds a round
+trip with a real `rust-analyzer`.
 
 ### Layout
 
@@ -263,7 +315,9 @@ src/
   titlebar.rs       menus, search box and window buttons
   statusbar.rs      problems, branch, sync, position and theme switch
   explorer.rs       file tree with git colors and file operations
-  editor/           buffer and edits, highlighting, tabs, groups and the view
+  editor/           buffer and edits, highlighting, tabs, groups, the view and
+                    the language features drawn in it
+  lsp.rs            language server processes, messages and result parsing
   search.rs         file, command, text, symbol and line search
   git.rs            git and gh calls, status, log and graph lanes
   scm.rs            source control side bar
@@ -291,8 +345,10 @@ Measured on the milestone 3 build, maximized on a high-DPI display.
 
 ## Contributing
 
-Bug reports and pull requests are welcome. Include your OS, the Halo version
-from **Help > About Halo**, and the steps that lead to the problem.
+Bug reports and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md)
+says how to build, test and send a change, and the
+[Code of Conduct](CODE_OF_CONDUCT.md) applies to everyone taking part. Report
+security problems through [SECURITY.md](SECURITY.md).
 
 ## License
 

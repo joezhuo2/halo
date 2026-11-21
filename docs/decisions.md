@@ -65,6 +65,19 @@ Confirmed by the owner on 2026-11-20 through 24 multiple-choice questions. Where
 - Deleting from the explorer moves items to the recycle bin and never falls back to permanent deletion.
 - `halo <path>` on the command line opens that folder or file.
 
+## Decisions made while adding language servers (0.1.1)
+
+- Decision 18 is lifted: language servers were asked for by the owner on 2026-11-20, as items 1 to 7 of the list of VS Code features Halo lacked.
+- Servers are found on `PATH` and never bundled or downloaded. A server that is missing is skipped silently and noted in the Output panel, like the other optional tools.
+- The client is hand-written on `serde_json`, with no LSP or async crate.
+- Server commands are a map from file extension to command line in `settings.json` (`servers`), edited like run commands. Arguments are split on spaces.
+- Documents are sent whole on each change. Incremental sync was not needed for files under 2 MB.
+- The reference count line is drawn by Halo from document symbols and reference requests, so it works with any server that supports references.
+- The peek list, hover, completion and other popups are overlays. The peek list does not push the text down as VS Code's does.
+- Completion declares no snippet support, so servers send plain text; snippet syntax that arrives anyway is flattened.
+- Format on save applies to Save, not to auto save, and saves unformatted after 1.5 s without an answer.
+- Language servers are not started for WSL folders.
+
 ## Decisions made while building milestone 3
 
 - WSL mode has no state of its own: a folder under `\\wsl.localhost\<distro>` (or `\\wsl$`) is a WSL folder. Files go through that share with ordinary file calls; only processes (git, `gh`, shells, AI CLIs, Run) are wrapped in `wsl.exe -d <distro> --cd <dir>`.

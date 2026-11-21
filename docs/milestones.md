@@ -28,7 +28,7 @@
 - Title bar search (`Ctrl+P`): files by default, `>` commands (`Ctrl+Shift+P`), `%` text in files (`Ctrl+Shift+F`), `@` symbols of the active editor (`Ctrl+Shift+O`), `:` line. `name:12` opens a file at a line.
 - Settings page (`Ctrl+,`) for the common settings, `keybindings.json` (`Ctrl+K Ctrl+S`), two-key chords, extra `.sublime-syntax` grammars from a folder and file associations.
 - Run menu: Run File (`F5`) runs the per-extension command from `run` in `settings.json`, and tasks from `tasks`, in one reused terminal; the Debug Console tab mirrors that terminal's output.
-- Language servers (hover, completion, go to definition, Problems tab) were deferred out of v1 by the owner and are not built; schedule them after M4.
+- Language servers (hover, completion, go to definition, Problems tab) were deferred out of v1 by the owner; they were built for 0.1.1, see M5.
 
 ## M4: packaging (written, not yet run)
 
@@ -36,3 +36,8 @@
 - GitHub Actions (`.github/workflows/release.yml`): on a `v*` tag, builds every platform and attaches the installer, a portable `halo.exe` and the `tar.gz` binaries to a GitHub release. It can also be started by hand, which builds without releasing. Never run: nothing from this milestone is pushed.
 - Linux x64 and macOS (arm64, x64) builds in the same workflow. `cargo check` passes for both targets from Windows; neither has been linked or run.
 - Not built: code signing, an app icon in the executable, a macOS `.app` bundle, Linux packages (`.deb`, AppImage) and a `.desktop` entry.
+
+## M5: language servers (0.1.1, done)
+
+- A language server client (`lsp.rs`) and the editor features on top of it (`editor/intel.rs`): diagnostics with the Problems panel and status bar counts, completion, signature help, hover, go to definition and its relatives, peek, find references, reference counts above declarations, rename, code actions, organize imports, formatting, workspace symbols, outline, breadcrumbs, semantic highlighting, inlay hints, and call and type hierarchy.
+- Not built: server code lenses, the quick fix lightbulb, snippet tab stops, incremental document sync, a hierarchy tree with more than one level, `completionItem/resolve` and `codeAction/resolve`, and language servers in WSL folders.
