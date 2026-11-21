@@ -214,6 +214,20 @@ pub fn shimmer(ui: &Ui, theme: &Theme, rect: Rect) {
     ui.painter().with_clip_rect(rect).add(mesh);
 }
 
+pub fn shimmer_text(painter: &egui::Painter, theme: &Theme, pos: egui::Pos2, galley: std::sync::Arc<egui::Galley>) {
+    let rect = Rect::from_min_size(pos, galley.size());
+    if !painter.clip_rect().intersects(rect) {
+        return;
+    }
+    painter.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    let phase = (painter.ctx().input(|i| i.time) % 1.2 / 1.2) as f32;
+    let band = (rect.width() * 0.4).max(24.0);
+    let x = rect.left() - band + phase * (rect.width() + band);
+    let lit = Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(x + band, rect.bottom()));
+    painter.galley(pos, galley.clone(), with_alpha(theme.text_dim, 0.55));
+    painter.with_clip_rect(lit.intersect(painter.clip_rect())).galley(pos, galley, theme.text);
+}
+
 pub fn skeleton(ui: &mut Ui, theme: &Theme, rows: usize) {
     for row in 0..rows {
         let (_, r) = ui.allocate_space(egui::vec2(ui.available_width(), 22.0));
