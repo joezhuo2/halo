@@ -183,7 +183,6 @@ fn skeleton_fraction(row: usize) -> f32 {
     0.35 + 0.05 * ((row * 7 + 3) % 11) as f32
 }
 
-#[allow(dead_code)]
 pub fn spinner(ui: &Ui, center: egui::Pos2, radius: f32, color: Color32) {
     if !ui.is_rect_visible(Rect::from_center_size(center, Vec2::splat(radius * 2.0 + 2.0))) {
         return;
@@ -194,7 +193,6 @@ pub fn spinner(ui: &Ui, center: egui::Pos2, radius: f32, color: Color32) {
     ui.painter().add(egui::Shape::line(points, egui::Stroke::new(1.5, color)));
 }
 
-#[allow(dead_code)]
 pub fn shimmer(ui: &Ui, theme: &Theme, rect: Rect) {
     if !ui.is_rect_visible(rect) {
         return;
@@ -216,7 +214,6 @@ pub fn shimmer(ui: &Ui, theme: &Theme, rect: Rect) {
     ui.painter().with_clip_rect(rect).add(mesh);
 }
 
-#[allow(dead_code)]
 pub fn skeleton(ui: &mut Ui, theme: &Theme, rows: usize) {
     for row in 0..rows {
         let (_, r) = ui.allocate_space(egui::vec2(ui.available_width(), 22.0));
@@ -225,7 +222,6 @@ pub fn skeleton(ui: &mut Ui, theme: &Theme, rows: usize) {
     }
 }
 
-#[allow(dead_code)]
 pub fn checkbox(ui: &mut Ui, theme: &Theme, value: &mut bool, text: impl Into<egui::WidgetText>) -> Response {
     let galley = text.into().into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button);
     let label = if galley.is_empty() { 0.0 } else { 8.0 + galley.size().x };
@@ -271,14 +267,12 @@ pub fn checkbox(ui: &mut Ui, theme: &Theme, value: &mut bool, text: impl Into<eg
     resp
 }
 
-#[allow(dead_code)]
 pub fn caret(painter: &egui::Painter, center: egui::Pos2, open: f32, color: Color32) {
     let galley = painter.layout_no_wrap(icons::CARET_RIGHT.to_owned(), FontId::proportional(11.0), color);
     let pos = center - galley.size() / 2.0;
     painter.add(egui::epaint::TextShape::new(pos, galley, color).with_angle_and_anchor(open * std::f32::consts::FRAC_PI_2, Align2::CENTER_CENTER));
 }
 
-#[allow(dead_code)]
 pub fn section(ui: &mut Ui, theme: &Theme, title: &str, open: &mut bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), Sense::click());
     if resp.clicked() {
@@ -295,7 +289,6 @@ pub fn section(ui: &mut Ui, theme: &Theme, title: &str, open: &mut bool) -> Resp
     resp
 }
 
-#[allow(dead_code)]
 pub fn reveal(ui: &Ui, id: Id, open: bool) -> f32 {
     cubic_out(ui.ctx().animate_bool_with_time(id, open, ANIM * 1.4))
 }
