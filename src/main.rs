@@ -16,6 +16,7 @@ mod settings_page;
 mod statusbar;
 mod terminal;
 mod theme;
+mod timeline;
 mod titlebar;
 mod ui;
 mod update;

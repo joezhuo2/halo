@@ -11,6 +11,7 @@ use crate::search::Search;
 use crate::settings::{Session, Settings};
 use crate::terminal::BottomPanel;
 use crate::theme::Theme;
+use crate::timeline::Timeline;
 use crate::wsl::{self, Wsl};
 use crate::ui::{self, icons};
 use eframe::egui::{
@@ -34,6 +35,7 @@ pub struct Halo {
     pub git: Git,
     pub explorer: Explorer,
     pub scm: Scm,
+    timeline: Timeline,
     pub accounts: Accounts,
     pub editors: Editors,
     pub bottom: BottomPanel,
@@ -75,6 +77,7 @@ impl Halo {
             git: Git::new(),
             explorer: Explorer::new(),
             scm: Scm::new(),
+            timeline: Timeline::default(),
             accounts: Accounts::default(),
             editors: Editors::new(),
             bottom: BottomPanel::new(),
@@ -428,16 +431,21 @@ impl Halo {
                 }
                 let full = ui.available_rect_before_wrap();
                 let symbols = self.editors.outline();
-                let height = if self.session.outline { (full.height() * 0.4).max(24.0) } else { 24.0 };
-                let split = full.bottom() - height;
+                let size = |open: bool, share: f32| if open { (full.height() * share).max(24.0) } else { 24.0 };
+                let lower = full.bottom() - size(self.session.timeline, 0.3);
+                let split = lower - size(self.session.outline, if self.session.timeline { 0.3 } else { 0.4 });
                 ui.scope_builder(UiBuilder::new().max_rect(full.with_max_y(split)), |ui| {
                     ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                     self.explorer.ui(ui, &self.theme, &self.git, active.as_deref(), &mut self.cmds);
                 });
-                ui.scope_builder(UiBuilder::new().max_rect(full.with_min_y(split)), |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(full.with_min_y(split).with_max_y(lower)), |ui| {
                     ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                     let active = !self.editors.is_empty();
                     outline(ui, &self.theme, symbols, active, self.editors.outline_loading(), &mut self.session.outline, &mut self.cmds);
+                });
+                ui.scope_builder(UiBuilder::new().max_rect(full.with_min_y(lower)), |ui| {
+                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                    self.timeline.ui(ui, &self.theme, active.as_deref(), &mut self.session.timeline, &mut self.cmds);
                 });
             });
         self.session.sidebar = open;

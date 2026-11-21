@@ -260,6 +260,7 @@ pub struct Session {
     pub source_control: bool,
     pub search: bool,
     pub outline: bool,
+    pub timeline: bool,
 }
 
 impl Default for Session {
@@ -275,6 +276,7 @@ impl Default for Session {
             source_control: false,
             search: false,
             outline: true,
+            timeline: false,
         }
     }
 }
