@@ -5,7 +5,7 @@ use crate::settings;
 use crate::theme::{Theme, Tokens};
 use crate::ui;
 use eframe::egui::{self, Color32};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::mpsc::{Receiver, Sender, channel};

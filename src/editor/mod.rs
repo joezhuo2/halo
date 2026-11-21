@@ -1336,13 +1336,15 @@ impl Editors {
                             let color = if active_group { theme.accent } else { theme.text_dim };
                             p.rect_filled(line, CornerRadius::ZERO, ui::with_alpha(color, a));
                         }
-                        p.text(
-                            pos2(r.left() + 14.0, r.center().y),
-                            Align2::LEFT_CENTER,
-                            icons::FILE_CODE,
-                            FontId::proportional(14.0),
-                            ui::mix(theme.text_dim, theme.accent, a * 0.8),
-                        );
+                        if !crate::icon_theme::paint(p, pos2(r.left() + 21.0, r.center().y), 14.0, title, crate::icon_theme::Kind::File, 1.0) {
+                            p.text(
+                                pos2(r.left() + 14.0, r.center().y),
+                                Align2::LEFT_CENTER,
+                                icons::FILE_CODE,
+                                FontId::proportional(14.0),
+                                ui::mix(theme.text_dim, theme.accent, a * 0.8),
+                            );
+                        }
                         let text_pos = pos2(r.left() + 34.0, r.center().y - galley.size().y / 2.0);
                         p.galley(text_pos, galley, ui::mix(theme.text_dim, theme.text, a.max(h)));
                         if *dirty && !over_close {

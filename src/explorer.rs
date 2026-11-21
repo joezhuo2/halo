@@ -520,8 +520,11 @@ impl Explorer {
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(rect, 0, ui::mix(theme.panel, theme.bar, 0.5 + 0.5 * h));
         ui::caret(&painter, pos2(rect.left() + 12.0, rect.center().y), open, theme.text);
-        let name = root.file_name().unwrap_or(root.as_os_str()).to_string_lossy().to_uppercase();
-        painter.text(pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, name, FontId::proportional(11.5), theme.text);
+        let folder = root.file_name().unwrap_or(root.as_os_str()).to_string_lossy();
+        let kind = if self.collapsed { crate::icon_theme::Kind::Root } else { crate::icon_theme::Kind::RootOpen };
+        let icon = crate::icon_theme::paint(&painter, pos2(rect.left() + 32.0, rect.center().y), 14.0, &folder, kind, 1.0);
+        let name = folder.to_uppercase();
+        painter.text(pos2(rect.left() + if icon { 44.0 } else { 24.0 }, rect.center().y), Align2::LEFT_CENTER, name, FontId::proportional(11.5), theme.text);
         if resp.clicked() {
             self.collapsed ^= true;
         }
@@ -651,7 +654,14 @@ impl Explorer {
                             _ => file_icon(&row.name),
                         };
                         let icon_color = if row.is_dir { ui::with_alpha(theme.accent, fade * 0.85) } else { dim };
-                        painter.text(pos2(x + 10.0, y), Align2::LEFT_CENTER, icon, FontId::proportional(15.0), icon_color);
+                        let kind = match (row.is_dir, open) {
+                            (true, true) => crate::icon_theme::Kind::FolderOpen,
+                            (true, false) => crate::icon_theme::Kind::Folder,
+                            _ => crate::icon_theme::Kind::File,
+                        };
+                        if !crate::icon_theme::paint(&painter, pos2(x + 17.0, y), 16.0, &row.name, kind, fade) {
+                            painter.text(pos2(x + 10.0, y), Align2::LEFT_CENTER, icon, FontId::proportional(15.0), icon_color);
+                        }
 
                         if row.editing && interactive {
                             if let Some(edit) = &mut self.edit {

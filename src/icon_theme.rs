@@ -155,7 +155,7 @@ impl IconTheme {
 enum Mode {
     Builtin,
     Hidden,
-    Theme(IconTheme),
+    Theme(Box<IconTheme>),
 }
 
 struct State {
@@ -196,18 +196,19 @@ pub fn select(name: &str, config: &Path) {
     if state.as_ref().map_or("builtin", |s| s.name.as_str()) == name {
         return;
     }
+    *state = make(name, config);
+}
+
+fn make(name: &str, config: &Path) -> Option<State> {
     let mode = match name {
-        "builtin" => {
-            *state = None;
-            return;
-        }
+        "builtin" => return None,
         "none" => Mode::Hidden,
-        name => load(config, name).map(Mode::Theme).unwrap_or_else(|error| {
+        name => load(config, name).map(|t| Mode::Theme(Box::new(t))).unwrap_or_else(|error| {
             ui::notify(format!("The icon theme {name} could not be loaded, the built-in icons are in use: {error}"));
             Mode::Builtin
         }),
     };
-    *state = Some(State { name: name.to_owned(), mode, found: HashMap::new(), textures: HashMap::new() });
+    Some(State { name: name.to_owned(), mode, found: HashMap::new(), textures: HashMap::new() })
 }
 
 pub fn forget() {
@@ -239,6 +240,10 @@ fn rasterize(path: &Path, px: u32) -> Option<ColorImage> {
 pub fn paint(painter: &Painter, center: Pos2, size: f32, name: &str, kind: Kind, alpha: f32) -> bool {
     let mut guard = STATE.lock().unwrap();
     let Some(state) = guard.as_mut() else { return false };
+    draw(state, painter, center, size, name, kind, alpha)
+}
+
+fn draw(state: &mut State, painter: &Painter, center: Pos2, size: f32, name: &str, kind: Kind, alpha: f32) -> bool {
     let theme = match &state.mode {
         Mode::Builtin => return false,
         Mode::Hidden => return true,
@@ -445,6 +450,33 @@ mod tests {
         assert!(load(&config, "missing").is_err());
         remove(&config, "my-icons");
         assert!(installed(&config).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn paints_cached_textures_only_while_a_theme_is_selected() {
+        let dir = std::env::temp_dir().join(format!("halo-icons-paint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.svg"), square("#00ff00")).unwrap();
+        std::fs::write(dir.join("t.json"), r#"{"iconDefinitions": {"a": {"iconPath": "a.svg"}}, "file": "a"}"#).unwrap();
+        let config = dir.join("config");
+        let name = import(&dir.join("t.json"), &config).unwrap();
+        let ctx = egui::Context::default();
+        let mut state = make(&name, &config).unwrap();
+        let mut painted = |state: &mut State, name: &str, kind: Kind| {
+            let mut result = false;
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 200.0))), ..Default::default() };
+            ctx.run_ui(input, |ui| result = draw(state, ui.painter(), pos2(20.0, 20.0), 16.0, name, kind, 1.0)).textures_delta.clear();
+            result
+        };
+        assert!(!painted(&mut state, "src", Kind::Folder));
+        assert!(painted(&mut state, "a.rs", Kind::File));
+        assert!(painted(&mut state, "b.rs", Kind::File));
+        assert_eq!(state.textures.len(), 1);
+        let mut hidden = make("none", &config).unwrap();
+        assert!(painted(&mut hidden, "a.rs", Kind::File) && hidden.textures.is_empty());
+        assert!(make("builtin", &config).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

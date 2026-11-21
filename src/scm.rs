@@ -658,7 +658,9 @@ fn group(
         let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - reserved));
         let y = rect.center().y;
         let x = rect.left() + 14.0;
-        painter.text(pos2(x, y), Align2::LEFT_CENTER, file_icon(name), FontId::proportional(15.0), theme.text_dim);
+        if !crate::icon_theme::paint(&painter, pos2(x + 7.5, y), 15.0, name, crate::icon_theme::Kind::File, 1.0) {
+            painter.text(pos2(x, y), Align2::LEFT_CENTER, file_icon(name), FontId::proportional(15.0), theme.text_dim);
+        }
         let drawn = painter.text(pos2(x + 21.0, y), Align2::LEFT_CENTER, name, FontId::proportional(13.0), color);
         painter.text(pos2(drawn.right() + 8.0, y), Align2::LEFT_CENTER, dir, FontId::proportional(11.5), theme.text_dim);
         let badge = if staged && change.state == FileState::Added { "A" } else { state_badge(Some(change.state)) };
