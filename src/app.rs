@@ -108,6 +108,7 @@ impl Halo {
             updated: None,
             debug: Default::default(),
         };
+        app.editors.config = app.settings.clone();
         if app.settings.auto_update && !cfg!(debug_assertions) && std::env::var_os("HALO_COMMANDS").is_none() {
             app.update = Some(crate::update::start(ctx));
         }
@@ -292,7 +293,7 @@ impl Halo {
                 self.settings.save();
             }
             ToggleWordWrap => {
-                self.settings.word_wrap ^= true;
+                self.settings.word_wrap = if self.settings.word_wrap == "off" { "on" } else { "off" }.into();
                 self.settings.save();
             }
             ToggleTheme => {

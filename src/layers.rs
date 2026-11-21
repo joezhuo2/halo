@@ -43,6 +43,22 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("sticky_scroll", "editor.stickyScroll.enabled"),
     ("bracket_colors", "editor.bracketPairColorization.enabled"),
     ("guides", "editor.guides.indentation"),
+    ("word_wrap_column", "editor.wordWrapColumn"),
+    ("line_numbers", "editor.lineNumbers"),
+    ("cursor_style", "editor.cursorStyle"),
+    ("cursor_blinking", "editor.cursorBlinking"),
+    ("line_height", "editor.lineHeight"),
+    ("render_line_highlight", "editor.renderLineHighlight"),
+    ("scroll_beyond_last_line", "editor.scrollBeyondLastLine"),
+    ("smooth_scrolling", "editor.smoothScrolling"),
+    ("cursor_surrounding_lines", "editor.cursorSurroundingLines"),
+    ("mouse_wheel_zoom", "editor.mouseWheelZoom"),
+    ("multi_cursor_modifier", "editor.multiCursorModifier"),
+    ("word_separators", "editor.wordSeparators"),
+    ("match_brackets", "editor.matchBrackets"),
+    ("selection_highlight", "editor.selectionHighlight"),
+    ("minimap_side", "editor.minimap.side"),
+    ("detect_indentation", "editor.detectIndentation"),
     ("hot_exit", "files.hotExit"),
     ("auto_update", "update.mode"),
 ];
@@ -74,8 +90,8 @@ fn font_path(name: &str) -> Value {
 
 pub fn to_halo(key: &str, value: Value) -> Value {
     match (key, value) {
-        ("word_wrap", Value::String(s)) => json!(s != "off"),
-        ("render_whitespace", Value::String(s)) => json!(s != "none"),
+        ("word_wrap", Value::Bool(b)) => json!(if b { "on" } else { "off" }),
+        ("render_whitespace", Value::Bool(b)) => json!(if b { "all" } else { "none" }),
         ("auto_save", Value::Bool(b)) => json!(if b { "afterDelay" } else { "off" }),
         ("auto_close" | "auto_close_quotes" | "auto_surround", Value::String(s)) => json!(s != "never"),
         ("hot_exit", Value::String(s)) => json!(s != "off"),
@@ -99,8 +115,6 @@ pub fn to_halo(key: &str, value: Value) -> Value {
 pub fn to_vscode(key: &str, value: Value) -> Value {
     let on = |v: &Value, yes: &str, no: &str| json!(if v.as_bool().unwrap_or(false) { yes } else { no });
     match key {
-        "word_wrap" => on(&value, "on", "off"),
-        "render_whitespace" => on(&value, "all", "none"),
         "auto_close" | "auto_close_quotes" | "auto_surround" => on(&value, "languageDefined", "never"),
         "hot_exit" => on(&value, "onExit", "off"),
         "auto_update" => on(&value, "default", "none"),
@@ -370,7 +384,7 @@ mod tests {
         let rust = s.lang("rust");
         assert_eq!((rust.tab_size, rust.rulers.clone(), rust.auto_save.as_str()), (8, vec![120], "afterDelay"));
         assert_eq!(s.lang("python").tab_size, 4);
-        assert!(s.lang("markdown").word_wrap && s.lang("plaintext").word_wrap && !s.word_wrap);
+        assert_eq!((s.lang("markdown").word_wrap.as_str(), s.lang("plaintext").word_wrap.as_str(), s.word_wrap.as_str()), ("on", "on", "off"));
         assert_eq!(s.lang("go").tab_size, 2);
         assert_eq!(langs[0]["rust"]["tab_size"], json!(8));
     }
@@ -391,7 +405,9 @@ mod tests {
         let profiles = json!([{"name": "a", "program": "a.exe", "args": ["-x"]}, {"name": "b", "program": "b", "args": []}]);
         assert_eq!(to_halo("terminals", to_vscode("terminals", profiles.clone())), profiles);
         assert_eq!(to_vscode("associations", json!({"h": "cpp"})), json!({"*.h": "cpp"}));
-        assert_eq!(to_halo("word_wrap", json!("bounded")), json!(true));
+        assert_eq!(to_halo("word_wrap", json!("bounded")), json!("bounded"));
+        assert_eq!(to_halo("word_wrap", json!(true)), json!("on"));
+        assert_eq!(to_halo("render_whitespace", json!(false)), json!("none"));
         assert_eq!(to_halo("auto_close", json!("never")), json!(false));
         assert_eq!(to_halo("auto_save", json!(true)), json!("afterDelay"));
         assert_eq!(to_halo("eol", json!("\r\n")), json!("\r\n"));

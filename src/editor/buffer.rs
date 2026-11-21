@@ -236,8 +236,31 @@ impl Pattern {
 
 const PAIRS: [(char, char); 6] = [('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\''), ('`', '`')];
 
+static SEPARATORS: [std::sync::atomic::AtomicU64; 2] = [std::sync::atomic::AtomicU64::new(0xfc00_fffe_0000_0000), std::sync::atomic::AtomicU64::new(0x7800_0001_7800_0001)];
+
+pub fn separator_mask(separators: &str) -> [u64; 2] {
+    let mut mask = [0u64; 2];
+    for c in separators.chars().filter(char::is_ascii) {
+        mask[c as usize / 64] |= 1 << (c as usize % 64);
+    }
+    mask
+}
+
+pub fn set_word_separators(separators: &str) {
+    for (slot, bits) in SEPARATORS.iter().zip(separator_mask(separators)) {
+        slot.store(bits, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn is_word_in(c: char, mask: [u64; 2]) -> bool {
+    match c.is_ascii() {
+        true => !c.is_ascii_whitespace() && !c.is_ascii_control() && mask[c as usize / 64] & (1 << (c as usize % 64)) == 0,
+        false => c.is_alphanumeric(),
+    }
+}
+
 pub fn is_word(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+    is_word_in(c, SEPARATORS.each_ref().map(|s| s.load(std::sync::atomic::Ordering::Relaxed)))
 }
 
 fn map_pos(edits: &EditList, pos: usize) -> usize {
@@ -1488,6 +1511,17 @@ mod tests {
         d.move_rows(&mut sels, true, 1, false, None, &[(0, 1)]);
         assert_eq!(sels[0].head, 34);
         assert_eq!((hidden(&[(0, 1)], 1), hidden(&[(0, 1)], 0), hidden(&[(0, 1)], 2)), (Some(0), None, None));
+    }
+
+    #[test]
+    fn word_separators_decide_what_a_word_is() {
+        let default = separator_mask(crate::settings::WORD_SEPARATORS);
+        assert_eq!(default, SEPARATORS.each_ref().map(|s| s.load(std::sync::atomic::Ordering::Relaxed)));
+        for c in (0..128u8).map(char::from).chain(['\u{e9}', '\u{b7}', '\u{4e2d}']) {
+            assert_eq!(is_word_in(c, default), c.is_alphanumeric() || c == '_', "{c:?}");
+        }
+        let dashes = separator_mask("()");
+        assert!(is_word_in('-', dashes) && is_word_in('$', dashes) && !is_word_in('(', dashes) && !is_word_in(' ', dashes));
     }
 
     #[test]

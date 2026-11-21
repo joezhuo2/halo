@@ -2,6 +2,7 @@ mod buffer;
 mod emmet;
 mod highlight;
 mod intel;
+mod prefs;
 mod snippet;
 
 use crate::command::{self, Command, Scope};
@@ -221,7 +222,7 @@ pub struct Editors {
     intel: Intel,
     closed: Vec<PathBuf>,
     switcher: Option<(usize, usize)>,
-    config: Settings,
+    pub(crate) config: Settings,
     pub history: crate::history::Recorder,
     disk_jobs: Vec<(u64, bool)>,
 }
@@ -594,7 +595,10 @@ impl Editors {
             return self.show_doc(id);
         }
         match Document::load(path) {
-            Ok(buf) => {
+            Ok(mut buf) => {
+                if !self.config.of(Some(path)).detect_indentation {
+                    buf.indent = None;
+                }
                 let id = self.insert_doc(buf);
                 self.place(id, preview);
             }
@@ -1286,6 +1290,7 @@ impl Editors {
         }
         self.active = self.active.min(self.groups.len().saturating_sub(1));
         if self.config != *settings {
+            buffer::set_word_separators(&settings.word_separators);
             self.config = settings.clone();
         }
         self.history.context = settings.local_history.then(|| ui.ctx().clone());
@@ -1661,8 +1666,17 @@ impl Editors {
         let is_active = g == self.active;
         let font = FontId::monospace(settings.font_size);
         let (char_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
-        let line_h = (row_h * 1.25).round();
+        let line_h = prefs::line_height(settings.line_height, row_h, settings.font_size);
         let Doc { buf, hl, max_cols, conflicts, lang, folds, depths, stale, .. } = doc;
+        if !settings.smooth_scrolling {
+            ui.style_mut().scroll_animation = egui::style::ScrollAnimation::none();
+        }
+        if settings.mouse_wheel_zoom && ui.rect_contains_pointer(body) {
+            let zoom = ui.input(|i| i.zoom_delta());
+            if zoom != 1.0 {
+                ctx.set_zoom_factor((ctx.zoom_factor() * zoom).clamp(0.5, 3.0));
+            }
+        }
         if let (Some((line, delta)), Some(path)) = (settle(buf, hl, lang, &mut self.lsp, folds), &buf.path) {
             self.marks.shift(path, line, delta);
         }
@@ -1670,9 +1684,14 @@ impl Editors {
 
         ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
         let minimap_w = if settings.minimap && body.width() > 420.0 { 78.0 } else { 0.0 };
-        let text_rect = Rect::from_min_max(body.min, pos2(body.right() - minimap_w, body.bottom()));
+        let left_map = settings.minimap_side == "left";
+        let text_rect = match left_map {
+            true => Rect::from_min_max(pos2(body.left() + minimap_w, body.top()), body.max),
+            false => Rect::from_min_max(body.min, pos2(body.right() - minimap_w, body.bottom())),
+        };
         let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 5.0) * char_w + 6.0;
-        let wrap_cols = settings.word_wrap.then(|| (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20));
+        let fits = (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20);
+        let wrap_cols = prefs::wrap_columns(&settings.word_wrap, settings.word_wrap_column, fits);
 
         if self.want_focus && is_active && self.goto.is_none() {
             ui.memory_mut(|m| m.request_focus(id));
@@ -1802,16 +1821,11 @@ impl Editors {
         let gutter_w = gutter_of(total);
         let spare = if lang.hints.is_empty() { 10.0 } else { 40.0 };
         let wide = if wrap_cols.is_some() { 0.0 } else { gutter_w + (max_cols.1 as f32 + spare) * char_w };
-        let content = vec2(wide, rows as f32 * line_h + (text_rect.height() * 0.5).max(line_h));
+        let beyond = if settings.scroll_beyond_last_line { (text_rect.height() * 0.5).max(line_h) } else { line_h };
+        let content = vec2(wide, rows as f32 * line_h + beyond);
         let idle = now - self.last_input;
-        let caret_alpha = if !has_focus {
-            0.35
-        } else if !(0.5..=30.0).contains(&idle) {
-            1.0
-        } else {
-            0.5 + 0.5 * ((idle - 0.5) * std::f64::consts::TAU / 1.2).cos() as f32
-        };
-        if has_focus && idle <= 30.0 {
+        let caret_alpha = if has_focus { prefs::caret_alpha(&settings.cursor_blinking, idle) } else { 0.35 };
+        if has_focus && idle <= 30.0 && settings.cursor_blinking != "solid" {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
 
@@ -1928,6 +1942,8 @@ impl Editors {
                     let pointer = ui.input(|i| i.pointer.interact_pos());
                     let (pressed, mods, down) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers, i.pointer.any_down()));
                     let on_lens = pointer.is_some_and(|pos| row_at(pos.y).1.is_some());
+                    let ctrl_adds = settings.multi_cursor_modifier == "ctrlCmd";
+                    let (adds_cursor, follows_link) = if ctrl_adds { (mods.command, mods.alt) } else { (mods.alt, mods.command) };
                     let fold_x = clip.left() + gutter_w - 12.0 - char_w;
                     let over_gutter = resp.hovered() && pointer.is_some_and(|pos| pos.x < clip.left() + gutter_w);
                     let can_fold = |line: usize| folded.iter().any(|f| f.0 == line) || buf_ref.foldable(line);
@@ -1953,7 +1969,7 @@ impl Editors {
                             } else if pos.x >= fold_x && pos.x < clip.left() + gutter_w && can_fold(buf_ref.line_of(p)) {
                                 toggle_fold = Some(buf_ref.line_of(p));
                                 tab.drag_anchor = None;
-                            } else if mods.alt {
+                            } else if adds_cursor {
                                 tab.sels.push(Sel::caret(p));
                                 merge_sels(&mut tab.sels);
                                 tab.drag_anchor = Some(p);
@@ -1964,7 +1980,7 @@ impl Editors {
                             } else {
                                 tab.sels = vec![Sel::caret(p)];
                                 tab.drag_anchor = Some(p);
-                                if mods.command {
+                                if follows_link {
                                     let line = buf_ref.line_of(p);
                                     let (text, column) = (buf_ref.line_text(line), p - buf_ref.line_start(line));
                                     match links(&text).into_iter().find(|link| link.0 <= column && column < link.1) {
@@ -2053,7 +2069,10 @@ impl Editors {
 
                     let single = tab.sels.len() == 1 && tab.sels[0].is_empty();
                     let current_line = single.then(|| buf_ref.line_of(tab.sels[0].head));
-                    let bracket = if single { buf_ref.matching_bracket(tab.sels[0].head) } else { None };
+                    let bracket = if single && settings.match_brackets != "never" { buf_ref.matching_bracket(tab.sels[0].head) } else { None };
+                    let cursor_line = buf_ref.line_of(tab.sels[0].head);
+                    let same = tab.sels.first().filter(|s| settings.selection_highlight && tab.sels.len() == 1 && !s.is_empty() && s.end() - s.start() <= 200);
+                    let same = same.map(|s| (s.start(), buf_ref.rope.slice(s.start()..s.end()).to_string())).filter(|(_, t)| !t.contains('\n') && !t.trim().is_empty());
 
                     for column in &settings.rulers {
                         painter.vline(text_x + *column as f32 * char_w, clip.y_range(), Stroke::new(1.0, ui::with_alpha(theme.border, 0.8)));
@@ -2106,7 +2125,7 @@ impl Editors {
                                 painter.galley(r.min, galley, if over && found.is_some() { theme.accent } else { ui::with_alpha(theme.text_dim, 0.85) });
                             }
                         }
-                        if current_line == Some(line) {
+                        if current_line == Some(line) && matches!(settings.render_line_highlight.as_str(), "line" | "all") {
                             let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
                             painter.rect_filled(band, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
                         }
@@ -2141,6 +2160,19 @@ impl Editors {
                                 painter.rect_filled(Rect::from_min_size(at(len), vec2(char_w * 0.6, line_h)), CornerRadius::same(2), theme.selection);
                             }
                         }
+                        if let Some((at_sel, needle)) = &same {
+                            let text = buf_ref.line_text(line);
+                            for (at, _) in text.match_indices(needle.as_str()) {
+                                let column = text[..at].chars().count();
+                                if start + column == *at_sel {
+                                    continue;
+                                }
+                                for (x0, x1, y) in spans(column, column + needle.chars().count()) {
+                                    let r = Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h));
+                                    painter.rect_filled(r, CornerRadius::same(2), ui::with_alpha(theme.selection, 0.5));
+                                }
+                            }
+                        }
                         if let Some((a, b)) = bracket {
                             for p in [a, b].into_iter().filter(|p| *p >= start && *p < start + len) {
                                 for (x0, x1, y) in spans(p - start, p - start + 1) {
@@ -2163,13 +2195,16 @@ impl Editors {
                         let linked = if len >= 10 { buf_ref.line_text(line) } else { String::new() };
                         for (x0, x1, y) in links(&linked).into_iter().flat_map(|link| spans(link.0, link.1)) {
                             painter.hline(x0..=x1, y + line_h - 2.0, Stroke::new(1.0, ui::with_alpha(theme.accent, 0.7)));
-                            if mods.command && resp.hovered() && pointer.is_some_and(|pos| pos.x >= x0 && pos.x <= x1 && pos.y >= y && pos.y < y + line_h) {
+                            if follows_link && resp.hovered() && pointer.is_some_and(|pos| pos.x >= x0 && pos.x <= x1 && pos.y >= y && pos.y < y + line_h) {
                                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                             }
                         }
-                        if settings.render_whitespace {
+                        if settings.render_whitespace != "none" {
                             let dim = Stroke::new(1.0, ui::with_alpha(theme.text_dim, 0.5));
-                            for (column, c) in buf_ref.rope.line(line).chars().take(len).enumerate().filter(|c| c.1 == ' ' || c.1 == '\t') {
+                            let chars: Vec<char> = buf_ref.rope.line(line).chars().take(len).collect();
+                            let selected = |column: usize| tab.sels.iter().any(|s| s.start() <= start + column && start + column < s.end());
+                            let shown = |column: usize| prefs::show_whitespace(&settings.render_whitespace, &chars, column, selected(column));
+                            for (column, c) in chars.iter().copied().enumerate().filter(|c| (c.1 == ' ' || c.1 == '\t') && shown(c.0)) {
                                 let piece = row.piece(column);
                                 let (x0, x1) = (text_x + row.x(piece, column), text_x + row.x(piece, column + 1));
                                 let mid = y + piece as f32 * line_h + line_h / 2.0;
@@ -2204,8 +2239,12 @@ impl Editors {
                         }
                         for s in tab.sels.iter().filter(|s| s.head >= start && s.head <= start + len) {
                             let p = at(s.head - start);
-                            let caret = Rect::from_min_max(pos2(p.x - 0.75, p.y + 1.0), pos2(p.x + 0.75, p.y + line_h - 1.0));
-                            painter.rect_filled(caret, CornerRadius::ZERO, ui::with_alpha(theme.accent, caret_alpha));
+                            let color = ui::with_alpha(theme.accent, caret_alpha);
+                            match prefs::caret_rect(&settings.cursor_style, p.x, p.y, line_h, char_w) {
+                                (caret, true) if caret.width() > 2.0 && caret.height() > 3.0 => painter.rect_filled(caret, CornerRadius::ZERO, ui::with_alpha(color, 0.6)),
+                                (caret, true) => painter.rect_filled(caret, CornerRadius::ZERO, color),
+                                (caret, false) => painter.rect_stroke(caret, CornerRadius::ZERO, Stroke::new(1.0, color), StrokeKind::Inside),
+                            };
                         }
                         let within = |pos: usize| pos >= start && pos <= start + len;
                         if let Some(head) = tab.sels.first().map(|s| s.head).filter(|head| within(*head)) {
@@ -2221,6 +2260,11 @@ impl Editors {
 
                     let gutter = Rect::from_min_max(clip.min, pos2(clip.left() + gutter_w - 4.0, clip.bottom()));
                     painter.rect_filled(gutter, CornerRadius::ZERO, theme.bg);
+                    if let Some(line) = current_line.filter(|l| (first..last).contains(l) && matches!(settings.render_line_highlight.as_str(), "gutter" | "all")) {
+                        let y = origin.y + top_of(line) as f32 * line_h;
+                        let band = Rect::from_min_max(pos2(gutter.left(), y), pos2(gutter.right(), y + line_h));
+                        painter.rect_filled(band, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
+                    }
                     let number_font = FontId::monospace(settings.font_size - 1.0);
                     let bp_hover = pointer.filter(|pos| resp.hovered() && pos.x < clip.left() + bp_w).map(|pos| row_at(pos.y).0);
                     for line in (first..last).filter(|line| starts[line + 1] > starts[*line]) {
@@ -2230,7 +2274,9 @@ impl Editors {
                             crate::debug::paint_gutter(&painter, theme, list, *live, *stopped, line, center, (line_h * 0.26).min(char_w * 0.8), bp_hover == Some(line));
                         }
                         let color = if current_line == Some(line) { theme.text } else { ui::with_alpha(theme.text_dim, 0.75) };
-                        painter.text(pos2(gutter.right() - 10.0 - char_w, y), Align2::RIGHT_CENTER, line + 1, number_font.clone(), color);
+                        if let Some(number) = prefs::line_label(&settings.line_numbers, line, cursor_line) {
+                            painter.text(pos2(gutter.right() - 10.0 - char_w, y), Align2::RIGHT_CENTER, number, number_font.clone(), color);
+                        }
                         let closed = folded.iter().any(|f| f.0 == line);
                         if closed || (over_gutter && buf_ref.foldable(line)) {
                             let icon = if closed { icons::CARET_RIGHT } else { icons::CARET_DOWN };
@@ -2262,8 +2308,9 @@ impl Editors {
                         let piece = cuts.partition_point(|cut| *cut <= column) - 1;
                         let x = text_x + (column - cuts[piece]) as f32 * char_w;
                         let top = origin.y + (top_of(line) + piece) as f32 * line_h;
-                        let above = top - line_h * (stuck + 1) as f32;
-                        let target = Rect::from_min_max(pos2(x - gutter_w - char_w * 3.0, above), pos2(x + char_w * 4.0, top + line_h * 2.0));
+                        let around = settings.cursor_surrounding_lines as f32;
+                        let above = top - line_h * (stuck as f32 + 1.0 + around);
+                        let target = Rect::from_min_max(pos2(x - gutter_w - char_w * 3.0, above), pos2(x + char_w * 4.0, top + line_h * (2.0 + around)));
                         ui.scroll_to_rect(target, None);
                     }
                 })
@@ -2325,7 +2372,10 @@ impl Editors {
         }
 
         if minimap_w > 0.0 {
-            let mm = Rect::from_min_max(pos2(text_rect.right(), body.top()), body.max);
+            let mm = match left_map {
+                true => Rect::from_min_max(body.min, pos2(text_rect.left(), body.bottom())),
+                false => Rect::from_min_max(pos2(text_rect.right(), body.top()), body.max),
+            };
             let resp = ui.interact(mm, id.with("minimap"), Sense::click_and_drag());
             let p = ui.painter().with_clip_rect(mm);
             p.vline(mm.left(), mm.y_range(), Stroke::new(1.0, ui::with_alpha(theme.border, 0.6)));
@@ -2726,7 +2776,7 @@ mod tests {
     #[test]
     fn wraps_long_lines_and_moves_through_visual_rows() {
         let ctx = egui::Context::default();
-        let settings = Settings { word_wrap: true, ..Settings::default() };
+        let settings = Settings { word_wrap: "on".into(), ..Settings::default() };
         let mut editors = Editors::new();
         editors.exec(&Command::NewFile, &settings, &ctx);
         frame_with(&ctx, &mut editors, vec![], &settings);
@@ -2846,7 +2896,7 @@ end", "word ".repeat(100)))], &settings);
     #[test]
     fn draws_whitespace_rulers_guides_and_sticky_scopes() {
         let ctx = egui::Context::default();
-        let settings = Settings { render_whitespace: true, rulers: vec![20, 40], ..Settings::default() };
+        let settings = Settings { render_whitespace: "all".into(), rulers: vec![20, 40], ..Settings::default() };
         let mut editors = Editors::new();
         editors.exec(&Command::NewFile, &settings, &ctx);
         frame_with(&ctx, &mut editors, vec![], &settings);
