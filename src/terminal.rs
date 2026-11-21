@@ -1789,7 +1789,7 @@ mod tests {
         let (program, args): (&str, Vec<String>) = if cfg!(windows) { ("cmd.exe", vec![]) } else { ("sh", vec![]) };
         let mut terminal = Terminal::spawn(1, "test", program, &args, None, ctx.clone()).unwrap();
         let theme = Theme::dark();
-        let mut frame = |terminal: &mut Terminal, events: Vec<Event>| {
+        let frame = |terminal: &mut Terminal, events: Vec<Event>| {
             let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 400.0))), events, focused: true, ..Default::default() };
             let mut out = ctx.run_ui(input, |ui| terminal.ui(ui, &theme, 14.0, &mut vec![]));
             out.textures_delta.clear();

@@ -1082,7 +1082,7 @@ mod tests {
         let mut back = json!({"changes": {"file:///home/joe/a%20b.cpp": [{"uri": "file:///usr/include/vector"}]}});
         map_strings(&mut back, &|t| from_wsl("Ubuntu", t));
         let key = uri(&file);
-        assert_eq!(path_of(&back["changes"][&key][0]["uri"].as_str().unwrap().to_owned()), Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\usr\include\vector")));
+        assert_eq!(path_of(back["changes"][&key][0]["uri"].as_str().unwrap()), Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\usr\include\vector")));
         assert!(back["changes"].get(&key).is_some());
     }
 
