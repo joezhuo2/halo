@@ -66,6 +66,29 @@ Covered by tests; not yet checked by hand in the running app.
 - **Keybindings**: `when` clauses, removal of a default with `-command`,
   notices for entries that cannot be read, and a Keyboard Shortcuts page that
   records chords, shows conflicts and edits `when`.
+- **Editor grid**: split right, down, left and up; layouts from Single to
+  Grid (2x2); resizable splitters; maximize a group (`Ctrl+K Ctrl+M`, or
+  double-click the tab strip); focus and move editors by direction
+  (`Ctrl+K Ctrl+Arrow`, `Ctrl+Alt+Arrow`). Dropping a tab on any edge of a
+  group splits that way. The layout comes back after a restart.
+- **Windows**: New Window (`Ctrl+Shift+N`), Open Folder in New Window, and
+  floating editor windows (Move or Copy Editor into New Window, `Ctrl+K O`,
+  or drop a tab outside the window).
+- **Workbench layout**: full screen (`F11` when not debugging), zen mode
+  (`Ctrl+K Z`, `Esc Esc` to leave), centered layout, the side bar on the left
+  or right, the panel on any side, maximized or aligned, and the activity bar
+  at the side, at the top or hidden.
+- **Secondary side bar** (`Ctrl+Alt+B`) holding the AI view. Views can move
+  between the side bars and the panel with "View: Move View..." or by
+  dragging.
+- **Command line**: `halo [options] [paths...]` with `file:line[:column]`,
+  `--goto`, `--diff`, `--new-window`, `--reuse-window`, `--wait`, `--add`,
+  `-` for standard input, `--help` and `--version`. A second `halo` hands its
+  files to the running window. `halo --wait` works as a git editor. The
+  Windows installer puts `halo` on the user PATH.
+- **Persistent terminals**: terminals come back after a restart in their
+  places, with their name, colour, folder, recent commands and the last 1000
+  lines of history.
 - Output panel (`Ctrl+Shift+U`) with Git, Language Servers, Debug, Tasks and
   Halo channels.
 - Notifications with severity, actions and progress, a bell in the status
@@ -84,6 +107,8 @@ Covered by tests; not yet checked by hand in the running app.
   otherwise. `Ctrl+F5` runs without debugging.
 - Entries in `keybindings.json` now add to the default bindings instead of
   replacing them, as in VS Code.
+- `Ctrl+Alt+B` toggles the secondary side bar, where the AI view lives.
+  "Toggle AI Panel" stays in the command list without a default key.
 - The theme button in the status bar opens the theme picker. `Ctrl+T` still
   switches between light and dark.
 
