@@ -8,6 +8,7 @@ use eframe::egui::{
 };
 
 const HEIGHT: f32 = 36.0;
+const NATIVE_BUTTONS: bool = cfg!(target_os = "macos");
 
 impl Halo {
     pub(crate) fn titlebar(&mut self, ui: &mut Ui) {
@@ -19,6 +20,7 @@ impl Halo {
             .show(ui, |ui| {
                 let bar = ui.max_rect();
                 let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+                let fullscreen = ui.input(|i| i.viewport().fullscreen.unwrap_or(false));
 
                 let drag = ui.interact(bar, Id::new("titlebar_drag"), Sense::click_and_drag());
                 if drag.double_clicked() {
@@ -30,7 +32,7 @@ impl Halo {
                 let mut menus_right = bar.left();
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.add_space(14.0);
+                    ui.add_space(if NATIVE_BUTTONS && !fullscreen { 78.0 } else { 14.0 });
                     ui::logo(ui, 20.0, theme.dark);
                     ui.add_space(10.0);
                     menus_right = egui::MenuBar::new()
@@ -49,6 +51,9 @@ impl Halo {
                         .inner;
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if NATIVE_BUTTONS {
+                            return;
+                        }
                         if window_button(ui, &theme, icons::X, true, "Close").clicked() {
                             ui.send_viewport_cmd(ViewportCommand::Close);
                         }
@@ -65,7 +70,7 @@ impl Halo {
                 let width = (bar.width() * 0.34).clamp(160.0, 560.0);
                 let mut search = Rect::from_center_size(bar.center(), vec2(width, 24.0));
                 search.min.x = search.min.x.max(menus_right + 12.0);
-                search.max.x = search.max.x.min(bar.right() - 44.0 * 3.0 - 12.0);
+                search.max.x = search.max.x.min(bar.right() - if NATIVE_BUTTONS { 0.0 } else { 44.0 * 3.0 } - 12.0);
                 if self.search.is_open() {
                     let rect = Rect::from_center_size(bar.center(), vec2((bar.width() - 24.0).min(600.0), 26.0));
                     let roots = self.session.workspace.prefixed();

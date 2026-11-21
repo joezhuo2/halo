@@ -942,7 +942,7 @@ impl Halo {
         crate::a11y::help_ui(&ctx, &self.theme);
 
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false));
-        if !maximized {
+        if !maximized && !cfg!(target_os = "macos") {
             ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("window_border"))).rect_stroke(
                 window,
                 CornerRadius::ZERO,

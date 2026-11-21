@@ -16,6 +16,8 @@ All notable changes to Halo are documented here. The format follows
 
 ### Fixed
 
+- **macOS window controls**: Halo now uses the native traffic lights,
+  resizing and rounded corners. The green button opens a fullscreen Space.
 - Startup no longer flashes a white window when the window was last
   maximized: windows are cloaked from creation until the first frames are
   drawn.

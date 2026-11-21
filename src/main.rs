@@ -90,9 +90,14 @@ fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Halo")
         .with_app_id("halo")
-        .with_decorations(false)
         .with_inner_size([1180.0, 720.0])
         .with_min_inner_size([640.0, 400.0]);
+    // macOS keeps its own traffic lights, resizing and fullscreen Spaces over Halo's titlebar
+    viewport = if cfg!(target_os = "macos") {
+        viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false)
+    } else {
+        viewport.with_decorations(false)
+    };
     if test {
         viewport = viewport.with_active(false).with_position([-1177.0, 150.0]);
     }
