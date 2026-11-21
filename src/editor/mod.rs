@@ -1931,6 +1931,10 @@ impl Editors {
                                     }
                                 }
                                 x = r.right() + 16.0;
+                                if found.is_none() {
+                                    ui::shimmer(ui, theme, r);
+                                    continue;
+                                }
                                 painter.galley(r.min, galley, if over && found.is_some() { theme.accent } else { ui::with_alpha(theme.text_dim, 0.85) });
                             }
                         }
