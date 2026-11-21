@@ -951,6 +951,10 @@ impl Tasks {
         for (node, pane, code) in exited {
             let label = run.sched.nodes[node].label.clone();
             let ok = code == Some(0);
+            match code {
+                Some(code) => crate::output::log("Tasks", format!("'{label}' ended with exit code {code}")),
+                None => crate::output::log("Tasks", format!("'{label}' was terminated")),
+            }
             if code.is_some() {
                 bottom.finish_task(pane, &label, code);
             }
@@ -969,7 +973,9 @@ impl Tasks {
                 break;
             }
             for node in nodes {
+                crate::output::log("Tasks", format!("Started '{}'", run.sched.nodes[node].label));
                 if let Err(error) = self.launch(run, node, bottom, ctx) {
+                    crate::output::log("Tasks", format!("[error] {error}"));
                     ui::notify(error.clone());
                     run.error = Some(error);
                     run.sched.finish(node, false);

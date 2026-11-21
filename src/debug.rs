@@ -760,8 +760,14 @@ impl Debug {
                 };
                 let command: Vec<String> = command.split_whitespace().map(str::to_owned).collect();
                 match dap::Client::spawn(&command, env.folder, env.ctx) {
-                    Ok(client) => client,
-                    Err(error) => return ui::notify(error),
+                    Ok(client) => {
+                        crate::output::log("Debug", format!("Started debug adapter: {}", command.join(" ")));
+                        client
+                    }
+                    Err(error) => {
+                        crate::output::log("Debug", format!("[error] {error}"));
+                        return ui::notify(error);
+                    }
                 }
             }
         };
@@ -943,8 +949,12 @@ impl Debug {
                 }
                 live.client.respond(seq, &command, result);
             }
-            Incoming::Stderr(line) => env.bottom.console.push("console", &format!("{line}\n")),
+            Incoming::Stderr(line) => {
+                crate::output::log("Debug", format!("[{}] {line}", live.config.name));
+                env.bottom.console.push("console", &format!("{line}\n"))
+            }
             Incoming::Closed(error) => {
+                crate::output::log("Debug", format!("The debug adapter for \"{}\" exited{}", live.config.name, error.as_ref().map_or(String::new(), |e| format!(": {e}"))));
                 if let Some(error) = error {
                     ui::notify(error);
                 } else if live.state == State::Starting && live.stopping == 0 {
