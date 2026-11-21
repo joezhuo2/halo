@@ -409,7 +409,7 @@ mod headless {
         let failed = ops::trash_failed(vec![gone.clone(), keep.clone()]);
         explorer.background(&ctx, move || failed);
         assert!(wait(&ctx, &mut explorer).contains(&Command::PathChanged(gone, None)));
-        assert_eq!(explorer.confirm_permanent[0], [keep.clone()]);
+        assert_eq!(explorer.confirm_permanent[0], std::slice::from_ref(&keep));
         frame(&ctx, &mut explorer, vec![key(Key::Escape, Modifiers::NONE)], Modifiers::NONE);
         assert!(explorer.confirm_permanent.is_empty() && keep.is_file());
 

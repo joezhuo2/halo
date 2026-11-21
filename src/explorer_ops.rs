@@ -312,7 +312,7 @@ mod tests {
         assert!(std::process::Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(&link).arg(&target).output().unwrap().status.success());
         let done = delete_permanently(vec![link.clone()]);
         assert!(done.errors.is_empty());
-        assert_eq!(done.removed, [link.clone()]);
+        assert_eq!(done.removed, std::slice::from_ref(&link));
         assert!(link.symlink_metadata().is_err() && target.join("child").is_file());
         std::fs::remove_dir_all(dir).unwrap();
     }
