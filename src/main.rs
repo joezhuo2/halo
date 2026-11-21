@@ -33,6 +33,7 @@ mod tasks;
 mod terminal;
 mod terminal_find;
 mod terminal_links;
+mod terminal_restore;
 mod test_parse;
 mod testing;
 mod theme;

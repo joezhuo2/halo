@@ -187,6 +187,7 @@ impl Halo {
             self.menu_item(ui, ChangeTerminalColor);
             self.menu_item(ui, RunRecentLine);
             self.menu_item(ui, CopyLastCommandOutput);
+            self.menu_item(ui, ClearRestoredHistory);
             ui.separator();
             let names: Vec<String> = self.settings.terminals.iter().map(|p| p.name.clone()).collect();
             for name in names {

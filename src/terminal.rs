@@ -4,6 +4,7 @@ use crate::settings::{Settings, ShellProfile};
 use crate::shell_integration::{Integration, Record, Tap};
 use crate::terminal_find::FindBar;
 use crate::terminal_links::{Link, Target};
+use crate::terminal_restore::{Place, Saved};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use alacritty_terminal::event::{Event as TermEvent, EventListener, WindowSize};
@@ -230,6 +231,7 @@ pub struct Terminal {
     pub label: Option<String>,
     pub color: Option<usize>,
     pub profile: Option<ShellProfile>,
+    restored: bool,
 }
 
 impl Drop for Terminal {
@@ -240,19 +242,19 @@ impl Drop for Terminal {
 
 impl Terminal {
     pub fn spawn(id: u64, name: &str, program: &str, args: &[String], cwd: Option<&Path>, ctx: egui::Context) -> std::io::Result<Self> {
-        Self::start(id, name, program, args, &HashMap::new(), cwd, None, ctx)
+        Self::start(id, name, program, args, &HashMap::new(), cwd, None, "", ctx)
     }
 
     pub fn spawn_with(id: u64, name: &str, program: &str, args: &[String], cwd: Option<&Path>, env: &[(String, String)], ctx: egui::Context) -> std::io::Result<Self> {
-        Self::start(id, name, program, args, &env.iter().cloned().collect(), cwd, None, ctx)
+        Self::start(id, name, program, args, &env.iter().cloned().collect(), cwd, None, "", ctx)
     }
 
-    pub fn spawn_shell(id: u64, profile: &ShellProfile, cwd: Option<&Path>, integrate: bool, ctx: egui::Context) -> std::io::Result<Self> {
+    pub fn spawn_shell(id: u64, profile: &ShellProfile, cwd: Option<&Path>, integrate: bool, prelude: &str, ctx: egui::Context) -> std::io::Result<Self> {
         let (args, env) = match integrate {
             true => crate::shell_integration::prepare(&profile.program, &profile.args),
             false => (profile.args.clone(), vec![]),
         };
-        let mut terminal = Self::start(id, &profile.name, &profile.program, &args, &env.into_iter().collect(), cwd, None, ctx)?;
+        let mut terminal = Self::start(id, &profile.name, &profile.program, &args, &env.into_iter().collect(), cwd, None, prelude, ctx)?;
         terminal.profile = Some(profile.clone());
         Ok(terminal)
     }
@@ -266,6 +268,7 @@ impl Terminal {
         env: &HashMap<String, String>,
         cwd: Option<&Path>,
         task: Option<&str>,
+        prelude: &str,
         ctx: egui::Context,
     ) -> std::io::Result<Self> {
         let mut options = tty::Options {
@@ -287,6 +290,7 @@ impl Terminal {
         let proxy = Proxy { ctx: ctx.clone(), shared: shared.clone() };
         let config = Config { scrolling_history: look().scrollback, ..Default::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &Size { cols: 80, rows: 24 }, proxy.clone())));
+        crate::terminal_restore::print(&mut term.lock(), prelude);
         let integration = Arc::new(Mutex::new(Integration::default()));
         let tap = Tap::new(pty, term.clone(), integration.clone(), ctx);
         let event_loop = EventLoop::new(term.clone(), proxy, tap, task.is_some(), false)?;
@@ -313,6 +317,7 @@ impl Terminal {
             label: None,
             color: None,
             profile: None,
+            restored: !prelude.is_empty(),
         })
     }
 
@@ -378,6 +383,7 @@ impl Terminal {
                 self.focus();
             }
             Command::SetTerminalColor(color) => self.color = *color,
+            Command::ClearRestoredHistory => self.clear_restored(),
             _ => return false,
         }
         ctx.request_repaint();
@@ -448,6 +454,28 @@ impl Terminal {
 
     pub fn recent(&self) -> Vec<String> {
         self.integration.lock().unwrap().recent()
+    }
+
+    fn clear_restored(&mut self) {
+        self.integration.lock().unwrap().restored.clear();
+        let mut term = self.term.lock();
+        let (top, bottom, cols) = (term.topmost_line().0, term.bottommost_line().0, term.columns());
+        let marker = crate::terminal_restore::MARKER;
+        let starts = |line: i32| (0..marker.len().min(cols)).map(|c| term.grid()[Line(line)][Column(c)].c).eq(marker.chars().take(cols));
+        match (top..=bottom).rev().find(|&line| self.restored && starts(line)) {
+            Some(end) => (top..=end).for_each(|line| term.grid_mut()[Line(line)].reset(&alacritty_terminal::term::cell::Cell::default())),
+            None => ui::notify("The active terminal has no restored history."),
+        }
+        self.restored = false;
+    }
+
+    pub fn persist(&self, limit: usize) -> Option<Saved> {
+        if self.task.is_some() || !self.is_alive() {
+            return None;
+        }
+        let text = crate::terminal_restore::serialize(&mut self.term.lock(), limit);
+        let title = self.shared.title.lock().unwrap().clone().unwrap_or_default();
+        Some(Saved { profile: self.profile.clone(), cwd: self.cwd(), label: self.label.clone(), title, color: self.color, recent: self.recent(), text, ..Default::default() })
     }
 
     pub fn scroll_to_command(&self, forward: bool) {
@@ -1015,7 +1043,7 @@ impl BottomPanel {
     fn spawn(&mut self, profile: &ShellProfile, cwd: Option<&Path>, ctx: &egui::Context) -> Option<Terminal> {
         let id = self.next_id;
         self.next_id += 1;
-        match Terminal::spawn_shell(id, profile, cwd, self.integrate, ctx.clone()) {
+        match Terminal::spawn_shell(id, profile, cwd, self.integrate, "", ctx.clone()) {
             Ok(terminal) => {
                 self.error = None;
                 Some(terminal)
@@ -1089,7 +1117,7 @@ impl BottomPanel {
         let id = self.next_id;
         self.next_id += 1;
         let env: HashMap<String, String> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        let terminal = Terminal::start(id, label, program, args, &env, cwd, Some(label), ctx.clone())
+        let terminal = Terminal::start(id, label, program, args, &env, cwd, Some(label), "", ctx.clone())
             .map_err(|e| format!("Could not start task {label} ({program}): {e}"))?;
         self.started = true;
         match self.task_position(|p| p.task.as_deref() == Some(label)) {
@@ -1186,6 +1214,11 @@ impl BottomPanel {
         self.active_pane().map(|p| p.recent()).unwrap_or_default()
     }
 
+    pub fn persisted(&self, limit: usize) -> Vec<Saved> {
+        let panes = self.groups.iter().enumerate().flat_map(|(g, group)| group.panes.iter().enumerate().map(move |(p, pane)| (g, p, group.active == p, pane)));
+        panes.filter_map(|(g, p, active, pane)| Some(Saved { place: Place::Panel(g, p), active: active && g == self.active, ..pane.persist(limit)? })).collect()
+    }
+
     pub fn create(&mut self, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) -> Result<Terminal, String> {
         self.integrate = settings.shell_integration;
         let profile = default_profile(settings, cwd).ok_or("No terminal profile is configured in settings.json.")?;
@@ -1206,10 +1239,59 @@ impl BottomPanel {
         (self.active, self.started, self.tab) = (self.groups.len() - 1, true, PanelTab::Terminal);
     }
 
+    fn revive_one(&mut self, saved: &Saved, settings: &Settings, root: Option<&Path>, ctx: &egui::Context) -> Option<Terminal> {
+        let cwd = saved.cwd.clone().filter(|dir| dir.is_dir()).or_else(|| root.map(Path::to_path_buf));
+        let wanted = saved.profile.as_ref().map(|p| p.name.as_str());
+        let profile = wanted.and_then(|name| settings.terminal(name)).cloned().or_else(|| default_profile(settings, cwd.as_deref()))?;
+        let note = match wanted.filter(|name| *name != profile.name) {
+            Some(name) => format!("{} (the profile {name} no longer exists, {} is used)", crate::terminal_restore::MARKER, profile.name),
+            None => crate::terminal_restore::MARKER.to_owned(),
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        let prelude = format!("{}\x1b[0;2m{note}\x1b[0m\r\n", saved.text);
+        let mut terminal = match Terminal::spawn_shell(id, &profile, cwd.as_deref(), self.integrate, &prelude, ctx.clone()) {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                self.error = Some(format!("Could not restore {} ({}): {error}", profile.name, profile.program));
+                return None;
+            }
+        };
+        (terminal.label, terminal.color, terminal.want_focus) = (saved.label.clone(), saved.color, false);
+        *terminal.shared.title.lock().unwrap() = Some(saved.title.clone()).filter(|t| !t.is_empty());
+        terminal.integration.lock().unwrap().restored = saved.recent.clone();
+        Some(terminal)
+    }
+
+    pub fn revive(&mut self, all: &[Saved], settings: &Settings, root: Option<&Path>, ctx: &egui::Context) -> Vec<(Place, bool, Terminal)> {
+        self.integrate = settings.shell_integration;
+        let (mut elsewhere, mut last) = (vec![], None);
+        for saved in all {
+            let Some(terminal) = self.revive_one(saved, settings, root, ctx) else { continue };
+            let Place::Panel(group, _) = saved.place else {
+                elsewhere.push((saved.place, saved.active, terminal));
+                continue;
+            };
+            match self.groups.last_mut().filter(|_| last == Some(group)) {
+                Some(open) => open.panes.push(terminal),
+                None => {
+                    let profile = terminal.profile.clone().unwrap_or_else(|| ShellProfile { name: terminal.name.clone(), program: String::new(), args: vec![] });
+                    self.groups.push(Group { panes: vec![terminal], active: 0, profile });
+                }
+            }
+            (last, self.started) = (Some(group), true);
+            let (g, p) = (self.groups.len() - 1, self.groups.last().map_or(0, |g| g.panes.len() - 1));
+            if saved.active {
+                (self.active, self.groups[g].active) = (g, p);
+            }
+        }
+        elsewhere
+    }
+
     pub fn exec(&mut self, cmd: &Command, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) -> bool {
         self.integrate = settings.shell_integration;
         match cmd {
-            Command::ScrollToPrevMark | Command::ScrollToNextMark | Command::CopyLastCommandOutput | Command::RunCommandLine(_) | Command::SetTerminalColor(_) => {
+            Command::ScrollToPrevMark | Command::ScrollToNextMark | Command::CopyLastCommandOutput | Command::RunCommandLine(_) | Command::SetTerminalColor(_) | Command::ClearRestoredHistory => {
                 let Some(pane) = self.active_pane() else { return false };
                 pane.exec(cmd, ctx);
                 self.tab = PanelTab::Terminal;
@@ -1687,6 +1769,58 @@ mod tests {
         assert_eq!(pane.title(), "build");
         pane.label = None;
         assert_ne!(pane.title(), "build");
+    }
+
+    fn wait_for(what: impl Fn() -> bool) -> bool {
+        let started = std::time::Instant::now();
+        while !what() && started.elapsed() < std::time::Duration::from_secs(20) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        what()
+    }
+
+    #[test]
+    fn saves_terminals_and_restores_them_in_place() {
+        let ctx = egui::Context::default();
+        let shell = if cfg!(windows) { "cmd.exe" } else { "sh" };
+        let settings = Settings { terminals: vec![ShellProfile { name: "test".into(), program: shell.into(), args: vec![] }], default_terminal: "test".into(), ..Settings::default() };
+        let base = std::env::temp_dir().join(format!("halo-persist-restore-{}", std::process::id()));
+        let folder = std::env::temp_dir();
+        let (mut panel, mut editors) = (BottomPanel::new(), crate::editor::Editors::new());
+        panel.exec(&Command::NewTerminal, &settings, Some(&folder), &ctx);
+        panel.exec(&Command::SplitTerminal, &settings, Some(&folder), &ctx);
+        panel.exec(&Command::NewTerminal, &settings, Some(&folder), &ctx);
+        for (g, p, line) in [(0, 0, "echo halo-one"), (0, 1, "echo halo-two"), (1, 0, "echo halo-three")] {
+            panel.groups[g].panes[p].write(format!("{line}\r"));
+        }
+        let word = |p: &BottomPanel, g: usize, i: usize, w: &str| p.groups[g].panes[i].text().matches(w).count() >= 2;
+        assert!(wait_for(|| word(&panel, 0, 0, "halo-one") && word(&panel, 0, 1, "halo-two") && word(&panel, 1, 0, "halo-three")));
+        editors.add_terminal(panel.take_active().unwrap());
+        let first = &mut panel.groups[0].panes[0];
+        (first.label, first.color) = (Some("build".into()), Some(2));
+        first.integration.lock().unwrap().restored = vec!["make".into()];
+        panel.groups[0].active = 0;
+        crate::terminal_restore::save_in(&base, &panel, &editors, &settings, Some(&folder));
+        drop((panel, editors));
+
+        let (mut panel, mut editors) = (BottomPanel::new(), crate::editor::Editors::new());
+        crate::terminal_restore::restore_in(&base, &mut panel, &mut editors, &settings, Some(&folder), &ctx);
+        assert_eq!((panel.groups.len(), panel.groups[0].panes.len(), panel.groups[0].active), (1, 2, 0));
+        let first = &panel.groups[0].panes[0];
+        assert_eq!((first.label.as_deref(), first.color, first.title()), (Some("build"), Some(2), "build".to_owned()));
+        assert!(first.text().contains("halo-one") && first.text().contains(crate::terminal_restore::MARKER));
+        assert!(panel.groups[0].panes[1].text().contains("halo-two"));
+        let tabs = editors.terminal_tabs();
+        assert_eq!(tabs.len(), 1);
+        assert!(tabs[0].3.text().contains("halo-three") && !tabs[0].3.text().contains("halo-one"));
+        assert!(wait_for(|| panel.groups[0].panes[0].is_alive() && panel.groups[0].panes[0].text().lines().count() > 3));
+        assert_eq!(panel.recent(), vec!["make".to_owned()]);
+        assert!(panel.exec(&Command::ClearRestoredHistory, &settings, None, &ctx));
+        let text = panel.groups[0].panes[0].text();
+        assert!(!text.contains("halo-one") && !text.contains(crate::terminal_restore::MARKER), "{text}");
+        assert!(panel.recent().is_empty());
+        drop((panel, editors));
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

@@ -123,6 +123,8 @@ pub const SETTINGS: &[Meta] = &[
     m("terminal_cursor_blinking", 3, "Terminal", "Cursor Blinking", "Let the terminal cursor blink.", Kind::Toggle),
     m("terminal_scrollback", 3, "Terminal", "Scrollback", "The number of lines a new terminal keeps above the screen.", Kind::Int(100, 100000)),
     m("send_keybindings_to_shell", 3, "Terminal", "Send Keybindings to Shell", "Let Ctrl+B, Ctrl+J, Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+S and Ctrl+W reach the shell while a terminal has focus.", Kind::Toggle),
+    m("terminal_persistent_sessions", 3, "Terminal", "Persistent Sessions", "Save the terminals of the workspace when Halo exits and recreate them with their history when it starts again.", Kind::Toggle),
+    m("terminal_persistent_scrollback", 3, "Terminal", "Persistent Session Scrollback", "The number of lines of each terminal that are saved and restored.", Kind::Int(0, 100000)),
     m("terminal_copy_on_selection", 3, "Terminal", "Copy On Selection", "Copy text to the clipboard as soon as it is selected in a terminal.", Kind::Toggle),
     m("terminal_right_click", 3, "Terminal", "Right Click Behavior", "What a right click in a terminal does.", Kind::Choice(&[("default", "Nothing (default)"), ("copyPaste", "Copy the selection, or paste without one"), ("paste", "Paste"), ("selectWord", "Select the word"), ("nothing", "Nothing")])),
     m("run", 4, "Run", "Commands", "The command Run File uses for each file extension. {file} is replaced by the path of the file.", Kind::Custom),

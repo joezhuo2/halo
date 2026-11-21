@@ -145,6 +145,7 @@ impl Halo {
             }
         }
         app.editors.restore(&app.session.backups);
+        crate::terminal_restore::restore(&mut app.bottom, &mut app.editors, &app.settings, app.session.folder.as_deref(), ctx);
         app.open_args(args, None, ctx);
         let wake = ctx.clone();
         app.inbox = server.map(|server| crate::ipc::serve(server, move || wake.request_repaint()));
@@ -153,6 +154,9 @@ impl Halo {
 
     fn set_folder(&mut self, folder: Option<PathBuf>, ctx: &egui::Context) {
         let folder = folder.map(strip_unc);
+        if self.session.folder != folder {
+            crate::terminal_restore::save(&self.bottom, &self.editors, &self.settings, self.session.folder.as_deref());
+        }
         crate::debug::store(&mut self.session, &self.editors.marks);
         if let Some(folder) = &folder {
             self.session.remember(folder);
@@ -187,6 +191,7 @@ impl Halo {
         }
         crate::debug::store(&mut self.session, &self.editors.marks);
         self.session.save();
+        crate::terminal_restore::save(&self.bottom, &self.editors, &self.settings, self.session.folder.as_deref());
     }
 
     fn reload_settings(&mut self, ctx: &egui::Context) {

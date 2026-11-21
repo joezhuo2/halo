@@ -162,6 +162,7 @@ pub enum Command {
     NewTerminalInEditor,
     MoveTerminalToEditor,
     MoveTerminalToPanel,
+    ClearRestoredHistory,
 
     RunFile,
     RunTask(String),
@@ -506,7 +507,7 @@ pub fn all() -> Vec<Command> {
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
         OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
         ShowTestOutput, RunAllTestsWithCoverage, ToggleCoverageDisplay, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
-        CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, NewTerminalInEditor, MoveTerminalToEditor, MoveTerminalToPanel,
+        CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, NewTerminalInEditor, MoveTerminalToEditor, MoveTerminalToPanel, ClearRestoredHistory,
         GitSync, ToggleInlineBlame, OpenLineChanges,
         StageHunk, RevertHunk, UnstageHunk, StageSelectedRanges, RevertSelectedRanges, UnstageSelectedRanges,
         MergeOpen, MergeAcceptIncoming, MergeAcceptCurrent, MergeAcceptBoth, MergeAcceptAllIncoming, MergeAcceptAllCurrent,
@@ -697,7 +698,7 @@ impl Command {
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
             NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
             | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
-            | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel => "Terminal",
+            | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel | ClearRestoredHistory => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
             OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) | StageHunk | RevertHunk
             | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges | MergeOpen | OpenMerge(_)
@@ -858,6 +859,7 @@ impl Command {
             NewTerminalInEditor => "Terminal: Create New Terminal in Editor Area",
             MoveTerminalToEditor => "Terminal: Move Terminal into Editor Area",
             MoveTerminalToPanel => "Terminal: Move Terminal into Panel",
+            ClearRestoredHistory => "Terminal: Clear Restored History",
             RunFile => "Run File",
             RunTask(_) => "Run Task",
             RunTaskPicker => "Tasks: Run Task...",
