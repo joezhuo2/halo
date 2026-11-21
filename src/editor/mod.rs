@@ -8,7 +8,7 @@ use crate::lsp::{self, Lsp};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use buffer::{After, Document, Kind, Motion, Sel, Take, is_word, merge_sels};
+use buffer::{After, Document, Kind, Motion, Sel, Take, hidden, is_word, merge_sels};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, CursorIcon, Event, EventFilter, FontId, Id, Key, Layout, PointerButton,
@@ -45,6 +45,7 @@ struct Doc {
     max_cols: (u64, usize),
     conflicts: (u64, Vec<[usize; 4]>),
     lang: Lang,
+    folds: Vec<(usize, usize)>,
 }
 
 #[derive(Default)]
@@ -216,10 +217,52 @@ fn job(
     job
 }
 
-fn settle(buf: &mut Document, hl: &mut Highlighter, lang: &mut Lang, lsp: &mut Lsp) {
+fn evict(buf: &Document, folds: &[(usize, usize)], sels: &mut Vec<Sel>) {
+    for s in sels.iter_mut() {
+        if let Some(fold) = hidden(folds, buf.line_of(s.head.min(buf.len()))) {
+            *s = Sel::caret(buf.line_end(folds[fold].0));
+        }
+    }
+    merge_sels(sels);
+}
+
+fn fold_command(doc: &mut Doc, tab: &mut Tab, cmd: &Command) {
+    let (buf, folds) = (&doc.buf, &mut doc.folds);
+    buf.clamp(&mut tab.sels);
+    let line = buf.line_of(tab.sels[0].head);
+    match cmd {
+        Command::Fold => {
+            for start in (0..=line).rev() {
+                let found = buf.fold_end(start).filter(|end| *end >= line && !folds.contains(&(start, *end)));
+                if let Some(end) = found {
+                    folds.push((start, end));
+                    break;
+                }
+                if buf.indent_of(start) == 0 && buf.line_len(start) > 0 {
+                    break;
+                }
+            }
+        }
+        Command::Unfold => folds.retain(|f| !(f.0 <= line && line <= f.1)),
+        Command::FoldAll => *folds = (0..buf.lines()).filter_map(|start| Some((start, buf.fold_end(start)?))).collect(),
+        _ => folds.clear(),
+    }
+    folds.sort_unstable();
+    evict(buf, folds, &mut tab.sels);
+    tab.reveal = tab.sels.first().map(|s| s.head);
+}
+
+fn settle(buf: &mut Document, hl: &mut Highlighter, lang: &mut Lang, lsp: &mut Lsp, folds: &mut Vec<(usize, usize)>) {
     let Some(line) = buf.dirty_from.take() else { return };
     hl.invalidate(line);
     let delta = lang.edited(line, buf.lines());
+    folds.retain_mut(|f| {
+        let touched = f.0 <= line && line <= f.1;
+        if f.0 > line {
+            *f = ((f.0 as isize + delta).max(0) as usize, (f.1 as isize + delta).max(0) as usize);
+        }
+        !touched && buf.fold_end(f.0) == Some(f.1)
+    });
     if let Some(path) = &buf.path {
         lsp.shift_diagnostics(path, line, delta);
     }
@@ -343,7 +386,7 @@ impl Editors {
             self.banner = Some(note.clone());
         }
         let hl = Highlighter::new(buf.path.as_deref(), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default() });
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![] });
         id
     }
 
@@ -557,6 +600,11 @@ impl Editors {
                 refocus = false;
             }
             Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
+            Fold | Unfold | FoldAll | UnfoldAll => {
+                if let Some(doc) = self.docs.get_mut(&doc_id) {
+                    fold_command(doc, &mut self.groups[g].tabs[t], cmd);
+                }
+            }
             GoTo(line, column) => {
                 let (line, column) = (*line, *column);
                 self.with_active(|buf, tab| {
@@ -1050,16 +1098,15 @@ impl Editors {
         let font = FontId::monospace(settings.font_size);
         let (char_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
         let line_h = (row_h * 1.25).round();
-        let Doc { buf, hl, max_cols, conflicts, lang } = doc;
-        settle(buf, hl, lang, &mut self.lsp);
+        let Doc { buf, hl, max_cols, conflicts, lang, folds } = doc;
+        settle(buf, hl, lang, &mut self.lsp, folds);
         buf.clamp(&mut tab.sels);
 
         ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
         let minimap_w = if settings.minimap && body.width() > 420.0 { 78.0 } else { 0.0 };
         let text_rect = Rect::from_min_max(body.min, pos2(body.right() - minimap_w, body.bottom()));
-        let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 3.0) * char_w + 6.0;
+        let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 4.0) * char_w + 6.0;
         let wrap_cols = settings.word_wrap.then(|| (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20));
-        let folds: Vec<(usize, usize)> = vec![];
 
         if self.want_focus && is_active && self.goto.is_none() {
             ui.memory_mut(|m| m.request_focus(id));
@@ -1083,7 +1130,7 @@ impl Editors {
             let (mut typed, mut pasted) = (None, None);
             for event in &events {
                 let from = tab.sels.first().map_or(0, |s| s.start());
-                if handle_event(buf, tab, event, settings, page, &ctx, wrap_cols, &folds) {
+                if handle_event(buf, tab, event, settings, page, &ctx, wrap_cols, folds) {
                     self.last_input = now;
                     tab.reveal = tab.sels.last().map(|s| s.head);
                     match event {
@@ -1093,7 +1140,7 @@ impl Editors {
                     }
                 }
             }
-            settle(buf, hl, lang, &mut self.lsp);
+            settle(buf, hl, lang, &mut self.lsp, folds);
             if let Some(c) = typed {
                 self.typed(c, doc_id, buf, lang, tab, &ctx);
             }
@@ -1105,6 +1152,7 @@ impl Editors {
         if find_open {
             self.refresh_matches(doc_id, buf, tab);
         }
+        folds.retain(|f| !tab.sels.iter().any(|s| (f.0 + 1..=f.1).contains(&buf.line_of(s.head))));
 
         let total = buf.lines();
         if max_cols.0 != buf.version {
@@ -1117,9 +1165,9 @@ impl Editors {
         lens_rows.sort_unstable();
         lens_rows.dedup_by_key(|row| row.0);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (buf.version, wrap_cols, &folds, &lens_rows).hash(&mut hasher);
+        (buf.version, wrap_cols, &*folds, &lens_rows).hash(&mut hasher);
         if tab.rows.0 != hasher.finish() || tab.rows.1.len() != total + 1 {
-            tab.rows = (hasher.finish(), build_rows(buf, wrap_cols, &folds, &lens_rows));
+            tab.rows = (hasher.finish(), build_rows(buf, wrap_cols, folds, &lens_rows));
         }
         let starts = std::mem::take(&mut tab.rows.1);
         let rows = starts[total] as usize;
@@ -1169,6 +1217,8 @@ impl Editors {
         let lens_font = FontId::proportional((settings.font_size * 0.88).round());
         let (mut activated, mut touched, mut pressed_text) = (false, false, false);
         let (mut caret_at, mut hover_at, mut peek_y, mut over_word, mut lens_open) = (None, None, None, None, None);
+        let mut toggle_fold = None;
+        let folded: &[(usize, usize)] = folds;
         let mut visible = (0, 0);
         let mut area = ScrollArea::both().id_salt(id.with("scroll")).auto_shrink(false);
         if let Some(y) = tab.set_scroll.take() {
@@ -1238,6 +1288,9 @@ impl Editors {
                     let pointer = ui.input(|i| i.pointer.interact_pos());
                     let (pressed, mods, down) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers, i.pointer.any_down()));
                     let on_lens = pointer.is_some_and(|pos| row_at(pos.y).1.is_some());
+                    let fold_x = clip.left() + gutter_w - 12.0 - char_w;
+                    let over_gutter = resp.hovered() && pointer.is_some_and(|pos| pos.x < clip.left() + gutter_w);
+                    let can_fold = |line: usize| folded.iter().any(|f| f.0 == line) || buf_ref.foldable(line);
                     let mut lens_press = false;
                     if let Some(pos) = pointer {
                         if pressed && resp.is_pointer_button_down_on() {
@@ -1248,6 +1301,9 @@ impl Editors {
                             let p = hit(&painter, pos);
                             if on_lens {
                                 lens_press = true;
+                                tab.drag_anchor = None;
+                            } else if pos.x >= fold_x && pos.x < clip.left() + gutter_w && can_fold(buf_ref.line_of(p)) {
+                                toggle_fold = Some(buf_ref.line_of(p));
                                 tab.drag_anchor = None;
                             } else if mods.alt {
                                 tab.sels.push(Sel::caret(p));
@@ -1410,6 +1466,12 @@ impl Editors {
                             let top = y + index as f32 * line_h + (line_h - piece.galley.size().y) / 2.0;
                             painter.galley(pos2(text_x, top), piece.galley.clone(), theme.text);
                         }
+                        if folded.iter().any(|f| f.0 == line) {
+                            let end = at(len);
+                            let mark = Rect::from_min_size(pos2(end.x + char_w * 0.5, end.y + 3.0), vec2(char_w * 2.5, line_h - 6.0));
+                            painter.rect_filled(mark, CornerRadius::same(3), ui::mix(theme.bg, theme.hover, 0.9));
+                            painter.text(mark.center(), Align2::CENTER_CENTER, icons::DOTS_THREE, FontId::proportional(settings.font_size), theme.text_dim);
+                        }
                         let upto = problems.partition_point(|d| d.start.0 <= line);
                         for problem in problems[..upto].iter().filter(|d| d.end.0 >= line) {
                             let column = |at: lsp::Pos| lsp::utf16_to_char(buf_ref.rope.line(line).chars(), at.1).min(len);
@@ -1447,7 +1509,12 @@ impl Editors {
                     for line in (first..last).filter(|line| starts[line + 1] > starts[*line]) {
                         let y = origin.y + top_of(line) as f32 * line_h + line_h / 2.0;
                         let color = if current_line == Some(line) { theme.text } else { ui::with_alpha(theme.text_dim, 0.75) };
-                        painter.text(pos2(gutter.right() - 12.0, y), Align2::RIGHT_CENTER, line + 1, number_font.clone(), color);
+                        painter.text(pos2(gutter.right() - 10.0 - char_w, y), Align2::RIGHT_CENTER, line + 1, number_font.clone(), color);
+                        let closed = folded.iter().any(|f| f.0 == line);
+                        if closed || (over_gutter && buf_ref.foldable(line)) {
+                            let icon = if closed { icons::CARET_RIGHT } else { icons::CARET_DOWN };
+                            painter.text(pos2(fold_x + char_w / 2.0, y), Align2::CENTER_CENTER, icon, FontId::proportional(settings.font_size - 2.0), theme.text_dim);
+                        }
                     }
                     if let Some(changes) = path.as_deref().and_then(|p| git.line_changes(p)) {
                         let from = changes.partition_point(|c| c.0 < first);
@@ -1529,6 +1596,14 @@ impl Editors {
             }
         }
         tab.rows.1 = starts;
+        if let Some(line) = toggle_fold {
+            match folds.iter().position(|f| f.0 == line) {
+                Some(at) => drop(folds.remove(at)),
+                None => folds.extend(buf.fold_end(line).map(|end| (line, end))),
+            }
+            folds.sort_unstable();
+            evict(buf, folds, &mut tab.sels);
+        }
 
         lang.visible = visible;
         if pressed_text {
@@ -1825,6 +1900,29 @@ end", "word ".repeat(100)))], &settings);
     }
 
     #[test]
+    fn folds_hide_lines_and_carets_step_over_them() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Paste("fn a() {\n    one();\n    two();\n}\nlast".into())]);
+        frame(&ctx, &mut editors, vec![key(Key::Home, egui::Modifiers::COMMAND), key(Key::ArrowDown, Default::default())]);
+        editors.exec(&Command::Fold, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        let folds = |e: &Editors| e.docs.values().next().unwrap().folds.clone();
+        assert_eq!((folds(&editors), editors.status().unwrap().line, editors.groups[0].tabs[0].rows.1.clone()), (vec![(0, 2)], 1, vec![0, 1, 1, 1, 2, 3]));
+        frame(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default())]);
+        assert_eq!(editors.status().unwrap().line, 4);
+        frame(&ctx, &mut editors, vec![Event::Text("x".into())]);
+        assert_eq!(folds(&editors), vec![(0, 2)]);
+        editors.exec(&Command::GoTo(2, 1), &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        assert!(folds(&editors).is_empty());
+    }
+
+    #[test]
     fn types_into_a_view_and_survives_split_and_close() {
         let ctx = egui::Context::default();
         let settings = Settings::default();
@@ -1950,7 +2048,7 @@ fn b() {}
         let (char_w, hint_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.glyph_width(&small, 'm'), f.row_height(&font)));
         let line_h = (row_h * 1.25).round();
         let top = TAB_H + 22.0;
-        let text_x = 6.0 * char_w + 6.0;
+        let text_x = 7.0 * char_w + 6.0;
         let click = |editors: &mut Editors, pos: Pos2| {
             let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
             frame(&ctx, editors, vec![Event::PointerMoved(pos)]);

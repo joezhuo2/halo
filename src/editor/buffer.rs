@@ -305,7 +305,30 @@ impl Document {
         text
     }
 
-    fn indent_of(&self, line: usize) -> usize {
+    pub fn foldable(&self, line: usize) -> bool {
+        let blank = |l: usize| self.indent_of(l) >= self.line_len(l);
+        !blank(line) && (line + 1..self.lines()).find(|l| !blank(*l)).is_some_and(|next| self.indent_of(next) > self.indent_of(line))
+    }
+
+    // shortcut: folds follow indentation, upgrade to the language server's folding ranges if they are wrong for a language
+    pub fn fold_end(&self, line: usize) -> Option<usize> {
+        if line >= self.lines() || !self.foldable(line) {
+            return None;
+        }
+        let mut end = line;
+        for next in line + 1..self.lines() {
+            if self.indent_of(next) >= self.line_len(next) {
+                continue;
+            }
+            if self.indent_of(next) <= self.indent_of(line) {
+                break;
+            }
+            end = next;
+        }
+        Some(end)
+    }
+
+    pub fn indent_of(&self, line: usize) -> usize {
         if line >= self.lines() {
             return 0;
         }
@@ -1045,6 +1068,13 @@ mod tests {
         d.move_rows(&mut sels, true, 1, false, None, &[(0, 1)]);
         assert_eq!(sels[0].head, 34);
         assert_eq!((hidden(&[(0, 1)], 1), hidden(&[(0, 1)], 0), hidden(&[(0, 1)], 2)), (Some(0), None, None));
+    }
+
+    #[test]
+    fn folds_follow_indentation() {
+        let d = doc("fn a() {\n    if x {\n\n        y();\n    }\n}\n\nfn b() {}\n");
+        assert_eq!((d.fold_end(0), d.fold_end(1), d.fold_end(3), d.fold_end(7)), (Some(4), Some(3), None, None));
+        assert!(d.foldable(0) && !d.foldable(2) && !d.foldable(5));
     }
 
     #[test]
