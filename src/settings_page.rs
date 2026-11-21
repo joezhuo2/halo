@@ -1,5 +1,5 @@
 use crate::app::Halo;
-use crate::command::{self, Command};
+use crate::command::Command;
 use crate::layers::{self, Layer};
 use crate::settings::{Settings, ShellProfile, Task};
 use crate::theme::Theme;
@@ -130,12 +130,11 @@ pub const SETTINGS: &[Meta] = &[
 #[derive(Default)]
 pub struct SettingsPage {
     pub open: bool,
-    pub recording: Option<Command>,
+    pub keys: crate::shortcuts::KeysPage,
     tab: usize,
     layer: usize,
     query: String,
     focus: bool,
-    filter: String,
     fonts: Option<Vec<(&'static str, String)>>,
     new_run: (String, String),
     new_association: (String, String),
@@ -362,7 +361,7 @@ impl Halo {
                     let (r, resp) = ui.allocate_exact_size(vec2(nav.width(), 32.0), Sense::click());
                     if resp.clicked() {
                         self.page.tab = index;
-                        self.page.recording = None;
+                        self.page.keys.stop();
                         if index != 6 {
                             self.page.query.clear();
                         }
@@ -385,7 +384,7 @@ impl Halo {
                     ui.add_space(14.0);
                     if self.page.tab == 6 && !searching {
                         ui.label(RichText::new(TABS[6].1).size(22.0).color(theme.text));
-                        close |= keys_tab(ui, &theme, &mut self.page, &mut self.cmds);
+                        close |= crate::shortcuts::page(ui, &theme, &mut self.page.keys, &mut self.cmds);
                         return;
                     }
                     let mut shown: Vec<(&Meta, u32)> = SETTINGS
@@ -432,7 +431,7 @@ impl Halo {
         }
         if close || modal.should_close() {
             self.page.open = false;
-            self.page.recording = None;
+            self.page.keys.stop();
         }
     }
 }
@@ -728,84 +727,6 @@ fn installed(ui: &mut Ui, theme: &Theme) {
         let at = rect.left_center() + vec2(230.0, 0.0);
         ui.painter().with_clip_rect(rect).text(at, Align2::LEFT_CENTER, extensions, FontId::proportional(12.5), theme.text_dim);
     }
-}
-
-fn rebind(cmd: &Command, key: Option<Option<KeyboardShortcut>>) {
-    let mut entries = match command::entries() {
-        Ok(entries) => entries,
-        Err(error) => return ui::notify(format!("keybindings.json could not be read, so it was not changed: {error}")),
-    };
-    crate::shortcuts::reset(&mut entries, cmd);
-    match key {
-        Some(Some(key)) => crate::shortcuts::add(&mut entries, cmd, &[key]),
-        Some(None) => entries.push(command::Entry { key: String::new(), command: cmd.id(), ..Default::default() }),
-        None => {}
-    }
-    command::write_entries(&entries);
-}
-
-fn keys_tab(ui: &mut Ui, theme: &Theme, page: &mut SettingsPage, cmds: &mut Vec<Command>) -> bool {
-    let ctx = ui.ctx().clone();
-    if let Some(cmd) = page.recording.clone() {
-        let pressed = ctx.input_mut(|i| {
-            let found = i.events.iter().find_map(|event| match event {
-                egui::Event::Key { key, pressed: true, modifiers, .. } => Some(KeyboardShortcut::new(*modifiers, *key)),
-                _ => None,
-            });
-            i.events.retain(|event| !matches!(event, egui::Event::Key { .. } | egui::Event::Text(_)));
-            found
-        });
-        if let Some(shortcut) = pressed {
-            page.recording = None;
-            if shortcut.logical_key != Key::Escape || shortcut.modifiers.any() {
-                rebind(&cmd, Some(Some(shortcut)));
-            }
-        }
-    }
-    let mut close = false;
-    ui.add_space(12.0);
-    ui.horizontal(|ui| {
-        field(ui, &mut page.filter, 300.0, "Search commands");
-        if ui.button("Open keybindings.json").clicked() {
-            cmds.push(Command::OpenKeybindings);
-            close = true;
-        }
-    });
-    ui.add_space(4.0);
-    let about = "Click a key and press the new one. Escape cancels. Two-step chords are edited in keybindings.json.";
-    ui.add(egui::Label::new(RichText::new(about).color(theme.text_dim)).wrap());
-    ui.add_space(10.0);
-    let filter = page.filter.to_lowercase();
-    grid(ui, "settings_keys", 3, |ui| {
-        let mut category = "";
-        for cmd in command::all().into_iter().filter(|c| c.label().to_lowercase().contains(&filter)) {
-            if cmd.category() != category {
-                category = cmd.category();
-                ui.vertical(|ui| ui::section_header(ui, theme, category));
-                ui.end_row();
-            }
-            ui.label(RichText::new(cmd.label()).color(theme.text));
-            let recording = page.recording.as_ref() == Some(&cmd);
-            let (text, color) = match command::shortcut_text(&ctx, &cmd) {
-                _ if recording => ("Press a key...".to_owned(), theme.accent),
-                Some(keys) => (keys, theme.text),
-                None => ("Not set".to_owned(), theme.text_dim),
-            };
-            if ui.add(egui::Button::new(RichText::new(text).color(color)).min_size(vec2(170.0, 0.0))).clicked() {
-                page.recording = (!recording).then(|| cmd.clone());
-            }
-            ui.horizontal(|ui| {
-                if ui::icon_button(ui, theme, icons::X, 24.0, false, "Remove this key").clicked() {
-                    rebind(&cmd, Some(None));
-                }
-                if ui::icon_button(ui, theme, icons::ARROW_COUNTER_CLOCKWISE, 24.0, false, "Reset to the default key").clicked() {
-                    rebind(&cmd, None);
-                }
-            });
-            ui.end_row();
-        }
-    });
-    close
 }
 
 #[cfg(test)]

@@ -763,7 +763,7 @@ impl eframe::App for Halo {
         }
         command::set_context(self.when_keys(&ctx));
         self.page.keys(&ctx);
-        if self.page.recording.is_none() {
+        if !self.page.keys.recording() {
             self.global_shortcuts(&ctx);
         }
         let delay = self.settings.auto_save_delay as f64 / 1000.0;
