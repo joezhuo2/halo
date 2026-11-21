@@ -16,6 +16,39 @@ pub fn set_secondary(on: bool) {
     SECONDARY.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[cfg(windows)]
+pub fn cloak(on: bool) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn EnumThreadWindows(thread: u32, each: unsafe extern "system" fn(isize, isize) -> i32, param: isize) -> i32;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentThreadId() -> u32;
+    }
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmSetWindowAttribute(hwnd: isize, attribute: u32, value: *const i32, size: u32) -> i32;
+    }
+    unsafe extern "system" fn each(hwnd: isize, on: isize) -> i32 {
+        let on = on as i32;
+        unsafe { DwmSetWindowAttribute(hwnd, 13, &on, 4) };
+        1
+    }
+    static THREAD: AtomicU32 = AtomicU32::new(0);
+    if on {
+        THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+    }
+    let thread = THREAD.load(Ordering::Relaxed);
+    if thread != 0 {
+        unsafe { EnumThreadWindows(thread, each, on as isize) };
+    }
+}
+
+#[cfg(not(windows))]
+pub fn cloak(_on: bool) {}
+
 fn spawn(folder: Option<&Path>) {
     let started = std::env::current_exe().and_then(|exe| {
         let mut command = std::process::Command::new(exe);
