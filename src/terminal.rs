@@ -383,6 +383,7 @@ impl Terminal {
                 self.focus();
             }
             Command::SetTerminalColor(color) => self.color = *color,
+            Command::ClearRestoredHistory => self.clear_restored(),
             _ => return false,
         }
         ctx.request_repaint();
@@ -453,6 +454,19 @@ impl Terminal {
 
     pub fn recent(&self) -> Vec<String> {
         self.integration.lock().unwrap().recent()
+    }
+
+    fn clear_restored(&mut self) {
+        self.integration.lock().unwrap().restored.clear();
+        let mut term = self.term.lock();
+        let (top, bottom, cols) = (term.topmost_line().0, term.bottommost_line().0, term.columns());
+        let marker = crate::terminal_restore::MARKER;
+        let starts = |line: i32| (0..marker.len().min(cols)).map(|c| term.grid()[Line(line)][Column(c)].c).eq(marker.chars().take(cols));
+        match (top..=bottom).rev().find(|&line| self.restored && starts(line)) {
+            Some(end) => (top..=end).for_each(|line| term.grid_mut()[Line(line)].reset(&alacritty_terminal::term::cell::Cell::default())),
+            None => ui::notify("The active terminal has no restored history."),
+        }
+        self.restored = false;
     }
 
     pub fn persist(&self, limit: usize) -> Option<Saved> {
@@ -1245,6 +1259,7 @@ impl BottomPanel {
         };
         (terminal.label, terminal.color, terminal.want_focus) = (saved.label.clone(), saved.color, false);
         *terminal.shared.title.lock().unwrap() = Some(saved.title.clone()).filter(|t| !t.is_empty());
+        terminal.integration.lock().unwrap().restored = saved.recent.clone();
         Some(terminal)
     }
 
@@ -1276,7 +1291,7 @@ impl BottomPanel {
     pub fn exec(&mut self, cmd: &Command, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) -> bool {
         self.integrate = settings.shell_integration;
         match cmd {
-            Command::ScrollToPrevMark | Command::ScrollToNextMark | Command::CopyLastCommandOutput | Command::RunCommandLine(_) | Command::SetTerminalColor(_) => {
+            Command::ScrollToPrevMark | Command::ScrollToNextMark | Command::CopyLastCommandOutput | Command::RunCommandLine(_) | Command::SetTerminalColor(_) | Command::ClearRestoredHistory => {
                 let Some(pane) = self.active_pane() else { return false };
                 pane.exec(cmd, ctx);
                 self.tab = PanelTab::Terminal;
@@ -1783,6 +1798,7 @@ mod tests {
         editors.add_terminal(panel.take_active().unwrap());
         let first = &mut panel.groups[0].panes[0];
         (first.label, first.color) = (Some("build".into()), Some(2));
+        first.integration.lock().unwrap().restored = vec!["make".into()];
         panel.groups[0].active = 0;
         crate::terminal_restore::save_in(&base, &panel, &editors, &settings, Some(&folder));
         drop((panel, editors));
@@ -1798,6 +1814,11 @@ mod tests {
         assert_eq!(tabs.len(), 1);
         assert!(tabs[0].3.text().contains("halo-three") && !tabs[0].3.text().contains("halo-one"));
         assert!(wait_for(|| panel.groups[0].panes[0].is_alive() && panel.groups[0].panes[0].text().lines().count() > 3));
+        assert_eq!(panel.recent(), vec!["make".to_owned()]);
+        assert!(panel.exec(&Command::ClearRestoredHistory, &settings, None, &ctx));
+        let text = panel.groups[0].panes[0].text();
+        assert!(!text.contains("halo-one") && !text.contains(crate::terminal_restore::MARKER), "{text}");
+        assert!(panel.recent().is_empty());
         drop((panel, editors));
         let _ = std::fs::remove_dir_all(base);
     }

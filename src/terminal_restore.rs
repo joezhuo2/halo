@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 pub const MARKER: &str = "History restored";
 
@@ -104,8 +105,18 @@ pub fn read_all(dir: &Path) -> Vec<Saved> {
     all
 }
 
+pub fn clean(base: &Path, age: Duration) {
+    for dir in std::fs::read_dir(base).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        let newest = std::fs::read_dir(&dir).into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()?.modified().ok()).max();
+        if newest.is_none_or(|time| time.elapsed().is_ok_and(|elapsed| elapsed > age)) {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
 pub fn restore_in(base: &Path, panel: &mut BottomPanel, editors: &mut Editors, settings: &Settings, folder: Option<&Path>, ctx: &egui::Context) {
     ARMED.store(true, Ordering::Relaxed);
+    clean(base, Duration::from_secs(30 * 86400));
     if !settings.terminal_persistent_sessions {
         return;
     }
@@ -146,7 +157,7 @@ fn style(cell: &Cell) -> (Color, Color, Flags) {
 
 fn sgr((fg, bg, flags): (Color, Color, Flags)) -> String {
     let mut out = "\x1b[0".to_owned();
-    for (flag, code) in STYLES.iter().filter(|(flag, _)| flags.contains(*flag)) {
+    for (_, code) in STYLES.iter().filter(|(flag, _)| flags.contains(*flag)) {
         out += &format!(";{code}");
     }
     push_color(&mut out, fg, 30);
@@ -286,6 +297,22 @@ mod tests {
         assert!(!dir.join("1.json").exists() && std::fs::read_to_string(dir.join("0.json")).unwrap().contains("\"c\""));
         write_all(&dir, &[]);
         assert!(!dir.exists());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn removes_workspaces_not_opened_for_30_days() {
+        let base = std::env::temp_dir().join(format!("halo-persist-clean-{}", std::process::id()));
+        let (fresh, stale, empty) = (base.join("fresh"), base.join("stale"), base.join("empty"));
+        for dir in [&fresh, &stale, &empty] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(fresh.join("0.json"), "{}").unwrap();
+        std::fs::write(stale.join("0.json"), "{}").unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(31 * 86400);
+        std::fs::File::options().write(true).open(stale.join("0.json")).unwrap().set_modified(old).unwrap();
+        clean(&base, Duration::from_secs(30 * 86400));
+        assert!(fresh.join("0.json").exists() && !stale.exists() && !empty.exists());
         let _ = std::fs::remove_dir_all(base);
     }
 }
