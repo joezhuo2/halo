@@ -68,10 +68,12 @@ pub struct Halo {
     pub(crate) seen_panel: (crate::terminal::PanelTab, bool),
     last_escape: f64,
     fullscreen: Option<bool>,
+    pub inbox: Option<std::sync::mpsc::Receiver<crate::ipc::Request>>,
+    pub waits: Vec<crate::ipc::Wait>,
 }
 
 impl Halo {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, mut args: crate::cli::Args, server: Option<crate::ipc::Server>) -> Self {
         let ctx = &cc.egui_ctx;
         let mut app = Self::build(ctx, Settings::load(), Session::load());
         if app.session.layout.zen.is_some() && !app.settings.zen_restore {
@@ -81,14 +83,14 @@ impl Halo {
             app.update = Some(crate::update::start(ctx));
         }
 
-        let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().or_else(|_| std::path::absolute(&p)).ok()).map(strip_unc);
+        let arg = args.paths.iter().position(|t| t.path.is_dir()).map(|i| args.paths.remove(i).path);
         let restore = app.settings.restore_session;
         let last = app.session.folder.clone().filter(|f| restore && f.is_dir());
-        let arg_is_none = arg.is_none();
+        let arg_is_none = arg.is_none() && args.paths.is_empty() && args.add.is_empty() && args.diff.is_none() && args.stdin.is_none();
         let (folder, files) = match arg {
-            Some(path) if path.is_dir() => (Some(path), vec![]),
-            Some(path) => (last, vec![path]),
-            None => (last, if restore { app.session.files.clone() } else { vec![] }),
+            Some(path) => (Some(path), vec![]),
+            None if arg_is_none && restore => (last, app.session.files.clone()),
+            None => (last, vec![]),
         };
         let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
         app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
@@ -103,6 +105,9 @@ impl Halo {
             }
         }
         app.editors.restore(&app.session.backups);
+        app.open_args(args, None, ctx);
+        let wake = ctx.clone();
+        app.inbox = server.map(|server| crate::ipc::serve(server, move || wake.request_repaint()));
         app
     }
 
@@ -154,6 +159,8 @@ impl Halo {
             seen_panel: (crate::terminal::PanelTab::Terminal, false),
             last_escape: f64::NEG_INFINITY,
             fullscreen: None,
+            inbox: None,
+            waits: vec![],
         };
         app.editors.config = app.settings.clone();
         app
@@ -356,6 +363,7 @@ impl Halo {
             ZoomOut => ctx.set_zoom_factor((ctx.zoom_factor() - 0.1).max(0.5)),
             ZoomReset => ctx.set_zoom_factor(1.0),
             About => self.about = true,
+            InstallInPath | ConfirmInstallInPath => crate::cli::install(&cmd),
             GoToFile => self.search.open(""),
             ShowCommands => self.search.open(">"),
             GoToSymbol => self.search.open("@"),
@@ -704,6 +712,7 @@ impl Halo {
             self.timeline.reload();
         }
         self.poll_compare(&ctx);
+        self.poll_ipc(&ctx);
         self.poll_imports();
         if self.accounts.poll() {
             self.git.refresh_prs();
@@ -815,7 +824,7 @@ fn auto_save(mode: &str, due: impl FnOnce() -> bool, was: (bool, bool), now: (bo
     }
 }
 
-fn strip_unc(path: PathBuf) -> PathBuf {
+pub(crate) fn strip_unc(path: PathBuf) -> PathBuf {
     match path.to_str().map(|s| (s.strip_prefix(r"\\?\UNC\"), s.strip_prefix(r"\\?\"))) {
         Some((Some(share), _)) => PathBuf::from(format!(r"\\{share}")),
         Some((_, Some(rest))) => PathBuf::from(rest),

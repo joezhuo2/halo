@@ -3768,6 +3768,7 @@ three
         let settings = Settings::default();
         let mut editors = Editors::new();
         editors.open(&path);
+        editors.finish_loads();
         let marks = crate::testing::FileMarks { tests: vec![(1, State::Passed, Kind::Rust, "t".into())], failures: vec![(2, "boom".into())], coverage: Some([(0, 1)].into()) };
         editors.tests.put(&path, marks);
         frame(&ctx, &mut editors, vec![]);

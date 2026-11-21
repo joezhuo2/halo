@@ -247,6 +247,8 @@ pub enum Command {
     CloseTab(usize, usize),
     PathChanged(PathBuf, Option<PathBuf>),
     About,
+    InstallInPath,
+    ConfirmInstallInPath,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -542,7 +544,7 @@ pub fn all() -> Vec<Command> {
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.extend([ShowOutput, ShowOutputChannels, ClearOutput, OpenOutputInEditor, ShowNotifications, ClearNotifications, ToggleDoNotDisturb, FocusNotification]);
-    commands.push(About);
+    commands.extend([About, InstallInPath]);
     commands
 }
 
@@ -736,7 +738,7 @@ impl Command {
             | MergeNextConflict | MergePrevConflict | MergeToggleBase | MergeComplete => "Source Control",
             ShowOutput | ShowOutputChannels | ClearOutput | OpenOutputInEditor | SelectOutputChannel(_) => "Output",
             ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => "Notifications",
-            About => "Help",
+            About | InstallInPath | ConfirmInstallInPath => "Help",
         }
     }
 
@@ -970,6 +972,7 @@ impl Command {
             FocusOpenEditors => "Explorer: Focus on Open Editors View",
             PathChanged(..) => "Path Changed",
             About => "About Halo",
+            InstallInPath | ConfirmInstallInPath => "Shell Command: Install 'halo' command in PATH",
         }
     }
 }
