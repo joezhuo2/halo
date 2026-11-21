@@ -12,11 +12,12 @@ use crate::settings::{Session, Settings};
 use crate::terminal::BottomPanel;
 use crate::theme::Theme;
 use crate::timeline::Timeline;
+use crate::workbench::View;
 use crate::wsl::{self, Wsl};
-use crate::ui::{self, icons};
+use crate::ui;
 use eframe::egui::{
-    self, Align, Align2, CornerRadius, CursorIcon, FontId, Frame, Id, Layout, Panel, Response, RichText, ScrollArea,
-    Sense, Stroke, StrokeKind, Ui, UiBuilder, ViewportCommand, pos2, vec2,
+    self, Align2, CornerRadius, CursorIcon, FontId, Frame, Id, RichText, ScrollArea, Sense, Stroke, StrokeKind, Ui, ViewportCommand,
+    pos2, vec2,
 };
 use std::path::PathBuf;
 
@@ -35,7 +36,7 @@ pub struct Halo {
     pub git: Git,
     pub explorer: Explorer,
     pub scm: Scm,
-    timeline: Timeline,
+    pub(crate) timeline: Timeline,
     pub compare: crate::history::Compare,
     pub accounts: Accounts,
     pub editors: Editors,
@@ -63,6 +64,10 @@ pub struct Halo {
     pub updated: Option<String>,
     pub debug: crate::debug::Debug,
     pub testing: crate::testing::Testing,
+    pub(crate) dragging: Option<crate::workbench::View>,
+    pub(crate) seen_panel: (crate::terminal::PanelTab, bool),
+    last_escape: f64,
+    fullscreen: Option<bool>,
     pub inbox: Option<std::sync::mpsc::Receiver<crate::ipc::Request>>,
     pub waits: Vec<crate::ipc::Wait>,
 }
@@ -70,7 +75,44 @@ pub struct Halo {
 impl Halo {
     pub fn new(cc: &eframe::CreationContext<'_>, mut args: crate::cli::Args, server: Option<crate::ipc::Server>) -> Self {
         let ctx = &cc.egui_ctx;
-        let settings = Settings::load();
+        let mut app = Self::build(ctx, Settings::load(), Session::load());
+        if app.session.layout.zen.is_some() && !app.settings.zen_restore {
+            app.toggle_zen();
+        }
+        if app.settings.auto_update && !cfg!(debug_assertions) && std::env::var_os("HALO_COMMANDS").is_none() {
+            app.update = Some(crate::update::start(ctx));
+        }
+
+        let arg = args.paths.iter().position(|t| t.path.is_dir()).map(|i| args.paths.remove(i).path);
+        let restore = app.settings.restore_session && !crate::windows::secondary();
+        let last = app.session.folder.clone().filter(|f| restore && f.is_dir());
+        let arg_is_none = arg.is_none() && args.paths.is_empty() && args.add.is_empty() && args.diff.is_none() && args.stdin.is_none();
+        let (folder, files) = match arg {
+            Some(path) => (Some(path), vec![]),
+            None if arg_is_none && restore => (last, app.session.files.clone()),
+            None => (last, vec![]),
+        };
+        let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
+        app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
+        app.set_folder(folder, ctx);
+        if arg_is_none && restore && !app.session.grid.as_ref().is_some_and(|grid| app.editors.restore_grid(grid)) {
+            let pins: Vec<_> = app.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
+            app.editors.restore_pins(&pins);
+        }
+        for file in files.iter().filter(|f| f.is_file()) {
+            if !app.editors.open_paths().contains(file) {
+                app.editors.open_kept(file);
+            }
+        }
+        app.editors.restore(&app.session.backups);
+        crate::terminal_restore::restore(&mut app.bottom, &mut app.editors, &app.settings, app.session.folder.as_deref(), ctx);
+        app.open_args(args, None, ctx);
+        let wake = ctx.clone();
+        app.inbox = server.map(|server| crate::ipc::serve(server, move || wake.request_repaint()));
+        app
+    }
+
+    pub(crate) fn build(ctx: &egui::Context, settings: Settings, session: Session) -> Self {
         ctx.set_fonts(crate::theme::fonts(&settings.font_family, &settings.terminal_font_family));
         crate::terminal::configure(&settings);
         crate::editor::configure(&settings);
@@ -78,7 +120,6 @@ impl Halo {
         theme.apply(ctx);
         crate::icon_theme::select(&settings.icon_theme, &crate::settings::dir());
 
-        let session = Session::load();
         let font = format!("{}\n{}", settings.font_family, settings.terminal_font_family);
         let mut app = Self {
             theme,
@@ -115,40 +156,14 @@ impl Halo {
             updated: None,
             debug: Default::default(),
             testing: Default::default(),
+            dragging: None,
+            seen_panel: (crate::terminal::PanelTab::Terminal, false),
+            last_escape: f64::NEG_INFINITY,
+            fullscreen: None,
             inbox: None,
             waits: vec![],
         };
         app.editors.config = app.settings.clone();
-        if app.settings.auto_update && !cfg!(debug_assertions) && std::env::var_os("HALO_COMMANDS").is_none() {
-            app.update = Some(crate::update::start(ctx));
-        }
-
-        let arg = args.paths.iter().position(|t| t.path.is_dir()).map(|i| args.paths.remove(i).path);
-        let restore = app.settings.restore_session && !crate::windows::secondary();
-        let last = app.session.folder.clone().filter(|f| restore && f.is_dir());
-        let arg_is_none = arg.is_none() && args.paths.is_empty() && args.add.is_empty() && args.diff.is_none() && args.stdin.is_none();
-        let (folder, files) = match arg {
-            Some(path) => (Some(path), vec![]),
-            None if arg_is_none && restore => (last, app.session.files.clone()),
-            None => (last, vec![]),
-        };
-        let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
-        app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
-        app.set_folder(folder, ctx);
-        if arg_is_none && restore && !app.session.grid.as_ref().is_some_and(|grid| app.editors.restore_grid(grid)) {
-            let pins: Vec<_> = app.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
-            app.editors.restore_pins(&pins);
-        }
-        for file in files.iter().filter(|f| f.is_file()) {
-            if !app.editors.open_paths().contains(file) {
-                app.editors.open_kept(file);
-            }
-        }
-        app.editors.restore(&app.session.backups);
-        crate::terminal_restore::restore(&mut app.bottom, &mut app.editors, &app.settings, app.session.folder.as_deref(), ctx);
-        app.open_args(args, None, ctx);
-        let wake = ctx.clone();
-        app.inbox = server.map(|server| crate::ipc::serve(server, move || wake.request_repaint()));
         app
     }
 
@@ -304,33 +319,20 @@ impl Halo {
                 self.editors.open(&path);
             }
             Exit => ctx.send_viewport_cmd(ViewportCommand::Close),
-            ShowExplorer | ShowSourceControl | FindInFiles => {
-                let shown = (self.session.search, self.session.source_control && !self.session.search);
-                let wanted = (cmd == FindInFiles, cmd == ShowSourceControl);
-                if self.session.sidebar && shown == wanted && cmd != FindInFiles && !self.session.debug_view && !self.session.test_view {
-                    self.session.sidebar = false;
-                } else {
-                    self.session.sidebar = true;
-                    (self.session.search, self.session.source_control) = wanted;
-                }
-                (self.session.debug_view, self.session.test_view) = (false, false);
-                if cmd == FindInFiles {
-                    self.find.focus();
-                }
+            ShowExplorer => self.toggle_view(View::Explorer),
+            ShowSourceControl => self.toggle_view(View::SourceControl),
+            ShowRunAndDebug => self.toggle_view(View::RunAndDebug),
+            FindInFiles => {
+                self.reveal(View::Search);
+                self.find.focus();
             }
-            ShowRunAndDebug => {
-                self.session.sidebar = !(self.session.sidebar && self.session.debug_view);
-                (self.session.debug_view, self.session.search, self.session.source_control, self.session.test_view) = (true, false, false, false);
-            }
-            ShowTesting => {
-                (self.session.sidebar, self.session.test_view, self.session.debug_view, self.session.search, self.session.source_control) = (true, true, false, false, false);
-            }
+            ShowTesting => self.reveal(View::Testing),
             RunAllTests | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => self.testing_exec(&cmd, ctx),
             StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver | StepInto | StepOut
             | RemoveAllBreakpoints | AddWatch | AddConfiguration => {
                 if cmd == AddWatch {
-                    (self.session.sidebar, self.session.debug_view, self.session.search, self.session.source_control) = (true, true, false, false);
+                    self.reveal(View::RunAndDebug);
                 }
                 if !self.debug.active() && matches!(cmd, StartDebugging | RunWithoutDebugging) {
                     self.editors.exec(&SaveAll, &self.settings, ctx);
@@ -339,7 +341,11 @@ impl Halo {
             }
             ToggleSidebar => self.session.sidebar ^= true,
             TogglePanel => self.session.panel ^= true,
-            ToggleAi => self.session.ai ^= true,
+            ToggleAi => self.toggle_view(View::Ai),
+            ToggleFullScreen | ToggleZenMode | ToggleCenteredLayout | ToggleSidebarPosition | ToggleSecondarySidebar | MovePanelLeft
+            | MovePanelRight | MovePanelBottom | MovePanelTop | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter
+            | AlignPanelJustify | AlignPanelLeft | AlignPanelRight | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView
+            | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations => self.layout_command(cmd),
             ToggleMinimap => {
                 self.settings.minimap ^= true;
                 self.settings.save();
@@ -373,16 +379,12 @@ impl Halo {
             GoToSymbol => self.search.open("@"),
             GoToWorkspaceSymbol => self.search.open("#"),
             RestartLanguageServers => self.editors.lsp.restart(),
-            ShowProblems => {
-                self.session.panel = !(self.session.panel && self.bottom.showing_problems());
-                self.bottom.show_problems();
-            }
+            ShowProblems => self.toggle_view(View::Problems),
             ShowOutput | SelectOutputChannel(_) => {
                 if let SelectOutputChannel(name) = cmd {
                     crate::output::select(name);
                 }
-                self.session.panel = true;
-                self.bottom.show_output();
+                self.reveal(View::Output);
             }
             ShowOutputChannels => self.search.pick("Select an Output Channel", crate::output::picks()),
             ClearOutput => crate::output::clear_current(),
@@ -390,7 +392,7 @@ impl Halo {
             ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => crate::notifications::exec(&cmd),
             Git(op) | GitAt(op, _) => {
                 let target = if let GitAt(_, value) = cmd { Some(value) } else { None };
-                (self.session.sidebar, self.session.source_control, self.session.search) = (true, true, false);
+                self.reveal(View::SourceControl);
                 self.scm.start(op, target, &mut self.git, ctx, &mut self.cmds);
             }
             GitSync => self.git.sync(),
@@ -398,7 +400,7 @@ impl Halo {
                 self.explorer.exec(&cmd, ctx);
             }
             FilterExplorer | FocusOpenEditors => {
-                (self.session.sidebar, self.session.debug_view, self.session.search, self.session.source_control) = (true, false, false, false);
+                self.reveal(View::Explorer);
                 if cmd == FilterExplorer {
                     self.explorer.open_filter();
                 } else {
@@ -538,6 +540,12 @@ impl Halo {
             ("sideBarFocus", side.into()),
             ("panelVisible", self.session.panel.into()),
             ("panelFocus", self.bottom.has_focus().into()),
+            ("auxiliaryBarVisible", self.session.ai.into()),
+            ("panelPosition", format!("{:?}", self.panel_at()).to_lowercase().into()),
+            ("panelMaximized", self.session.layout.panel_max.into()),
+            ("inZenMode", self.session.layout.zen.is_some().into()),
+            ("isCenteredLayout", self.session.layout.centered.into()),
+            ("isFullscreen", self.session.layout.fullscreen.into()),
             ("inputFocus", typing.into()),
             ("textInputFocus", typing.into()),
             ("inQuickOpen", self.search.is_open().into()),
@@ -570,144 +578,7 @@ impl Halo {
         self.focused = focused;
     }
 
-    fn activity_bar(&mut self, ui: &mut Ui) {
-        let theme = self.theme.clone();
-        Panel::left("activity_bar")
-            .exact_size(46.0)
-            .resizable(false)
-            .frame(Frame::new().fill(theme.bar))
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                let (search, source) = (self.session.search, self.session.source_control && !self.session.search);
-                let explorer = self.session.sidebar && !search && !source && !self.session.debug_view && !self.session.test_view;
-                let source = self.session.sidebar && source;
-                if activity_item(ui, &theme, icons::FILES, explorer, "Explorer (Ctrl+Shift+E)").clicked() {
-                    self.cmds.push(Command::ShowExplorer);
-                }
-                if activity_item(ui, &theme, icons::MAGNIFYING_GLASS, self.session.sidebar && search, "Search (Ctrl+Shift+F)").clicked() {
-                    self.cmds.push(Command::FindInFiles);
-                }
-                if activity_item(ui, &theme, icons::GIT_BRANCH, source, "Source Control (Ctrl+Shift+G)").clicked() {
-                    self.cmds.push(Command::ShowSourceControl);
-                }
-                if activity_item(ui, &theme, icons::BUG, self.session.sidebar && self.session.debug_view, "Run and Debug (Ctrl+Shift+D)").clicked() {
-                    self.cmds.push(Command::ShowRunAndDebug);
-                }
-                let testing = self.session.sidebar && self.session.test_view && !self.session.debug_view;
-                if activity_item(ui, &theme, icons::FLASK, testing, "Testing").clicked() {
-                    self.cmds.push(if testing { Command::ToggleSidebar } else { Command::ShowTesting });
-                }
-                ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                    if activity_item(ui, &theme, icons::GEAR, false, "Settings (Ctrl+,)").clicked() {
-                        self.cmds.push(Command::OpenSettings);
-                    }
-                    let accounts = activity_item(ui, &theme, icons::USER_CIRCLE, false, "Accounts");
-                    egui::Popup::menu(&accounts).show(|ui| self.accounts.menu(ui));
-                    if cfg!(windows) {
-                        let folder = self.session.folder.clone();
-                        let in_wsl = folder.as_deref().and_then(wsl::parse).is_some();
-                        let button = activity_item(ui, &theme, icons::LINUX_LOGO, in_wsl, "Switch to WSL");
-                        egui::Popup::menu(&button).show(|ui| self.wsl.menu(ui, folder.as_deref(), &mut self.cmds));
-                    }
-                });
-            });
-    }
-
-    fn sidebar(&mut self, ui: &mut Ui) {
-        let mut open = self.session.sidebar;
-        let active = self.editors.active_path();
-        Panel::left("sidebar")
-            .resizable(true)
-            .default_size(260.0)
-            .size_range(170.0..=640.0)
-            .frame(Frame::new().fill(self.theme.panel))
-            .show_collapsible(ui, &mut open, |ui| {
-                if self.session.debug_view {
-                    return self.debug_view(ui);
-                }
-                if self.session.test_view {
-                    return self.testing_view(ui);
-                }
-                if self.session.search {
-                    let folder = self.session.folder.clone();
-                    return self.find.ui(ui, &self.theme, folder.as_deref(), &mut self.editors, &mut self.cmds);
-                }
-                if self.session.source_control {
-                    return self.scm.ui(ui, &self.theme, &mut self.git, &mut self.cmds);
-                }
-                let full = ui.available_rect_before_wrap();
-                let symbols = self.editors.outline();
-                let timeline_t = ui::reveal(ui, Id::new("timeline_reveal"), self.session.timeline);
-                let outline_t = ui::reveal(ui, Id::new("outline_reveal"), self.session.outline);
-                let size = |t: f32, share: f32| 24.0 + t * (full.height() * share - 24.0).max(0.0);
-                let lower = (full.bottom() - size(timeline_t, 0.3)).max(full.top() + 104.0).min(full.bottom() - 24.0);
-                let split = (lower - size(outline_t, 0.4 - 0.1 * timeline_t)).max(full.top() + 80.0).min(lower - 24.0);
-                ui.scope_builder(UiBuilder::new().max_rect(full.with_max_y(split)), |ui| {
-                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                    let tabs = self.editors.open_tabs();
-                    self.explorer.ui(ui, &self.theme, &self.git, active.as_deref(), &self.settings, &tabs, &mut self.cmds);
-                });
-                ui.scope_builder(UiBuilder::new().max_rect(full.with_min_y(split).with_max_y(lower)), |ui| {
-                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                    let active = !self.editors.is_empty();
-                    outline(ui, &self.theme, symbols, active, self.editors.outline_loading(), &mut self.session.outline, &mut self.cmds);
-                });
-                ui.scope_builder(UiBuilder::new().max_rect(full.with_min_y(lower)), |ui| {
-                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                    self.timeline.ui(ui, &self.theme, active.as_deref(), &mut self.session.timeline, &mut self.cmds);
-                });
-            });
-        self.session.sidebar = open;
-    }
-
-    fn ai_panel(&mut self, ui: &mut Ui) {
-        let mut open = self.session.ai;
-        let cwd = self.session.folder.clone();
-        Panel::right("ai_panel")
-            .resizable(true)
-            .default_size(380.0)
-            .size_range(240.0..=800.0)
-            .frame(Frame::new().fill(self.theme.panel))
-            .show_collapsible(ui, &mut open, |ui| {
-                self.ai.ui(ui, &self.theme, self.settings.font_size, cwd.as_deref(), &mut self.cmds);
-            })
-            .is_none()
-            .then(|| self.ai.blur());
-        self.session.ai = open;
-    }
-
-    fn bottom_panel(&mut self, ui: &mut Ui) {
-        let mut open = self.session.panel;
-        let cwd = self.session.folder.clone();
-        Panel::bottom("bottom_panel")
-            .resizable(true)
-            .default_size(240.0)
-            .size_range(90.0..=900.0)
-            .frame(Frame::new().fill(self.theme.panel))
-            .show_collapsible(ui, &mut open, |ui| {
-                self.bottom.ui(ui, &self.theme, &self.settings, cwd.as_deref(), &self.editors.lsp, &self.tasks.files(), &mut self.cmds);
-            })
-            .is_none()
-            .then(|| self.bottom.blur());
-        self.session.panel = open;
-    }
-
-    fn central(&mut self, ui: &mut Ui) {
-        egui::CentralPanel::default()
-            .frame(Frame::new().fill(self.theme.bg))
-            .show(ui, |ui| {
-                let area = ui.max_rect();
-                if self.editors.is_empty() {
-                    self.welcome(ui);
-                } else {
-                    self.editors.ai_open = self.session.ai;
-                    self.editors.ui(ui, &self.theme, &self.settings, &self.git, &mut self.cmds);
-                }
-                self.drop_files(ui, area);
-            });
-    }
-
-    fn drop_files(&mut self, ui: &mut Ui, area: egui::Rect) {
+    pub(crate) fn drop_files(&mut self, ui: &mut Ui, area: egui::Rect) {
         let ctx = ui.ctx().clone();
         let pointer = ctx.pointer_latest_pos();
         if self.explorer.dragging() && pointer.is_some_and(|p| area.contains(p)) {
@@ -726,7 +597,7 @@ impl Halo {
         }
     }
 
-    fn welcome(&mut self, ui: &mut Ui) {
+    pub(crate) fn welcome(&mut self, ui: &mut Ui) {
         let theme = &self.theme;
         let t = ui::fade_in(ui, Id::new("welcome_fade"));
         ui.set_opacity(t);
@@ -828,6 +699,16 @@ impl Halo {
 
 impl eframe::App for Halo {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.frame(ui);
+    }
+
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        self.save_session();
+    }
+}
+
+impl Halo {
+    pub(crate) fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         let window = ui.max_rect();
         if self.git.poll() {
@@ -868,6 +749,13 @@ impl eframe::App for Halo {
         }
         command::set_context(self.when_keys(&ctx));
         self.page.find_key(&ctx);
+        if self.session.layout.zen.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            let now = ctx.input(|i| i.time);
+            self.last_escape = if now - self.last_escape < 0.5 { f64::NEG_INFINITY } else { now };
+            if self.last_escape == f64::NEG_INFINITY {
+                self.cmds.push(Command::ToggleZenMode);
+            }
+        }
         if !self.page.keys.recording() {
             self.global_shortcuts(&ctx);
         }
@@ -885,12 +773,10 @@ impl eframe::App for Halo {
 
         crate::notifications::show(&ctx, &self.theme, &mut self.cmds);
         self.titlebar(ui);
-        self.statusbar(ui);
-        self.activity_bar(ui);
-        self.sidebar(ui);
-        self.ai_panel(ui);
-        self.bottom_panel(ui);
-        self.central(ui);
+        if self.session.layout.zen.is_none() {
+            self.statusbar(ui);
+        }
+        self.workbench(ui);
         self.floating(&ctx);
         self.debug_frame(&ctx, window.top() + 44.0);
         self.testing_frame(&ctx);
@@ -933,10 +819,10 @@ impl eframe::App for Halo {
         for cmd in std::mem::take(&mut self.cmds) {
             self.dispatch(cmd, &ctx);
         }
-    }
-
-    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
-        self.save_session();
+        if self.fullscreen != Some(self.session.layout.fullscreen) {
+            self.fullscreen = Some(self.session.layout.fullscreen);
+            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(self.session.layout.fullscreen));
+        }
     }
 }
 
@@ -963,7 +849,7 @@ pub fn note(ui: &mut Ui, theme: &Theme, text: &str) {
     });
 }
 
-fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>, active: bool, loading: bool, open: &mut bool, cmds: &mut Vec<Command>) {
+pub(crate) fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>, active: bool, loading: bool, open: &mut bool, cmds: &mut Vec<Command>) {
     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
     let rect = ui::section(ui, theme, "OUTLINE", open).on_hover_text("Symbols of the active file, from its language server").rect;
     if loading {
@@ -993,23 +879,6 @@ fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>,
             }
         }
     });
-}
-
-fn activity_item(ui: &mut Ui, theme: &Theme, icon: &str, active: bool, tip: &str) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(46.0, 44.0), Sense::click());
-    let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
-    let a = ui::anim(ui, resp.id.with("active"), active);
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter();
-        if a > 0.0 {
-            let mut bar = rect;
-            bar.set_width(2.0);
-            painter.rect_filled(bar.shrink2(vec2(0.0, 8.0 * (1.0 - a))), CornerRadius::ZERO, ui::with_alpha(theme.accent, a));
-        }
-        let color = ui::mix(theme.text_dim, theme.text, h.max(a));
-        painter.text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(23.0), color);
-    }
-    resp.on_hover_text(tip)
 }
 
 fn resize_edges(ctx: &egui::Context, window: egui::Rect) {

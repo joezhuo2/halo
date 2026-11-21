@@ -44,6 +44,7 @@ mod ui;
 mod update;
 mod when;
 mod windows;
+mod workbench;
 mod wsl;
 
 use eframe::egui;

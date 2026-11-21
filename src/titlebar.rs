@@ -41,7 +41,9 @@ impl Halo {
                             for state in [&mut widgets.hovered, &mut widgets.open, &mut widgets.active] {
                                 state.corner_radius = CornerRadius::same(5);
                             }
-                            self.menus(ui);
+                            if self.session.layout.zen.is_none() {
+                                self.menus(ui);
+                            }
                             ui.cursor().left()
                         })
                         .inner;
@@ -124,11 +126,18 @@ impl Halo {
             Some(SelectAll), None,
             Some(AddCursorAbove), Some(AddCursorBelow), Some(SelectNextOccurrence),
         ]);
-        self.menu(ui, "View", &[
+        self.menu_with(ui, "View", &[
             Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), Some(ShowTesting), None,
             Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), Some(ShowProblems), Some(ShowOutput), Some(ShowNotifications), None,
             Some(SplitEditor), Some(SplitEditorDown), Some(ToggleMaximizeGroup), Some(ResetGroupSizes), Some(ToggleMinimap), Some(MarkdownPreview), Some(MarkdownPreviewSide), None,
             Some(ToggleTheme), Some(ZoomIn), Some(ZoomOut), Some(ZoomReset),
+        ], &[
+            Some(ToggleFullScreen), Some(ToggleZenMode), Some(ToggleCenteredLayout), None,
+            Some(ToggleSidebar), Some(ToggleSecondarySidebar), Some(TogglePanel), Some(ToggleSidebarPosition), None,
+            Some(MovePanelLeft), Some(MovePanelRight), Some(MovePanelBottom), Some(MovePanelTop), Some(TogglePanelPosition), Some(ToggleMaximizedPanel), None,
+            Some(AlignPanelCenter), Some(AlignPanelJustify), Some(AlignPanelLeft), Some(AlignPanelRight), None,
+            Some(ActivityBarSide), Some(ActivityBarTop), Some(ActivityBarHidden), None,
+            Some(MoveView), Some(ResetViewLocations),
         ]);
         self.menu(ui, "Go", &[
             Some(GoToFile), Some(GoToSymbol), Some(GoToWorkspaceSymbol), Some(GoToLine), Some(FindInFiles), Some(ShowCommands), None,
@@ -201,9 +210,17 @@ impl Halo {
     }
 
     fn menu(&mut self, ui: &mut Ui, title: &str, items: &[Option<Command>]) {
+        self.menu_with(ui, title, items, &[]);
+    }
+
+    fn menu_with(&mut self, ui: &mut Ui, title: &str, items: &[Option<Command>], appearance: &[Option<Command>]) {
         ui.menu_button(title, |ui| {
             ui.set_min_width(230.0);
             ui::menu_pad(ui);
+            if !appearance.is_empty() {
+                self.menu(ui, "Appearance", appearance);
+                ui.separator();
+            }
             for item in items {
                 match item {
                     Some(cmd) => self.menu_item(ui, cmd.clone()),

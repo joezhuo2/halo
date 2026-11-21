@@ -105,6 +105,15 @@ pub struct Settings {
     pub files_exclude: Vec<String>,
     pub compact_folders: bool,
     pub confirm_drag_and_drop: bool,
+    pub sidebar_location: String,
+    pub panel_location: String,
+    pub panel_alignment: String,
+    pub activity_bar_location: String,
+    pub zen_full_screen: bool,
+    pub zen_center_layout: bool,
+    pub zen_show_tabs: String,
+    pub zen_hide_line_numbers: bool,
+    pub zen_restore: bool,
     #[serde(skip)]
     pub langs: BTreeMap<String, Settings>,
 }
@@ -246,6 +255,15 @@ impl Default for Settings {
             files_exclude: ["**/.git", "**/.svn", "**/.hg", "**/.DS_Store", "**/Thumbs.db"].map(str::to_owned).into(),
             compact_folders: true,
             confirm_drag_and_drop: true,
+            sidebar_location: "left".into(),
+            panel_location: "bottom".into(),
+            panel_alignment: "center".into(),
+            activity_bar_location: "default".into(),
+            zen_full_screen: true,
+            zen_center_layout: true,
+            zen_show_tabs: "multiple".into(),
+            zen_hide_line_numbers: true,
+            zen_restore: true,
             langs: BTreeMap::new(),
         }
     }
@@ -399,13 +417,10 @@ pub struct Session {
     pub sidebar: bool,
     pub panel: bool,
     pub ai: bool,
-    pub source_control: bool,
-    pub search: bool,
     pub outline: bool,
     pub timeline: bool,
-    pub debug_view: bool,
-    pub test_view: bool,
     pub breakpoints: BTreeMap<PathBuf, BTreeMap<PathBuf, Vec<crate::debug::Breakpoint>>>,
+    pub layout: crate::workbench::Workbench,
 }
 
 impl Default for Session {
@@ -420,13 +435,10 @@ impl Default for Session {
             sidebar: true,
             panel: true,
             ai: false,
-            source_control: false,
-            search: false,
             outline: true,
             timeline: false,
-            debug_view: false,
-            test_view: false,
             breakpoints: BTreeMap::new(),
+            layout: Default::default(),
         }
     }
 }

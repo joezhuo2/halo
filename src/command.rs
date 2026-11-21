@@ -117,6 +117,28 @@ pub enum Command {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    ToggleFullScreen,
+    ToggleZenMode,
+    ToggleCenteredLayout,
+    ToggleSidebarPosition,
+    ToggleSecondarySidebar,
+    MovePanelLeft,
+    MovePanelRight,
+    MovePanelBottom,
+    MovePanelTop,
+    TogglePanelPosition,
+    ToggleMaximizedPanel,
+    AlignPanelCenter,
+    AlignPanelJustify,
+    AlignPanelLeft,
+    AlignPanelRight,
+    ActivityBarSide,
+    ActivityBarTop,
+    ActivityBarHidden,
+    MoveView,
+    MoveViewTo(crate::workbench::View),
+    MoveViewPlace(crate::workbench::View, crate::workbench::Place),
+    ResetViewLocations,
 
     GoToFile,
     ShowCommands,
@@ -457,6 +479,7 @@ fn defaults() -> Vec<Binding> {
         k(C, Key::T, ToggleTheme),
         k(NONE, Key::S, SaveAll),
         k(NONE, Key::F, CloseFolder),
+        k(NONE, Key::Z, ToggleZenMode),
         g(cs, Key::S, SaveAs),
         g(cs, Key::P, ShowCommands),
         g(cs, Key::F, FindInFiles),
@@ -473,9 +496,10 @@ fn defaults() -> Vec<Binding> {
         g(NONE, Key::F9, ToggleBreakpoint),
         g(NONE, Key::F10, StepOver),
         g(NONE, Key::F11, StepInto),
+        g(NONE, Key::F11, ToggleFullScreen),
         g(cs, Key::Backtick, NewTerminal),
         g(cs, Key::Tab, PrevEditor),
-        g(ca, Key::B, ToggleAi),
+        g(ca, Key::B, ToggleSecondarySidebar),
         e(cs, Key::Z, Redo),
         e(ca, Key::ArrowUp, AddCursorAbove),
         e(ca, Key::ArrowDown, AddCursorBelow),
@@ -527,6 +551,10 @@ fn defaults() -> Vec<Binding> {
     for b in list.iter_mut().filter(|b| matches!(b.command, MoveEditorUp | MoveEditorDown)) {
         (b.when, b.cond) = (NOT_TEXT.to_owned(), text.clone());
     }
+    for b in list.iter_mut().filter(|b| b.shortcut == key(NONE, Key::F11)) {
+        b.when = if b.command == StepInto { "inDebugMode" } else { "!inDebugMode" }.to_owned();
+        b.cond = crate::when::parse(&b.when).ok().map(Arc::new);
+    }
     list
 }
 
@@ -546,7 +574,9 @@ pub fn all() -> Vec<Command> {
         FocusGroupUp, FocusGroupDown, MoveEditorLeft, MoveEditorRight, MoveEditorUp, MoveEditorDown, CloseGroup, MoveEditorToNewWindow,
         CopyEditorToNewWindow, MoveEditorToMainWindow,
         ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff, FilterExplorer, FocusOpenEditors,
-        MarkdownPreview, MarkdownPreviewSide,
+        MarkdownPreview, MarkdownPreviewSide, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
+        MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
+        AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations,
         GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, NextEditor, PrevEditor, GoBack, GoForward, ReopenClosed,
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
@@ -739,7 +769,10 @@ impl Command {
             | LayoutTwoColumns | LayoutThreeColumns | LayoutTwoRows | LayoutThreeRows | LayoutGrid | LayoutTwoRowsRight | LayoutTwoColumnsBottom
             | ToggleMaximizeGroup | ResetGroupSizes | FocusGroupLeft | FocusGroupRight | FocusGroupUp | FocusGroupDown | MoveEditorLeft
             | MoveEditorRight | MoveEditorUp | MoveEditorDown | CloseGroup | MoveEditorToNewWindow | CopyEditorToNewWindow
-            | MoveEditorToMainWindow => "View",
+            | MoveEditorToMainWindow | ToggleFullScreen | ToggleZenMode | ToggleCenteredLayout
+            | ToggleSidebarPosition | ToggleSecondarySidebar | MovePanelLeft | MovePanelRight | MovePanelBottom | MovePanelTop
+            | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter | AlignPanelJustify | AlignPanelLeft | AlignPanelRight
+            | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
@@ -872,6 +905,28 @@ impl Command {
             ZoomIn => "Zoom In",
             ZoomOut => "Zoom Out",
             ZoomReset => "Reset Zoom",
+            ToggleFullScreen => "View: Toggle Full Screen",
+            ToggleZenMode => "View: Toggle Zen Mode",
+            ToggleCenteredLayout => "View: Toggle Centered Layout",
+            ToggleSidebarPosition => "View: Toggle Primary Side Bar Position",
+            ToggleSecondarySidebar => "View: Toggle Secondary Side Bar Visibility",
+            MovePanelLeft => "View: Move Panel Left",
+            MovePanelRight => "View: Move Panel Right",
+            MovePanelBottom => "View: Move Panel To Bottom",
+            MovePanelTop => "View: Move Panel To Top",
+            TogglePanelPosition => "View: Toggle Panel Position",
+            ToggleMaximizedPanel => "View: Toggle Maximized Panel",
+            AlignPanelCenter => "View: Set Panel Alignment to Center",
+            AlignPanelJustify => "View: Set Panel Alignment to Justify",
+            AlignPanelLeft => "View: Set Panel Alignment to Left",
+            AlignPanelRight => "View: Set Panel Alignment to Right",
+            ActivityBarSide => "View: Show Activity Bar at the Side",
+            ActivityBarTop => "View: Show Activity Bar at the Top",
+            ActivityBarHidden => "View: Hide Activity Bar",
+            MoveView => "View: Move View...",
+            MoveViewTo(_) => "View: Move View To...",
+            MoveViewPlace(..) => "View: Move View",
+            ResetViewLocations => "View: Reset View Locations",
             GoToFile => "Go to File...",
             ShowCommands => "Show All Commands",
             FindInFiles => "Find in Files",
