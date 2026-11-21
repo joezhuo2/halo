@@ -602,6 +602,110 @@ impl Document {
         lines
     }
 
+    fn blocks(&self, sels: &[Sel]) -> Vec<(usize, usize)> {
+        let mut out: Vec<(usize, usize)> = vec![];
+        for line in self.touched_lines(sels) {
+            match out.last_mut() {
+                Some(last) if last.1 + 1 == line => last.1 = line,
+                _ => out.push((line, line)),
+            }
+        }
+        out
+    }
+
+    pub fn move_lines(&mut self, sels: &mut Vec<Sel>, down: bool) -> bool {
+        let mut edits: EditList = vec![];
+        let mut moved = sels.clone();
+        for (a, b) in self.blocks(sels) {
+            let (first, last) = if down { (a, b + 1) } else { (a.saturating_sub(1), b) };
+            if (!down && a == 0) || last >= self.lines() {
+                continue;
+            }
+            let mut lines: Vec<String> = (first..=last).map(|l| self.line_text(l)).collect();
+            let other = if down { lines.pop() } else { Some(lines.remove(0)) }.unwrap_or_default();
+            let shift = (other.chars().count() as isize + 1) * if down { 1 } else { -1 };
+            lines.insert(if down { 0 } else { lines.len() }, other);
+            edits.push((self.line_start(first), self.line_end(last), lines.join("\n")));
+            let (from, to) = (self.line_start(a), self.line_end(b));
+            for s in moved.iter_mut().filter(|s| s.start() >= from && s.start() <= to) {
+                (s.anchor, s.head) = ((s.anchor as isize + shift) as usize, (s.head as isize + shift) as usize);
+            }
+        }
+        let changed = self.apply(sels, edits, Kind::Other, After::Map);
+        if changed {
+            *sels = moved;
+            self.fix_after(sels);
+        }
+        changed
+    }
+
+    pub fn copy_lines(&mut self, sels: &mut Vec<Sel>, down: bool) -> bool {
+        let blocks = self.blocks(sels);
+        let texts: Vec<String> = blocks.iter().map(|(a, b)| self.text_of(self.line_start(*a), self.line_end(*b)) + "\n").collect();
+        let own: Vec<usize> = sels
+            .iter()
+            .map(|s| {
+                let line = self.line_of(s.start());
+                blocks.iter().position(|b| b.0 <= line && line <= b.1).map_or(0, |at| texts[at].chars().count())
+            })
+            .collect();
+        let edits = blocks.iter().zip(texts).map(|(block, text)| (self.line_start(block.0), self.line_start(block.0), text)).collect();
+        let changed = self.apply(sels, edits, Kind::Other, After::Map);
+        if changed && !down && sels.len() == own.len() {
+            for (s, back) in sels.iter_mut().zip(own) {
+                (s.anchor, s.head) = (s.anchor - back, s.head - back);
+            }
+            self.fix_after(sels);
+        }
+        changed
+    }
+
+    pub fn delete_lines(&mut self, sels: &mut Vec<Sel>) -> bool {
+        let edits = self
+            .blocks(sels)
+            .into_iter()
+            .map(|(a, b)| match b + 1 < self.lines() {
+                true => (self.line_start(a), self.line_start(b + 1), String::new()),
+                false => (self.line_end(a.saturating_sub(1)).min(self.line_start(a)), self.len(), String::new()),
+            })
+            .collect();
+        self.apply(sels, edits, Kind::Other, After::Carets)
+    }
+
+    pub fn join_lines(&mut self, sels: &mut Vec<Sel>) -> bool {
+        let mut edits: EditList = vec![];
+        for (a, b) in self.blocks(sels) {
+            for line in (a..b.max(a + 1)).filter(|line| line + 1 < self.lines()) {
+                let from = self.line_start(line) + self.line_text(line).trim_end().chars().count();
+                let to = self.line_start(line + 1) + self.indent_of(line + 1);
+                let bare = from == self.line_start(line) || to == self.line_end(line + 1);
+                edits.push((from, to, if bare { String::new() } else { " ".to_owned() }));
+            }
+        }
+        self.apply(sels, edits, Kind::Other, After::Map)
+    }
+
+    pub fn insert_line(&mut self, sels: &mut Vec<Sel>, above: bool) -> bool {
+        let mut lines: Vec<usize> = sels.iter().map(|s| self.line_of(s.head)).collect();
+        lines.dedup();
+        let edits: EditList = lines
+            .into_iter()
+            .map(|line| {
+                let indent: String = self.rope.line(line).chars().take(self.indent_of(line)).collect();
+                match above {
+                    true => (self.line_start(line), self.line_start(line), format!("{indent}\n")),
+                    false => (self.line_end(line), self.line_end(line), format!("\n{indent}")),
+                }
+            })
+            .collect();
+        let changed = self.apply(sels, edits, Kind::Other, After::Carets);
+        if changed && above {
+            sels.iter_mut().for_each(|s| *s = Sel::caret(s.head - 1));
+            self.fix_after(sels);
+        }
+        changed
+    }
+
     pub fn indent(&mut self, sels: &mut Vec<Sel>, unit: &str) -> bool {
         let edits = self
             .touched_lines(sels)
@@ -1139,6 +1243,43 @@ mod tests {
         let mut sels = vec![Sel::caret(14)];
         d.backspace(&mut sels, false, true);
         assert_eq!(d.rope.to_string(), "don' [word] x");
+    }
+
+    #[test]
+    fn moves_copies_deletes_joins_and_inserts_lines() {
+        let mut d = doc("a\nbb\nccc\nd");
+        let mut sels = vec![Sel::new(3, 6)];
+        d.move_lines(&mut sels, true);
+        assert_eq!((d.rope.to_string().as_str(), sels[0].start(), sels[0].end()), ("a\nd\nbb\nccc", 5, 8));
+        d.move_lines(&mut sels, true);
+        d.move_lines(&mut sels, false);
+        d.move_lines(&mut sels, false);
+        assert_eq!((d.rope.to_string().as_str(), sels[0].start()), ("bb\nccc\na\nd", 1));
+        d.undo(&mut sels);
+        assert_eq!((d.rope.to_string().as_str(), sels[0].start()), ("a\nbb\nccc\nd", 3));
+
+        let mut sels = vec![Sel::caret(3)];
+        d.copy_lines(&mut sels, true);
+        assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("a\nbb\nbb\nccc\nd", 6));
+        d.copy_lines(&mut sels, false);
+        assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("a\nbb\nbb\nbb\nccc\nd", 6));
+        let mut sels = vec![Sel::new(2, 9)];
+        d.delete_lines(&mut sels);
+        assert_eq!(d.rope.to_string(), "a\nccc\nd");
+        let mut sels = vec![Sel::caret(7)];
+        d.delete_lines(&mut sels);
+        assert_eq!(d.rope.to_string(), "a\nccc");
+
+        let mut d = doc("let x =  \n    1;\n\nend");
+        let mut sels = vec![Sel::caret(0)];
+        d.join_lines(&mut sels);
+        assert_eq!(d.rope.to_string(), "let x = 1;\n\nend");
+        let mut d = doc("  one\n  two");
+        let mut sels = vec![Sel::caret(9)];
+        d.insert_line(&mut sels, true);
+        assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("  one\n  \n  two", 8));
+        d.insert_line(&mut sels, false);
+        assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("  one\n  \n  \n  two", 11));
     }
 
     #[test]

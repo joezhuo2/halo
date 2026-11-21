@@ -617,7 +617,8 @@ impl Editors {
                     tab.sels = vec![Sel::caret(pos)];
                 });
             }
-            Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence => {
+            Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence | MoveLineUp
+            | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
                 self.with_active(|buf, tab| {
@@ -645,6 +646,11 @@ impl Editors {
                         AddCursorBelow => {
                             buf.add_cursor(sels, true);
                         }
+                        MoveLineUp | MoveLineDown => drop(buf.move_lines(sels, cmd == MoveLineDown)),
+                        CopyLineUp | CopyLineDown => drop(buf.copy_lines(sels, cmd == CopyLineDown)),
+                        DeleteLine => drop(buf.delete_lines(sels)),
+                        JoinLines => drop(buf.join_lines(sels)),
+                        InsertLineAbove | InsertLineBelow => drop(buf.insert_line(sels, cmd == InsertLineAbove)),
                         _ => {
                             buf.select_next_occurrence(sels);
                         }
