@@ -175,7 +175,7 @@ impl Halo {
         crate::workspace::set(&workspace);
         crate::layers::set_folder(folder.as_deref());
         self.reload_settings(ctx);
-        self.explorer.set_root(folder.clone());
+        self.explorer.set_roots(workspace.roots(), workspace.names(), workspace.name().filter(|_| workspace.is_multi()));
         self.editors.set_root(folder.clone());
         self.git.set_root(folder.clone(), ctx);
         self.session.folder = folder;

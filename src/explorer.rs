@@ -116,6 +116,8 @@ enum Action {
 
 pub struct Explorer {
     root: Option<PathBuf>,
+    roots: Vec<(PathBuf, String)>,
+    title: Option<String>,
     children: HashMap<PathBuf, Vec<Entry>>,
     expanded: HashSet<PathBuf>,
     rows: Vec<Row>,
@@ -233,6 +235,8 @@ impl Explorer {
     pub fn new() -> Self {
         Self {
             root: None,
+            roots: vec![],
+            title: None,
             children: HashMap::new(),
             expanded: HashSet::new(),
             rows: vec![],
@@ -268,14 +272,31 @@ impl Explorer {
         }
     }
 
-    pub fn set_root(&mut self, root: Option<PathBuf>) {
-        *self = Self::new();
-        self.root = root;
+    pub fn set_roots(&mut self, roots: Vec<PathBuf>, names: Vec<String>, title: Option<String>) {
+        if title.is_none() || !roots.iter().any(|r| self.roots.iter().any(|(p, _)| p == r)) {
+            *self = Self::new();
+        }
+        let added: Vec<PathBuf> = roots.iter().filter(|r| self.title.is_none() || !self.roots.iter().any(|(p, _)| p == *r)).cloned().collect();
+        self.root = roots.first().filter(|_| title.is_none()).cloned();
+        self.roots = roots.into_iter().zip(names).collect();
+        if title.is_some() {
+            added.iter().for_each(|r| self.expand(r));
+        }
+        self.title = title;
+        self.dirty = true;
+    }
+
+    fn root_of(&self, path: &Path) -> Option<&PathBuf> {
+        self.roots.iter().map(|(r, _)| r).filter(|r| path.starts_with(r)).max_by_key(|r| r.components().count())
+    }
+
+    fn is_root(&self, path: &Path) -> bool {
+        self.title.is_some() && self.roots.iter().any(|(r, _)| r == path)
     }
 
     fn read_dir(&self, dir: &Path) -> Vec<Entry> {
         let Ok(reader) = std::fs::read_dir(dir) else { return vec![] };
-        let root = self.root.as_deref().unwrap_or(dir);
+        let root = self.root_of(dir).map_or(dir, |r| r.as_path());
         let mut entries: Vec<Entry> = reader
             .flatten()
             .filter_map(|e| {
@@ -371,6 +392,14 @@ impl Explorer {
             self.load(&root);
             self.push_rows(&root, 0, &mut rows);
             self.apply_filter(&mut rows);
+        } else if self.title.is_some() {
+            for (root, name) in self.roots.clone() {
+                rows.push(Row { path: root.clone(), name, depth: 0, is_dir: true, editing: false, chain: vec![], hits: vec![] });
+                if self.is_open(&root) {
+                    self.push_rows(&root, 1, &mut rows);
+                }
+            }
+            self.apply_filter(&mut rows);
         }
         self.rows = rows;
         self.prune_selection();
@@ -456,12 +485,17 @@ impl Explorer {
         }
     }
 
+    fn parents(&self, path: &Path) -> Vec<PathBuf> {
+        let Some(root) = self.root_of(path) else { return vec![] };
+        let single = self.root.is_some();
+        path.ancestors().skip(1).take_while(|a| a.starts_with(root) && !(single && a == root)).map(Path::to_path_buf).collect()
+    }
+
     fn reveal_active(&mut self, active: &Path) {
-        let Some(root) = self.root.clone() else { return };
-        if !active.starts_with(&root) {
+        if self.root_of(active).is_none() {
             return;
         }
-        let mut dirs: Vec<PathBuf> = active.ancestors().skip(1).take_while(|a| *a != root).map(Path::to_path_buf).collect();
+        let mut dirs = self.parents(active);
         dirs.reverse();
         for dir in dirs {
             self.expand(&dir);
@@ -473,11 +507,8 @@ impl Explorer {
     fn start_edit(&mut self, kind: EditKind, target: PathBuf) {
         self.filter.open = false;
         self.filter.text.clear();
-        if let Some(root) = self.root.clone() {
-            let parents: Vec<PathBuf> = target.ancestors().skip(1).take_while(|a| *a != root && a.starts_with(&root)).map(Path::to_path_buf).collect();
-            for dir in parents {
-                self.expand(&dir);
-            }
+        for dir in self.parents(&target) {
+            self.expand(&dir);
         }
         let text = match kind {
             EditKind::Rename => target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
@@ -614,7 +645,8 @@ impl Explorer {
     }
 
     fn clip(&mut self, cut: bool, ctx: &egui::Context) {
-        let paths = ops::top_level(&self.sel.paths);
+        let mut paths = ops::top_level(&self.sel.paths);
+        paths.retain(|p| !cut || !self.is_root(p));
         if paths.is_empty() {
             return;
         }
@@ -724,10 +756,20 @@ impl Explorer {
             Action::Extend(path) => self.extend(path),
             Action::SelectAll => self.select_all(),
             Action::New(kind, dir) => self.start_edit(kind, dir),
+            Action::Rename(path) if self.is_root(&path) => {}
             Action::Rename(path) => self.start_edit(EditKind::Rename, path),
-            Action::Delete(paths) => self.confirm_delete = ops::top_level(&paths),
+            Action::Delete(paths) => self.confirm_delete = ops::top_level(&paths).into_iter().filter(|p| !self.is_root(p)).collect(),
             Action::Clip(cut) => self.clip(cut, ui.ctx()),
             Action::Paste => self.paste(ui.ctx()),
+            Action::Drop(paths, dir) if paths.iter().any(|p| self.is_root(p)) => {
+                let index = |path: &Path| self.roots.iter().position(|(r, _)| r == path);
+                if let ([from], Some(to)) = (paths.as_slice(), self.root_of(&dir).and_then(|r| index(r)))
+                    && let Some(from) = index(from)
+                    && from != to
+                {
+                    cmds.push(Command::MoveWorkspaceFolder(from, to));
+                }
+            }
             Action::Drop(paths, dir) => self.request_move(paths, dir, ui.ctx()),
             Action::Import(files, dir) => self.transfer(files, dir, false, ui.ctx()),
             Action::Match(forward) => self.go_match(forward),
@@ -746,7 +788,7 @@ impl Explorer {
     }
 
     fn dir_for_new(&self, path: Option<&Path>) -> PathBuf {
-        let root = self.root.clone().unwrap_or_default();
+        let root = self.root.clone().or_else(|| self.roots.first().map(|(r, _)| r.clone())).unwrap_or_default();
         match path {
             Some(p) if p.is_dir() => p.to_path_buf(),
             Some(p) => p.parent().map(Path::to_path_buf).unwrap_or(root),
@@ -765,6 +807,26 @@ impl Explorer {
         if ui.button("New Folder...").clicked() {
             *action = Some(Action::New(EditKind::NewFolder, dir.clone()));
             ui.close();
+        }
+        if let Some(root) = path.filter(|p| self.is_root(p)) {
+            ui.separator();
+            if self.clipboard.is_some() && ui.button("Paste").clicked() {
+                *action = Some(Action::Paste);
+                ui.close();
+            }
+            if ui.button("Remove Folder from Workspace").clicked() {
+                *action = Some(Action::Compare(Command::RemoveWorkspaceFolder(root.to_path_buf())));
+                ui.close();
+            }
+            if ui.button("Copy Path").clicked() {
+                *action = Some(Action::Copy(root.to_string_lossy().into_owned()));
+                ui.close();
+            }
+            if ui.button("Reveal in File Explorer").clicked() {
+                *action = Some(Action::Reveal(root.to_path_buf()));
+                ui.close();
+            }
+            return;
         }
         let many = path.is_some_and(|p| self.sel.is_multiple() && self.sel.contains(p));
         let targets: Vec<PathBuf> = match path {
@@ -817,7 +879,7 @@ impl Explorer {
             ui.close();
         }
         if ui.button("Copy Relative Path").clicked() {
-            let rel = |t: &PathBuf| self.root.as_ref().and_then(|r| t.strip_prefix(r).ok()).unwrap_or(t).to_string_lossy().replace('\\', "/");
+            let rel = |t: &PathBuf| self.root_of(t).and_then(|r| t.strip_prefix(r).ok()).unwrap_or(t).to_string_lossy().replace('\\', "/");
             *action = Some(Action::Copy(targets.iter().map(rel).collect::<Vec<_>>().join("\n")));
             ui.close();
         }
@@ -917,7 +979,7 @@ impl Explorer {
                 *action = if row.is_dir && open && cursor == row.path {
                     Some(Action::Toggle(row.path))
                 } else {
-                    cursor.parent().filter(|p| Some(*p) != self.root.as_deref()).map(|p| Action::Select(p.to_path_buf()))
+                    cursor.parent().filter(|p| self.row_of(p).is_some()).map(|p| Action::Select(p.to_path_buf()))
                 };
             } else if pressed(Modifiers::NONE, Key::Enter) {
                 *action = Some(if row.is_dir { Action::Toggle(row.path) } else { Action::Open(row.path) });
@@ -943,7 +1005,7 @@ impl Explorer {
     ) {
         ui.spacing_mut().item_spacing.y = 0.0;
         ui::section_header(ui, theme, "Explorer");
-        let Some(root) = self.root.clone() else {
+        let Some(root) = self.root.clone().or_else(|| self.roots.first().map(|(r, _)| r.clone())) else {
             ui.vertical_centered(|ui| {
                 ui.add_space(16.0);
                 ui.label(RichText::new("You have not opened a folder yet.").color(theme.text_dim));
@@ -994,7 +1056,7 @@ impl Explorer {
         painter.rect_filled(rect, 0, ui::mix(theme.panel, theme.bar, 0.5 + 0.5 * h));
         painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, theme.border));
         ui::caret(&painter, pos2(rect.left() + 12.0, rect.center().y), open, theme.text);
-        let folder = root.file_name().unwrap_or(root.as_os_str()).to_string_lossy();
+        let folder = self.title.clone().unwrap_or_else(|| name_of(root));
         let kind = if self.collapsed { crate::icon_theme::Kind::Root } else { crate::icon_theme::Kind::RootOpen };
         let icon = crate::icon_theme::paint(&painter, pos2(rect.left() + 32.0, rect.center().y), 14.0, &folder, kind, 1.0);
         let name = folder.to_uppercase();
@@ -1002,6 +1064,10 @@ impl Explorer {
         if resp.clicked() {
             self.collapsed ^= true;
         }
+        let root = match self.root.is_some() {
+            true => root.to_path_buf(),
+            false => self.dir_for_new(self.sel.cursor.as_deref()),
+        };
         if h > 0.0 {
             ui.scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(6.0, 1.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
                 ui.set_opacity(h);
@@ -1154,6 +1220,10 @@ impl Explorer {
                         };
                         let icon_color = if row.is_dir { ui::with_alpha(theme.accent, fade * 0.85 * dimmed) } else { dim };
                         let kind = match (row.is_dir, open) {
+                            _ if row.depth == 0 && self.root.is_none() => match open {
+                                true => crate::icon_theme::Kind::RootOpen,
+                                false => crate::icon_theme::Kind::Root,
+                            },
                             (true, true) => crate::icon_theme::Kind::FolderOpen,
                             (true, false) => crate::icon_theme::Kind::Folder,
                             _ => crate::icon_theme::Kind::File,
