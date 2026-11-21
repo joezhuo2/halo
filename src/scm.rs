@@ -19,6 +19,12 @@ const STAGED: [(&str, &str); 2] = [(icons::MINUS, "Unstage"), (icons::FILE, "Ope
 const STAGED_ALL: [(&str, &str); 1] = [(icons::MINUS, "Unstage All")];
 const UNSTAGED: [(&str, &str); 3] =
     [(icons::PLUS, "Stage"), (icons::ARROW_COUNTER_CLOCKWISE, "Discard Changes"), (icons::FILE, "Open File")];
+const CONFLICTED: [(&str, &str); 4] = [
+    (icons::PLUS, "Stage"),
+    (icons::ARROW_COUNTER_CLOCKWISE, "Discard Changes"),
+    (icons::GIT_MERGE, "Resolve in Merge Editor"),
+    (icons::FILE, "Open File"),
+];
 const UNSTAGED_ALL: [(&str, &str); 2] =
     [(icons::PLUS, "Stage All"), (icons::ARROW_COUNTER_CLOCKWISE, "Discard All Changes")];
 
@@ -677,6 +683,8 @@ fn group(
             Some((dir, name)) => (dir, name),
             None => ("", change.path.as_str()),
         };
+        let conflicted = !staged && change.state == FileState::Conflicted;
+        let row_items: &[_] = if conflicted { &CONFLICTED } else { row_items };
         let color = state_color(theme, Some(change.state));
         let reserved = if hovered { 34.0 + 20.0 * row_items.len() as f32 } else { 28.0 };
         let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - reserved));
@@ -693,8 +701,18 @@ fn group(
         let full = top.join(&change.path);
         let hit = if hovered { buttons(ui, theme, rect.with_max_x(rect.right() - 22.0), !busy, row_items) } else { None };
         let whole_file = !staged && matches!(change.state, FileState::Added | FileState::Conflicted);
+        if conflicted {
+            resp.context_menu(|ui| {
+                ui::menu_pad(ui);
+                if ui.button("Resolve in Merge Editor").clicked() {
+                    cmds.push(Command::OpenMerge(full.clone()));
+                    ui.close();
+                }
+            });
+        }
         match hit {
             Some(index) if index + 1 == row_items.len() => cmds.push(Command::OpenPath(full)),
+            Some(index) if row_items[index].0 == icons::GIT_MERGE => cmds.push(Command::OpenMerge(full)),
             Some(index) => *action = Some(act(index, Some(change.path.clone()))),
             None if resp.clicked() && whole_file && full.is_file() => cmds.push(Command::OpenPath(full)),
             None if resp.clicked() && !whole_file => {
@@ -819,6 +837,37 @@ mod tests {
         assert!(scm.shares[1] > scm.shares[2]);
         click(&ctx, &mut scm, &mut git, moved.x, moved.y + HEADER * 0.5);
         assert_eq!(scm.open, [true, true, false]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opens_conflicted_files_in_the_merge_editor() {
+        let dir = std::env::temp_dir().join(format!("halo-scm-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| crate::git::exec(&dir, args);
+        for args in [&["init", "-q", "-b", "trunk"][..], &["config", "user.email", "t@example.com"], &["config", "user.name", "t"]] {
+            run(args).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        run(&["add", "."]).unwrap();
+        run(&["commit", "-q", "-m", "init"]).unwrap();
+        run(&["checkout", "-q", "-b", "feature"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "theirs\n").unwrap();
+        run(&["commit", "-q", "-am", "theirs"]).unwrap();
+        run(&["checkout", "-q", "trunk"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "ours\n").unwrap();
+        run(&["commit", "-q", "-am", "ours"]).unwrap();
+        assert!(run(&["merge", "-q", "feature"]).is_err());
+
+        let ctx = egui::Context::default();
+        let (mut scm, mut git) = (Scm::new(), Git::new());
+        git.set_root(Some(dir.clone()), &ctx);
+        git.wait(|g| g.changes(false).iter().any(|c| c.state == FileState::Conflicted));
+        frame(&ctx, &mut scm, &mut git, vec![]);
+        let row = ctx.read_response(Id::new(("scm_row", false, "a.txt"))).unwrap().rect.center().y;
+        let merge = Command::OpenMerge(git.top().unwrap().join("a.txt"));
+        assert_eq!(click(&ctx, &mut scm, &mut git, 222.0, row), [merge]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
