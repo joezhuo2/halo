@@ -1,6 +1,7 @@
 use crate::command::Command;
 use crate::lsp::{Diagnostic, Lsp};
 use crate::settings::{Settings, ShellProfile};
+use crate::shell_integration::{Integration, Record, Tap};
 use crate::terminal_find::FindBar;
 use crate::terminal_links::{Link, Target};
 use crate::theme::Theme;
@@ -191,7 +192,8 @@ pub struct Terminal {
     last_input: f64,
     task: Option<String>,
     pub pid: Option<u32>,
-    cwd: Option<PathBuf>,
+    start_dir: Option<PathBuf>,
+    integration: Arc<Mutex<Integration>>,
     links: (i32, String, Vec<(usize, usize)>, Vec<Link>),
     find: FindBar,
 }
@@ -209,6 +211,14 @@ impl Terminal {
 
     pub fn spawn_with(id: u64, name: &str, program: &str, args: &[String], cwd: Option<&Path>, env: &[(String, String)], ctx: egui::Context) -> std::io::Result<Self> {
         Self::start(id, name, program, args, &env.iter().cloned().collect(), cwd, None, ctx)
+    }
+
+    pub fn spawn_shell(id: u64, profile: &ShellProfile, cwd: Option<&Path>, integrate: bool, ctx: egui::Context) -> std::io::Result<Self> {
+        let (args, env) = match integrate {
+            true => crate::shell_integration::prepare(&profile.program, &profile.args),
+            false => (profile.args.clone(), vec![]),
+        };
+        Self::start(id, &profile.name, &profile.program, &args, &env.into_iter().collect(), cwd, None, ctx)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -238,10 +248,12 @@ impl Terminal {
         let pid = Some(pty.child().id());
         let shared =
             Arc::new(Shared { exited: AtomicBool::new(false), title: Mutex::new(None), sender: Mutex::new(None), code: Mutex::new(None) });
-        let proxy = Proxy { ctx, shared: shared.clone() };
+        let proxy = Proxy { ctx: ctx.clone(), shared: shared.clone() };
         let config = Config { scrolling_history: 5000, ..Default::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &Size { cols: 80, rows: 24 }, proxy.clone())));
-        let event_loop = EventLoop::new(term.clone(), proxy, pty, task.is_some(), false)?;
+        let integration = Arc::new(Mutex::new(Integration::default()));
+        let tap = Tap::new(pty, term.clone(), integration.clone(), ctx);
+        let event_loop = EventLoop::new(term.clone(), proxy, tap, task.is_some(), false)?;
         let sender = event_loop.channel();
         *shared.sender.lock().unwrap() = Some(sender.clone());
         event_loop.spawn();
@@ -258,7 +270,8 @@ impl Terminal {
             last_input: 0.0,
             task: task.map(str::to_owned),
             pid,
-            cwd: options.working_directory,
+            start_dir: options.working_directory,
+            integration,
             links: Default::default(),
             find: FindBar::default(),
         })
@@ -346,8 +359,47 @@ impl Terminal {
         (Point::new(Line(row as i32 - offset as i32), Column(column)), side)
     }
 
-    fn cwd(&self) -> Option<PathBuf> {
-        self.cwd.clone()
+    pub fn cwd(&self) -> Option<PathBuf> {
+        let reported = self.integration.lock().unwrap().cwd.clone();
+        reported.map(|dir| crate::shell_integration::native_dir(&dir, self.start_dir.as_deref())).or_else(|| self.start_dir.clone())
+    }
+
+    pub fn failed(&self) -> bool {
+        self.integration.lock().unwrap().last_finished().is_some_and(Record::failed)
+    }
+
+    pub fn recent(&self) -> Vec<String> {
+        self.integration.lock().unwrap().recent()
+    }
+
+    pub fn scroll_to_command(&self, forward: bool) {
+        let mut term = self.term.lock();
+        let (offset, history) = (term.grid().display_offset() as i64, term.history_size() as i64);
+        let integration = self.integration.lock().unwrap();
+        let base = integration.dropped + history;
+        let lines = integration.commands.iter().filter(|r| r.ran()).map(|r| r.prompt - base);
+        let target = if forward { lines.filter(|l| *l > -offset).min() } else { lines.filter(|l| *l < -offset).max() };
+        drop(integration);
+        match target {
+            Some(line) => term.scroll_display(Scroll::Delta(((-line).clamp(0, history) - offset) as i32)),
+            None if forward => term.scroll_display(Scroll::Bottom),
+            None => {}
+        }
+    }
+
+    pub fn last_output(&self) -> Option<String> {
+        let term = self.term.lock();
+        let integration = self.integration.lock().unwrap();
+        let record = integration.commands.iter().rev().find(|r| r.output.is_some() && r.end.is_some())?;
+        let base = integration.dropped + term.history_size() as i64;
+        let (from, (end, col)) = ((record.output? - base).max(term.topmost_line().0 as i64), record.end?);
+        let end = end - base;
+        let last = match col {
+            0 if end <= from => return Some(String::new()),
+            0 => Point::new(Line(end as i32 - 1), term.last_column()),
+            _ => Point::new(Line(end as i32), Column(col - 1)),
+        };
+        Some(term.bounds_to_string(Point::new(Line(from as i32), Column(0)), last).trim_end().to_owned())
     }
 
     fn hovered_link(&mut self, point: Point) -> Option<HoveredLink> {
@@ -417,6 +469,12 @@ impl Terminal {
                     Event::Cut => self.write([0x18u8]),
                     Event::Key { key: Key::F, pressed: true, modifiers, .. } if modifiers.command && !modifiers.alt => {
                         self.find.show();
+                        continue;
+                    }
+                    Event::Key { key: key @ (Key::ArrowUp | Key::ArrowDown), pressed: true, modifiers, .. }
+                        if modifiers.command && !modifiers.shift && !modifiers.alt && self.integration.lock().unwrap().seen =>
+                    {
+                        self.scroll_to_command(key == Key::ArrowDown);
                         continue;
                     }
                     Event::Key { key: Key::F3, pressed: true, modifiers, .. } if self.find.open => {
@@ -616,7 +674,33 @@ impl Terminal {
                 }
             }
         }
+        let marks: Vec<(i64, Record)> = {
+            let integration = self.integration.lock().unwrap();
+            let base = integration.dropped + term.history_size() as i64 - offset as i64;
+            let shown = |r: &&Record| r.ran() && (0..self.size.1 as i64).contains(&(r.row() - base));
+            integration.commands.iter().filter(shown).map(|r| (r.row() - base, r.clone())).collect()
+        };
         drop(term);
+        for (row, record) in marks {
+            let y = rect.top() + row as f32 * cell.y;
+            let mark = Rect::from_min_max(pos2(rect.left() - 8.0, y + 2.0), pos2(rect.left() - 5.0, y + cell.y - 2.0));
+            let color = match (record.end, record.failed()) {
+                (None, _) => theme.text_dim,
+                (_, true) => theme.error,
+                _ => theme.accent,
+            };
+            ui.painter().rect_filled(mark, CornerRadius::same(1), color);
+            let mut tip = if record.line.is_empty() { "Command".to_owned() } else { record.line.clone() };
+            match (record.end, record.duration, record.started) {
+                (None, _, Some(started)) => tip += &format!("\nRunning for {:.1} s", started.elapsed().as_secs_f32()),
+                (_, Some(took), _) => tip += &format!("\nTook {:.1} s", took.as_secs_f32()),
+                _ => {}
+            }
+            if let Some(code) = record.exit {
+                tip += &format!("\nExit code {code}");
+            }
+            ui.interact(mark.expand2(vec2(3.0, 0.0)), id.with(("mark", row)), Sense::hover()).on_hover_text(tip);
+        }
         if self.find.open {
             let (bar_step, closed) = self.find.ui(ui, rect.expand2(vec2(10.0, 4.0)), theme);
             step += bar_step;
@@ -749,6 +833,7 @@ pub struct BottomPanel {
     run_line: String,
     debug: String,
     pub console: crate::debug::Console,
+    integrate: bool,
 }
 
 impl BottomPanel {
@@ -768,6 +853,7 @@ impl BottomPanel {
             run_line: String::new(),
             debug: String::new(),
             console: Default::default(),
+            integrate: true,
         }
     }
 
@@ -805,7 +891,7 @@ impl BottomPanel {
     fn spawn(&mut self, profile: &ShellProfile, cwd: Option<&Path>, ctx: &egui::Context) -> Option<Terminal> {
         let id = self.next_id;
         self.next_id += 1;
-        match Terminal::spawn(id, &profile.name, &profile.program, &profile.args, cwd, ctx.clone()) {
+        match Terminal::spawn_shell(id, profile, cwd, self.integrate, ctx.clone()) {
             Ok(terminal) => {
                 self.error = None;
                 Some(terminal)
@@ -835,7 +921,8 @@ impl BottomPanel {
             self.new_group(default_profile(settings, cwd).as_ref(), cwd, ctx);
             return;
         };
-        if let Some(terminal) = self.spawn(&profile, cwd, ctx) {
+        let here = self.active_pane().and_then(|p| p.cwd());
+        if let Some(terminal) = self.spawn(&profile, here.as_deref().or(cwd), ctx) {
             let group = &mut self.groups[self.active];
             group.panes.push(terminal);
             group.active = group.panes.len() - 1;
@@ -847,6 +934,7 @@ impl BottomPanel {
             let pane = |g: &Group| g.panes.iter().position(|p| Some(p.id) == id && p.is_alive());
             groups.iter().enumerate().find_map(|(index, g)| Some((index, pane(g)?)))
         };
+        self.integrate = settings.shell_integration;
         if find(&self.groups, self.run_id).is_none() {
             self.run_id = Some(self.next_id);
             self.new_group(default_profile(settings, cwd).as_ref(), cwd, ctx);
@@ -970,8 +1058,29 @@ impl BottomPanel {
         group.panes.get_mut(group.active)
     }
 
+    pub fn recent(&mut self) -> Vec<String> {
+        self.active_pane().map(|p| p.recent()).unwrap_or_default()
+    }
+
     pub fn exec(&mut self, cmd: &Command, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) -> bool {
+        self.integrate = settings.shell_integration;
         match cmd {
+            Command::ScrollToPrevMark | Command::ScrollToNextMark => {
+                let forward = *cmd == Command::ScrollToNextMark;
+                if let Some(pane) = self.active_pane() {
+                    pane.scroll_to_command(forward);
+                }
+            }
+            Command::CopyLastCommandOutput => match self.active_pane().and_then(|p| p.last_output()) {
+                Some(text) => ctx.copy_text(text),
+                None => ui::notify("No finished command output was found. It needs shell integration in the active terminal."),
+            },
+            Command::RunCommandLine(line) => {
+                let Some(pane) = self.active_pane() else { return false };
+                pane.write(format!("{line}\r"));
+                pane.focus();
+                self.tab = PanelTab::Terminal;
+            }
             Command::NewTerminal => self.new_group(default_profile(settings, cwd).as_ref(), cwd, ctx),
             Command::NewTerminalWith(name) => self.new_group(settings.terminal(name), cwd, ctx),
             Command::SplitTerminal => {
@@ -1008,6 +1117,7 @@ impl BottomPanel {
     ) {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         self.focused = false;
+        self.integrate = settings.shell_integration;
         self.prune();
         let ctx = ui.ctx().clone();
         let header = Rect::from_min_size(ui.max_rect().min, vec2(ui.max_rect().width(), 32.0));
@@ -1122,7 +1232,9 @@ impl BottomPanel {
                                 _ => ("├", FontId::monospace(13.0)),
                             };
                             let p = ui.painter().with_clip_rect(r.shrink2(vec2(26.0, 0.0)).translate(vec2(-16.0, 0.0)));
-                            ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, icon, font, theme.text_dim);
+                            let failed = group.panes[at].failed();
+                            let tint = if failed { theme.error } else { theme.text_dim };
+                            ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, icon, font, tint);
                             p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, group.panes[at].title(), FontId::proportional(12.5), theme.text);
                             let trash = Rect::from_center_size(pos2(r.right() - 16.0, r.center().y), vec2(20.0, 20.0));
                             if resp.hovered() {
@@ -1137,6 +1249,11 @@ impl BottomPanel {
                                 group.active = at;
                                 group.panes[at].focus();
                             }
+                            let mut tip = group.panes[at].cwd().map(|dir| dir.display().to_string()).unwrap_or_default();
+                            if failed {
+                                tip += "\nThe last command failed";
+                            }
+                            resp.on_hover_text(tip.trim());
                         }
                     }
                 });
@@ -1327,6 +1444,52 @@ mod tests {
         assert!(seen);
         assert!(terminal.is_alive());
         assert!(Terminal::spawn(2, "bad", "halo-no-such-program-xyz", &[], None, egui::Context::default()).is_err());
+    }
+
+    fn integrated(program: &str, base: &[&str], lines: &[&str]) -> (Terminal, Vec<Record>, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("halo-shell-{}-{}", std::process::id(), base.len()));
+        assert!(crate::shell_integration::write_scripts(&dir));
+        let base: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+        let (args, env) = crate::shell_integration::inject(program, &base, &dir).unwrap();
+        let terminal = Terminal::spawn_with(1, "test", program, &args, Some(&dir.join("zsh")), &env, egui::Context::default()).unwrap();
+        let finished = |t: &Terminal| t.integration.lock().unwrap().commands.iter().filter(|r| r.end.is_some()).count();
+        let started = std::time::Instant::now();
+        for (index, line) in lines.iter().enumerate() {
+            while !(finished(&terminal) == index && terminal.integration.lock().unwrap().commands.len() > index) && started.elapsed().as_secs() < 30 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            terminal.write(format!("{line}\r"));
+        }
+        while finished(&terminal) < lines.len() && started.elapsed().as_secs() < 30 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let records = terminal.integration.lock().unwrap().commands.iter().filter(|r| r.end.is_some()).cloned().collect();
+        (terminal, records, dir)
+    }
+
+    fn check_shell(program: &str, base: &[&str], fail: &str, code: i32) {
+        let (terminal, done, dir) = integrated(program, base, &["cd ..", fail, "echo halo-out"]);
+        let shown = |t: &Terminal| t.text();
+        assert_eq!(done.iter().map(|r| (r.line.as_str(), r.exit)).collect::<Vec<_>>(), vec![("cd ..", Some(0)), (fail, Some(code)), ("echo halo-out", Some(0))], "{}", shown(&terminal));
+        assert_eq!(terminal.cwd().and_then(|c| c.canonicalize().ok()), dir.canonicalize().ok());
+        assert!(done[1].failed() && !terminal.failed());
+        assert_eq!(terminal.recent()[0], "echo halo-out");
+        assert_eq!(terminal.last_output().as_deref(), Some("halo-out"));
+        drop(terminal);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn real_shells_report_commands_exit_codes_and_folders() {
+        if cfg!(windows) {
+            check_shell("powershell.exe", &["-NoLogo", "-NoProfile"], "cmd /c exit 3", 3);
+        } else {
+            check_shell("bash", &["--norc"], "(exit 3)", 3);
+        }
+        let git_bash = Path::new(r"C:\Program Files\Git\bin\bash.exe");
+        if cfg!(windows) && git_bash.is_file() {
+            check_shell(&git_bash.to_string_lossy(), &["--login", "-i"], "false", 1);
+        }
     }
 
     #[test]

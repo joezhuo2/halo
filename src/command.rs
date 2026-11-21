@@ -115,6 +115,11 @@ pub enum Command {
     NewTerminalWith(String),
     SplitTerminal,
     KillTerminal,
+    ScrollToPrevMark,
+    ScrollToNextMark,
+    RunRecentLine,
+    RunCommandLine(String),
+    CopyLastCommandOutput,
 
     RunFile,
     RunTask(String),
@@ -381,7 +386,8 @@ pub fn all() -> Vec<Command> {
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut,
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
-        OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, GitSync, ToggleInlineBlame, OpenLineChanges,
+        OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
+        CopyLastCommandOutput, GitSync, ToggleInlineBlame, OpenLineChanges,
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.push(About);
@@ -530,7 +536,8 @@ impl Command {
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_)
             | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
             | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration => "Run",
-            NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal => "Terminal",
+            NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
+            | RunCommandLine(_) | CopyLastCommandOutput => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
             OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) => "Source Control",
             About => "Help",
@@ -641,6 +648,11 @@ impl Command {
             NewTerminalWith(_) => "New Terminal",
             SplitTerminal => "Split Terminal",
             KillTerminal => "Kill Terminal",
+            ScrollToPrevMark => "Terminal: Scroll to Previous Command",
+            ScrollToNextMark => "Terminal: Scroll to Next Command",
+            RunRecentLine => "Terminal: Run Recent Command...",
+            RunCommandLine(_) => "Terminal: Run Command",
+            CopyLastCommandOutput => "Terminal: Copy Last Command Output",
             RunFile => "Run File",
             RunTask(_) => "Run Task",
             RunTaskPicker => "Tasks: Run Task...",

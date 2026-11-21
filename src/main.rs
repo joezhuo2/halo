@@ -17,6 +17,7 @@ mod scm;
 mod search;
 mod settings;
 mod settings_page;
+mod shell_integration;
 mod statusbar;
 mod tasks;
 mod terminal;

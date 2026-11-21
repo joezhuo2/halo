@@ -1054,6 +1054,7 @@ dependencies = [
  "eframe",
  "egui-phosphor",
  "fancy-regex",
+ "polling",
  "rfd",
  "ropey",
  "serde",

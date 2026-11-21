@@ -325,6 +325,13 @@ impl Halo {
                 self.explorer.refresh();
                 self.git.refresh(ctx);
             }
+            RunRecentLine => {
+                let items: Vec<_> = self.bottom.recent().into_iter().map(|line| (line.clone(), String::new(), RunCommandLine(line))).collect();
+                match items.is_empty() {
+                    true => ui::notify("No commands were seen in the active terminal yet. It needs shell integration."),
+                    false => self.search.pick("Select a command to run", items),
+                }
+            }
             NewTerminal | NewTerminalWith(_) | SplitTerminal => {
                 self.session.panel = true;
                 self.bottom.exec(&cmd, &self.settings, cwd.as_deref(), ctx);
