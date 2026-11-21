@@ -30,6 +30,16 @@ pub enum Command {
     OpenSettingsJson,
     OpenKeybindings,
     OpenSnippets,
+    ImportTheme,
+    BrowseThemes,
+    SelectTheme,
+    ImportThemeFile(PathBuf),
+    SetTheme(String),
+    ImportIconTheme,
+    BrowseIconThemes,
+    SelectIconTheme,
+    ImportIconThemeFile(PathBuf),
+    SetIconTheme(String),
     Exit,
 
     Undo,
@@ -384,7 +394,8 @@ pub fn all() -> Vec<Command> {
     use Command::*;
     let mut commands = vec![
         NewFile, OpenFile, OpenFolder, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, OpenSettings, OpenSettingsJson,
-        OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, Exit,
+        OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected,
+        SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
@@ -532,7 +543,9 @@ impl Command {
         use Command::*;
         match self {
             NewFile | OpenFile | OpenFolder | OpenFolderIn(_) | OpenPath(_) | Save | SaveAs | SaveAll | CloseEditor
-            | CloseFolder | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit => "File",
+            | CloseFolder | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit | ImportTheme
+            | BrowseThemes | SelectTheme | ImportThemeFile(_) | SetTheme(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
+            | ImportIconThemeFile(_) | SetIconTheme(_) => "File",
             Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
             | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection => "Edit",
@@ -580,6 +593,16 @@ impl Command {
             OpenSettings => "Settings",
             OpenSettingsJson => "Open settings.json",
             OpenKeybindings => "Keyboard Shortcuts (keybindings.json)",
+            ImportTheme => "Preferences: Import VS Code Theme...",
+            BrowseThemes => "Preferences: Browse Installed VS Code Themes...",
+            SelectTheme => "Preferences: Color Theme",
+            ImportThemeFile(_) => "Preferences: Import VS Code Theme",
+            SetTheme(_) => "Preferences: Set Color Theme",
+            ImportIconTheme => "Preferences: Import VS Code Icon Theme...",
+            BrowseIconThemes => "Preferences: Browse Installed VS Code Icon Themes...",
+            SelectIconTheme => "Preferences: File Icon Theme",
+            ImportIconThemeFile(_) => "Preferences: Import VS Code Icon Theme",
+            SetIconTheme(_) => "Preferences: Set File Icon Theme",
             Exit => "Exit",
             Undo => "Undo",
             Redo => "Redo",

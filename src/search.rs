@@ -366,7 +366,13 @@ impl Search {
                         ui::row_bg(ui, theme, r, row.id, row.hovered() && !note, index == self.selected && !note);
                         let painter = ui.painter().with_clip_rect(r.shrink2(vec2(8.0, 0.0)));
                         let color = if note { theme.text_dim } else { theme.text };
-                        painter.text(r.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, icon, FontId::proportional(14.0), theme.text_dim);
+                        let file = match item {
+                            Item::File(path, _) | Item::Hit(path, ..) => Some(path.rsplit('/').next().unwrap_or(path)),
+                            _ => None,
+                        };
+                        if !file.is_some_and(|name| crate::icon_theme::paint(&painter, r.left_center() + vec2(17.0, 0.0), 14.0, name, crate::icon_theme::Kind::File, 1.0)) {
+                            painter.text(r.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, icon, FontId::proportional(14.0), theme.text_dim);
+                        }
                         let end = painter.text(r.left_center() + vec2(32.0, 0.0), Align2::LEFT_CENTER, label, FontId::proportional(12.5), color);
                         painter.text(egui::pos2(end.right() + 10.0, r.center().y), Align2::LEFT_CENTER, detail, FontId::proportional(11.5), theme.text_dim);
                         if index == self.selected && std::mem::take(&mut self.reveal) {

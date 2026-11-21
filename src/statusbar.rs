@@ -99,8 +99,8 @@ impl Halo {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(6.0);
                         let icon = if theme.dark { icons::SUN } else { icons::MOON };
-                        if item(ui, &theme, icon, false, "Switch theme").clicked() {
-                            self.cmds.push(Command::ToggleTheme);
+                        if item(ui, &theme, icon, false, "Color theme").clicked() {
+                            self.cmds.push(Command::SelectTheme);
                         }
                         if let Some(status) = self.editors.status() {
                             let mut pick = None;

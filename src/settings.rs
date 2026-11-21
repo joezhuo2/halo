@@ -20,6 +20,7 @@ pub struct Task {
 #[serde(default)]
 pub struct Settings {
     pub theme: String,
+    pub icon_theme: String,
     pub font_family: String,
     pub font_size: f32,
     pub tab_size: usize,
@@ -65,6 +66,7 @@ impl Default for Settings {
         let terminals = default_terminals();
         Self {
             theme: "dark".into(),
+            icon_theme: "builtin".into(),
             font_family: String::new(),
             font_size: 13.0,
             tab_size: 4,

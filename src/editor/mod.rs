@@ -145,8 +145,10 @@ impl TabFace {
     }
 
     fn paint(&self, p: &egui::Painter, r: Rect, theme: &Theme, active: f32, hover: f32, close_hover: Option<f32>) {
-        p.text(pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, icons::FILE_CODE, FontId::proportional(14.0),
-            ui::mix(theme.text_dim, theme.accent, active * 0.8));
+        if !crate::icon_theme::paint(p, pos2(r.left() + 21.0, r.center().y), 14.0, self.name.text(), crate::icon_theme::Kind::File, 1.0) {
+            p.text(pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, icons::FILE_CODE, FontId::proportional(14.0),
+                ui::mix(theme.text_dim, theme.accent, active * 0.8));
+        }
         let text_pos = pos2(r.left() + 34.0, r.center().y - self.name.size().y / 2.0);
         p.galley(text_pos, self.name.clone(), ui::mix(theme.text_dim, theme.text, active.max(hover)));
         let close = Self::close_rect(r);

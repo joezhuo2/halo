@@ -147,11 +147,12 @@ fn tone(name: &str) -> u8 {
 }
 
 pub(super) fn tone_color(theme: &Theme, tone: u8) -> Color32 {
-    match tone {
+    let own = theme.semantic[(tone as usize).clamp(1, 3) - 1];
+    own.unwrap_or(match tone {
         1 => theme.syntax.type_name,
         2 => theme.syntax.function,
         _ => theme.syntax.constant,
-    }
+    })
 }
 
 pub(super) fn severity_color(theme: &Theme, severity: u8) -> Color32 {
@@ -1333,6 +1334,7 @@ impl Editors {
             }
             None => vec![("", doc.buf.title.clone(), None)],
         };
+        let path_parts = if doc.buf.path.is_some() { parts.len() } else { 0 };
         let line = doc.buf.line_of(tab.sels.first().map_or(0, |s| s.head));
         let mut chain: Vec<&Symbol> = vec![];
         for symbol in doc.lang.symbols.iter().filter(|s| s.line <= line && line <= s.end_line) {
@@ -1347,6 +1349,11 @@ impl Editors {
             for (index, (icon, name, target)) in parts.iter().enumerate() {
                 if index > 0 {
                     ui.label(RichText::new(icons::CARET_RIGHT).size(10.0).color(theme.text_dim));
+                }
+                if index < path_parts && crate::icon_theme::active() {
+                    let kind = if index + 1 == path_parts { crate::icon_theme::Kind::File } else { crate::icon_theme::Kind::Folder };
+                    let (slot, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
+                    crate::icon_theme::paint(ui.painter(), slot.center(), 13.0, name, kind, 1.0);
                 }
                 let text = if icon.is_empty() { name.clone() } else { format!("{icon} {name}") };
                 let label = egui::Label::new(RichText::new(text).size(12.0).color(theme.text_dim));

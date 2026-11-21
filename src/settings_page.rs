@@ -26,6 +26,8 @@ pub struct SettingsPage {
     pub recording: Option<Command>,
     tab: usize,
     filter: String,
+    pub(crate) themes: Option<(Vec<String>, Vec<String>)>,
+    confirm: Option<String>,
     fonts: Option<Vec<(&'static str, String)>>,
     new_run: (String, String),
     new_association: (String, String),
@@ -98,7 +100,7 @@ impl Halo {
                             let about = "End the file with a line break when it is saved.";
                             toggle(ui, &theme, "Files", "Insert Final Newline", about, &mut edited.insert_final_newline);
                         }
-                        2 => appearance_tab(ui, &theme, &mut edited),
+                        2 => appearance_tab(ui, &theme, &mut edited, &mut self.page),
                         3 => terminal_tab(ui, &theme, &mut edited),
                         4 => run_tab(ui, &theme, &mut edited, &mut self.page),
                         5 => languages_tab(ui, &theme, &mut edited, &mut self.page),
@@ -225,12 +227,59 @@ fn editor_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsP
     toggle(ui, theme, "Problems", "Status Bar Counts", "Show the number of errors and warnings in the status bar.", &mut s.status_problems);
 }
 
-fn appearance_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings) {
-    item(ui, theme, "Workbench", "Color Theme", "The base theme. Custom colors are kept for each theme.");
+fn choose(
+    ui: &mut Ui,
+    id: &str,
+    current: &mut String,
+    fixed: &[(&str, &str)],
+    imported: &[String],
+    confirm: &mut Option<String>,
+    remove: fn(&Path, &str),
+) -> bool {
+    let shown = fixed.iter().find(|(value, _)| value == current).map_or_else(|| current.clone(), |(_, label)| (*label).to_owned());
+    let mut removed = false;
     ui.horizontal(|ui| {
-        ui.selectable_value(&mut s.theme, "dark".to_owned(), "Dark");
-        ui.selectable_value(&mut s.theme, "light".to_owned(), "Light");
+        egui::ComboBox::from_id_salt(id).width(240.0).selected_text(shown).show_ui(ui, |ui| {
+            for (value, label) in fixed {
+                ui.selectable_value(current, (*value).to_owned(), *label);
+            }
+            for name in imported {
+                ui.selectable_value(current, name.clone(), name);
+            }
+        });
+        if imported.contains(current) {
+            let key = format!("{id}:{current}");
+            let armed = confirm.as_deref() == Some(key.as_str());
+            if ui.button(if armed { "Click again to remove" } else { "Remove" }).clicked() {
+                if armed {
+                    remove(&crate::settings::dir(), current);
+                    *current = fixed[0].0.to_owned();
+                    *confirm = None;
+                    removed = true;
+                } else {
+                    *confirm = Some(key);
+                }
+            }
+        }
     });
+    removed
+}
+
+fn appearance_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsPage) {
+    let (themes, icon_themes) = page.themes.get_or_insert_with(|| {
+        let config = crate::settings::dir();
+        (crate::theme_import::installed(&config), crate::icon_theme::installed(&config))
+    }).clone();
+    item(ui, theme, "Workbench", "Color Theme", "The base theme. Custom colors are kept for each theme. Import more with Preferences: Import VS Code Theme.");
+    let fixed = [("dark", "Dark"), ("light", "Light")];
+    if choose(ui, "color_theme", &mut s.theme, &fixed, &themes, &mut page.confirm, crate::theme_import::remove) {
+        page.themes = None;
+    }
+    item(ui, theme, "Workbench", "File Icon Theme", "The icons shown next to files and folders. Import more with Preferences: Import VS Code Icon Theme.");
+    let fixed = [("builtin", "Halo (default)"), ("none", "None")];
+    if choose(ui, "icon_theme", &mut s.icon_theme, &fixed, &icon_themes, &mut page.confirm, crate::icon_theme::remove) {
+        page.themes = None;
+    }
     item(ui, theme, "Workbench", "Colors", "Interface colors on the left, syntax colors on the right.");
     let mut custom = s.colors.get(&s.theme).cloned().unwrap_or_default();
     let list: Vec<(&str, Color32)> = theme.clone().colors().into_iter().map(|(name, color)| (name, *color)).collect();
