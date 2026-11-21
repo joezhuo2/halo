@@ -858,6 +858,10 @@ impl Halo {
             self.jump = Some(jump);
         }
         let window = ui.max_rect();
+        if crate::shell_integration::take_finished() {
+            self.git.refresh(&ctx);
+            self.explorer.refresh();
+        }
         if self.git.poll() {
             self.explorer.refresh();
             self.editors.reload_clean();

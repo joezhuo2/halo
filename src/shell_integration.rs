@@ -7,7 +7,15 @@ use alacritty_terminal::vte::ansi::{Processor, Timeout};
 use eframe::egui;
 use std::io::{self, ErrorKind, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+
+static FINISHED: AtomicBool = AtomicBool::new(false);
+
+// true once after any terminal command finished, so Git and the Explorer can catch up right away
+pub fn take_finished() -> bool {
+    FINISHED.swap(false, Ordering::Relaxed)
+}
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -144,6 +152,7 @@ impl Integration {
             Mark::CommandStart => last.command = Some(line),
             Mark::Executed => (last.output, last.started) = (Some(line), Some(now)),
             Mark::Finished(code) if last.end.is_none() && (last.output.is_some() || code.is_some()) => {
+                FINISHED.store(true, Ordering::Relaxed);
                 (last.end, last.exit, last.duration) = (Some((line, col)), code, last.started.map(|s| now - s));
             }
             Mark::Line(text) => last.line = text,

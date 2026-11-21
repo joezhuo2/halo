@@ -502,7 +502,9 @@ fn toolbar(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>, c
                 if ui::icon_button(ui, theme, icons::CLOUD_ARROW_DOWN, 22.0, false, "Fetch").clicked() {
                     cmds.push(Command::Git(GitCommand::Fetch));
                 }
-                if ui::icon_button(ui, theme, icons::ARROWS_CLOCKWISE, 22.0, false, "Refresh").clicked() {
+                if git.loading() {
+                    ui.add_sized(vec2(22.0, 22.0), egui::Spinner::new().size(13.0).color(theme.text_dim)).on_hover_text("Refreshing Git status");
+                } else if ui::icon_button(ui, theme, icons::ARROWS_CLOCKWISE, 22.0, false, "Refresh").clicked() {
                     *action = Some(Action::Refresh);
                 }
             });
