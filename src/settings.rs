@@ -52,6 +52,7 @@ pub struct Settings {
     pub sticky_scroll: bool,
     pub bracket_colors: bool,
     pub guides: bool,
+    pub hot_exit: bool,
 }
 
 impl Default for Settings {
@@ -130,6 +131,7 @@ impl Default for Settings {
             sticky_scroll: true,
             bracket_colors: true,
             guides: true,
+            hot_exit: true,
         }
     }
 }
@@ -236,11 +238,19 @@ impl Settings {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Backup {
+    pub path: Option<PathBuf>,
+    pub title: String,
+    pub file: PathBuf,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Session {
     pub folder: Option<PathBuf>,
     pub files: Vec<PathBuf>,
+    pub backups: Vec<Backup>,
     pub recent: Vec<PathBuf>,
     pub sidebar: bool,
     pub panel: bool,
@@ -255,6 +265,7 @@ impl Default for Session {
         Self {
             folder: None,
             files: vec![],
+            backups: vec![],
             recent: vec![],
             sidebar: true,
             panel: true,

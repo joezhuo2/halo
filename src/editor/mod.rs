@@ -7,7 +7,7 @@ mod snippet;
 use crate::command::{self, Command, Scope};
 use crate::git::{Git, LineChange};
 use crate::lsp::{self, Lsp};
-use crate::settings::Settings;
+use crate::settings::{Backup, Settings};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use buffer::{After, Document, Kind, Motion, Sel, Take, hidden, is_word, merge_sels};
@@ -62,6 +62,7 @@ struct Doc {
     lang: Lang,
     folds: Vec<(usize, usize)>,
     depths: (u64, Vec<u32>),
+    backed: u64,
 }
 
 #[derive(Default)]
@@ -461,7 +462,7 @@ impl Editors {
             self.banner = Some(note.clone());
         }
         let hl = Highlighter::new(buf.path.as_deref(), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]) });
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0 });
         id
     }
 
@@ -979,6 +980,52 @@ impl Editors {
         due
     }
 
+    pub fn backup(&mut self, dir: &Path) -> Vec<Backup> {
+        let _ = std::fs::create_dir_all(dir);
+        let mut ids: Vec<u64> = self.groups.iter().flat_map(|group| &group.tabs).map(|tab| tab.doc).collect();
+        ids.dedup();
+        let mut out: Vec<Backup> = vec![];
+        for id in ids {
+            let Some(doc) = self.docs.get_mut(&id).filter(|doc| doc.buf.is_dirty() && !doc.buf.read_only) else { continue };
+            let file = dir.join(format!("{id}.bak"));
+            if out.iter().any(|kept| kept.file == file) || (doc.backed != doc.buf.version && std::fs::write(&file, doc.buf.rope.to_string()).is_err()) {
+                continue;
+            }
+            doc.backed = doc.buf.version;
+            out.push(Backup { path: doc.buf.path.clone(), title: doc.buf.title.clone(), file });
+        }
+        for stale in std::fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path()) {
+            if !out.iter().any(|kept| kept.file == stale) {
+                let _ = std::fs::remove_file(stale);
+            }
+        }
+        out
+    }
+
+    pub fn restore(&mut self, backups: &[Backup]) {
+        let texts: Vec<(&Backup, String)> = backups.iter().filter_map(|backup| Some((backup, std::fs::read_to_string(&backup.file).ok()?))).collect();
+        for (backup, text) in texts {
+            let on_disk = backup.path.as_deref().filter(|path| path.is_file());
+            let id = on_disk.and_then(|path| {
+                self.open_kept(path);
+                self.find_doc(path)
+            });
+            match id.and_then(|id| self.docs.get_mut(&id)) {
+                Some(doc) if doc.buf.rope.to_string() == text => {}
+                Some(doc) => drop(doc.buf.apply(&mut vec![Sel::caret(0)], vec![(0, doc.buf.len(), text)], Kind::Other, After::Carets)),
+                None => {
+                    let mut buf = Document::from_text(&text, backup.title.clone());
+                    buf.path = backup.path.clone();
+                    buf.mark_dirty();
+                    let number = backup.title.strip_prefix("Untitled-").and_then(|n| n.parse().ok()).unwrap_or(0);
+                    self.untitled = self.untitled.max(number);
+                    let id = self.insert_doc(buf);
+                    self.add_tab(id, vec![Sel::caret(0)]);
+                }
+            }
+        }
+    }
+
     pub fn any_dirty(&self) -> bool {
         self.docs.values().any(|d| d.buf.is_dirty())
     }
@@ -1404,7 +1451,7 @@ impl Editors {
         let font = FontId::monospace(settings.font_size);
         let (char_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
         let line_h = (row_h * 1.25).round();
-        let Doc { buf, hl, max_cols, conflicts, lang, folds, depths } = doc;
+        let Doc { buf, hl, max_cols, conflicts, lang, folds, depths, .. } = doc;
         settle(buf, hl, lang, &mut self.lsp, folds);
         buf.clamp(&mut tab.sels);
 
@@ -2387,6 +2434,46 @@ end", "word ".repeat(100)))], &settings);
         assert!(tab.sels[0].head > 0 && tab.sels[0].head < 500);
         frame_with(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default()); rows[1] as usize], &settings);
         assert_eq!(editors.status().unwrap().line, 2);
+    }
+
+    #[test]
+    fn backs_up_unsaved_files_and_restores_them() {
+        let ctx = egui::Context::default();
+        let settings = Settings { lsp: false, ..Settings::default() };
+        let dir = std::env::temp_dir().join(format!("halo-backup-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "disk\n").unwrap();
+        std::fs::write(dir.join("clean.txt"), "same\n").unwrap();
+        let mut editors = Editors::new();
+        editors.open_kept(&dir.join("clean.txt"));
+        editors.open_kept(&dir.join("a.txt"));
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![Event::Text("mine ".into())], &settings);
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![Event::Text("draft".into())], &settings);
+        let backups = editors.backup(&dir.join("backups"));
+        assert_eq!(backups.iter().map(|b| b.title.as_str()).collect::<Vec<_>>(), vec!["a.txt", "Untitled-1"]);
+        assert_eq!(editors.backup(&dir.join("backups")), backups);
+
+        let mut again = Editors::new();
+        again.open_kept(&dir.join("clean.txt"));
+        again.restore(&backups);
+        let texts = |e: &Editors| {
+            let mut all: Vec<(String, String, bool)> = e.docs.values().map(|d| (d.buf.title.clone(), d.buf.rope.to_string(), d.buf.is_dirty())).collect();
+            all.sort();
+            all
+        };
+        let expect = [("Untitled-1", "draft", true), ("a.txt", "mine disk\n", true), ("clean.txt", "same\n", false)];
+        assert_eq!(texts(&again), expect.map(|(title, text, dirty)| (title.to_owned(), text.to_owned(), dirty)));
+        again.exec(&Command::NewFile, &settings, &ctx);
+        assert!(again.docs.values().any(|d| d.buf.title == "Untitled-2"));
+        again.discard_all();
+        assert!(again.backup(&dir.join("backups")).is_empty());
+        assert_eq!(std::fs::read_dir(dir.join("backups")).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

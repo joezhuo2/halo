@@ -106,6 +106,7 @@ impl Halo {
         for file in files.iter().filter(|f| f.is_file()) {
             app.editors.open_kept(file);
         }
+        app.editors.restore(&app.session.backups);
         app
     }
 
@@ -132,7 +133,12 @@ impl Halo {
     }
 
     fn save_session(&mut self) {
+        let backups = crate::settings::dir().join("backups");
         self.session.files = self.editors.open_paths();
+        self.session.backups = if self.settings.hot_exit { self.editors.backup(&backups) } else { vec![] };
+        if !self.settings.hot_exit {
+            let _ = std::fs::remove_dir_all(backups);
+        }
         self.session.save();
     }
 
@@ -349,7 +355,9 @@ impl Halo {
             let v = i.viewport();
             (v.close_requested(), v.focused.unwrap_or(true))
         });
-        if close_requested && !self.exiting && self.editors.any_dirty() {
+        if close_requested && self.settings.hot_exit {
+            self.save_session();
+        } else if close_requested && !self.exiting && self.editors.any_dirty() {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             self.confirm_exit = true;
         }
