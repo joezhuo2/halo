@@ -8,6 +8,21 @@ pub const FIELD: egui::Margin = egui::Margin::symmetric(8, 5);
 
 static NOTICES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+pub fn open_url(url: &str) {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return;
+    }
+    #[cfg(windows)]
+    let launched = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
+    #[cfg(target_os = "macos")]
+    let launched = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let launched = std::process::Command::new("xdg-open").arg(url).spawn();
+    if let Err(error) = launched {
+        notify(format!("Could not open {url}: {error}"));
+    }
+}
+
 pub fn notify(text: impl Into<String>) {
     NOTICES.lock().unwrap().push(text.into());
 }

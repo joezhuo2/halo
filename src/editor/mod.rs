@@ -201,6 +201,21 @@ fn emmet_expand(buf: &mut Document, tab: &mut Tab, unit: &str, strict: bool) -> 
     true
 }
 
+fn links(text: &str) -> Vec<(usize, usize)> {
+    let (mut out, mut from) = (vec![], 0);
+    while let Some(at) = text[from..].find("http").map(|found| from + found) {
+        let rest = &text[at..];
+        let scheme = if rest.starts_with("https://") { 8 } else { 7 };
+        let end = rest.find(|c: char| c.is_whitespace() || "\"'<>`()[]{}|\\^".contains(c)).unwrap_or(rest.len());
+        let len = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?']).len();
+        if len > scheme && (scheme == 8 || rest.starts_with("http://")) {
+            out.push((text[..at].chars().count(), text[..at + len].chars().count()));
+        }
+        from = at + len.max(4);
+    }
+    out
+}
+
 fn visible_text(buf: &Document, line: usize) -> String {
     let text = buf.line_text(line);
     if text.len() <= MAX_COLS {
@@ -1784,7 +1799,12 @@ impl Editors {
                                 tab.sels = vec![Sel::caret(p)];
                                 tab.drag_anchor = Some(p);
                                 if mods.command {
-                                    pending.push(Command::GoToDefinition);
+                                    let line = buf_ref.line_of(p);
+                                    let (text, column) = (buf_ref.line_text(line), p - buf_ref.line_start(line));
+                                    match links(&text).into_iter().find(|link| link.0 <= column && column < link.1) {
+                                        Some((from, to)) => ui::open_url(&text.chars().skip(from).take(to - from).collect::<String>()),
+                                        None => pending.push(Command::GoToDefinition),
+                                    }
                                 }
                             }
                         } else if resp.dragged_by(PointerButton::Primary) {
@@ -1952,6 +1972,13 @@ impl Editors {
                         for (index, piece) in row.pieces.iter().enumerate() {
                             let top = y + index as f32 * line_h + (line_h - piece.galley.size().y) / 2.0;
                             painter.galley(pos2(text_x, top), piece.galley.clone(), theme.text);
+                        }
+                        let linked = if len >= 10 { buf_ref.line_text(line) } else { String::new() };
+                        for (x0, x1, y) in links(&linked).into_iter().flat_map(|link| spans(link.0, link.1)) {
+                            painter.hline(x0..=x1, y + line_h - 2.0, Stroke::new(1.0, ui::with_alpha(theme.accent, 0.7)));
+                            if mods.command && resp.hovered() && pointer.is_some_and(|pos| pos.x >= x0 && pos.x <= x1 && pos.y >= y && pos.y < y + line_h) {
+                                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                            }
                         }
                         if settings.render_whitespace {
                             let dim = Stroke::new(1.0, ui::with_alpha(theme.text_dim, 0.5));
@@ -2510,6 +2537,14 @@ end", "word ".repeat(100)))], &settings);
         assert!(tab.sels[0].head > 0 && tab.sels[0].head < 500);
         frame_with(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default()); rows[1] as usize], &settings);
         assert_eq!(editors.status().unwrap().line, 2);
+    }
+
+    #[test]
+    fn finds_links_in_a_line() {
+        let text = "see (https://example.com/a?b=1#c). and http://x.io, not httpx or http://";
+        let found: Vec<String> = links(text).into_iter().map(|(from, to)| text.chars().skip(from).take(to - from).collect()).collect();
+        assert_eq!(found, vec!["https://example.com/a?b=1#c", "http://x.io"]);
+        assert!(links("no links here").is_empty());
     }
 
     #[test]
