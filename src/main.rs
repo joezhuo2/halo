@@ -14,6 +14,7 @@ mod search;
 mod settings;
 mod settings_page;
 mod statusbar;
+mod tasks;
 mod terminal;
 mod theme;
 mod timeline;

@@ -1,5 +1,5 @@
 use crate::command::Command;
-use crate::lsp::Lsp;
+use crate::lsp::{Diagnostic, Lsp};
 use crate::settings::{Settings, ShellProfile};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
@@ -18,7 +18,7 @@ use eframe::egui::{
     RichText, ScrollArea, Sense, Stroke, StrokeKind, Ui, UiBuilder, ViewportCommand, pos2, vec2,
 };
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
@@ -27,6 +27,7 @@ struct Shared {
     exited: AtomicBool,
     title: Mutex<Option<String>>,
     sender: Mutex<Option<EventLoopSender>>,
+    code: Mutex<Option<i32>>,
 }
 
 #[derive(Clone)]
@@ -40,7 +41,8 @@ impl EventListener for Proxy {
         match event {
             TermEvent::Title(title) => *self.shared.title.lock().unwrap() = Some(title),
             TermEvent::ResetTitle => *self.shared.title.lock().unwrap() = None,
-            TermEvent::Exit | TermEvent::ChildExit(_) => self.shared.exited.store(true, Ordering::Relaxed),
+            TermEvent::ChildExit(status) => *self.shared.code.lock().unwrap() = status.code(),
+            TermEvent::Exit => self.shared.exited.store(true, Ordering::Relaxed),
             TermEvent::PtyWrite(text) => {
                 if let Some(sender) = self.shared.sender.lock().unwrap().as_ref() {
                     let _ = sender.send(Msg::Input(text.into_bytes().into()));
@@ -171,6 +173,7 @@ pub struct Terminal {
     want_focus: bool,
     wheel: f32,
     last_input: f64,
+    task: Option<String>,
 }
 
 impl Drop for Terminal {
@@ -181,20 +184,36 @@ impl Drop for Terminal {
 
 impl Terminal {
     pub fn spawn(id: u64, name: &str, program: &str, args: &[String], cwd: Option<&Path>, ctx: egui::Context) -> std::io::Result<Self> {
-        let mut options = tty::Options::default();
-        options.shell = Some(tty::Shell::new(program.to_owned(), args.to_vec()));
-        options.working_directory = cwd.map(Path::to_path_buf).or_else(dirs::home_dir);
-        options.env = HashMap::from([
-            ("TERM".to_owned(), "xterm-256color".to_owned()),
-            ("COLORTERM".to_owned(), "truecolor".to_owned()),
-        ]);
+        Self::start(id, name, program, args, &HashMap::new(), cwd, None, ctx)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start(
+        id: u64,
+        name: &str,
+        program: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        cwd: Option<&Path>,
+        task: Option<&str>,
+        ctx: egui::Context,
+    ) -> std::io::Result<Self> {
+        let mut options = tty::Options {
+            shell: Some(tty::Shell::new(program.to_owned(), args.to_vec())),
+            working_directory: cwd.map(Path::to_path_buf).or_else(dirs::home_dir),
+            env: env.clone(),
+            ..Default::default()
+        };
+        options.env.insert("TERM".to_owned(), "xterm-256color".to_owned());
+        options.env.insert("COLORTERM".to_owned(), "truecolor".to_owned());
         let window = WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 16 };
         let pty = tty::new(&options, window, id)?;
-        let shared = Arc::new(Shared { exited: AtomicBool::new(false), title: Mutex::new(None), sender: Mutex::new(None) });
+        let shared =
+            Arc::new(Shared { exited: AtomicBool::new(false), title: Mutex::new(None), sender: Mutex::new(None), code: Mutex::new(None) });
         let proxy = Proxy { ctx, shared: shared.clone() };
         let config = Config { scrolling_history: 5000, ..Default::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &Size { cols: 80, rows: 24 }, proxy.clone())));
-        let event_loop = EventLoop::new(term.clone(), proxy, pty, false, false)?;
+        let event_loop = EventLoop::new(term.clone(), proxy, pty, task.is_some(), false)?;
         let sender = event_loop.channel();
         *shared.sender.lock().unwrap() = Some(sender.clone());
         event_loop.spawn();
@@ -209,6 +228,7 @@ impl Terminal {
             want_focus: true,
             wheel: 0.0,
             last_input: 0.0,
+            task: task.map(str::to_owned),
         })
     }
 
@@ -216,7 +236,32 @@ impl Terminal {
         !self.shared.exited.load(Ordering::Relaxed)
     }
 
+    pub fn exit_code(&self) -> Option<i32> {
+        (!self.is_alive()).then(|| self.shared.code.lock().unwrap().unwrap_or(0))
+    }
+
+    pub fn snapshot(&self, finished: bool) -> (Vec<String>, usize) {
+        let term = self.term.lock();
+        let (top, bottom) = (term.topmost_line(), term.bottommost_line());
+        let text = term.bounds_to_string(Point::new(top, Column(0)), Point::new(bottom, term.last_column()));
+        let partial = !finished && term.grid().cursor.point.column.0 > 0;
+        let mut lines: Vec<String> = text.lines().map(|l| l.trim_end().to_owned()).collect();
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        let complete = lines.len().saturating_sub(partial as usize);
+        (lines, complete)
+    }
+
+    pub fn note(&self, text: &str) {
+        let mut processor = alacritty_terminal::vte::ansi::Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::default();
+        processor.advance(&mut *self.term.lock(), text.as_bytes());
+    }
+
     pub fn title(&self) -> String {
+        if self.task.is_some() {
+            return self.name.clone();
+        }
         self.shared.title.lock().unwrap().clone().filter(|t| !t.is_empty()).unwrap_or_else(|| self.name.clone())
     }
 
@@ -639,7 +684,7 @@ impl BottomPanel {
     }
 
     fn split(&mut self, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) {
-        let Some(profile) = self.groups.get(self.active).map(|g| g.profile.clone()) else {
+        let Some(profile) = self.groups.get(self.active).filter(|g| g.panes.iter().all(|p| p.task.is_none())).map(|g| g.profile.clone()) else {
             self.new_group(default_profile(settings, cwd).as_ref(), cwd, ctx);
             return;
         };
@@ -666,6 +711,69 @@ impl BottomPanel {
         self.groups[index].panes[pane].write(format!("{line}\r"));
         self.groups[index].panes[pane].focus();
         self.run_line = line.to_owned();
+    }
+
+    fn task_position(&self, matches: impl Fn(&Terminal) -> bool) -> Option<(usize, usize)> {
+        self.groups.iter().enumerate().find_map(|(g, group)| Some((g, group.panes.iter().position(&matches)?)))
+    }
+
+    pub fn run_task(
+        &mut self,
+        label: &str,
+        (program, args): (&str, &[String]),
+        env: &std::collections::BTreeMap<String, String>,
+        cwd: Option<&Path>,
+        reveal: bool,
+        ctx: &egui::Context,
+    ) -> Result<u64, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let env: HashMap<String, String> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let terminal = Terminal::start(id, label, program, args, &env, cwd, Some(label), ctx.clone())
+            .map_err(|e| format!("Could not start task {label} ({program}): {e}"))?;
+        self.started = true;
+        match self.task_position(|p| p.task.as_deref() == Some(label)) {
+            Some((g, p)) => {
+                self.groups[g].panes[p] = terminal;
+                self.groups[g].active = p;
+                self.active = g;
+            }
+            None => {
+                let profile = ShellProfile { name: label.to_owned(), program: program.to_owned(), args: args.to_vec() };
+                self.groups.push(Group { panes: vec![terminal], active: 0, profile });
+                self.active = self.groups.len() - 1;
+            }
+        }
+        if reveal {
+            self.tab = PanelTab::Terminal;
+        }
+        Ok(id)
+    }
+
+    pub fn reveal_task(&mut self, id: u64) {
+        if let Some((g, p)) = self.task_position(|t| t.id == id) {
+            (self.tab, self.active, self.groups[g].active) = (PanelTab::Terminal, g, p);
+            self.groups[g].panes[p].focus();
+        }
+    }
+
+    pub fn task_pane(&self, id: u64) -> Option<&Terminal> {
+        self.groups.iter().flat_map(|g| &g.panes).find(|p| p.id == id)
+    }
+
+    pub fn finish_task(&mut self, id: u64, label: &str, code: Option<i32>) {
+        let Some((g, p)) = self.task_position(|t| t.id == id) else { return };
+        let pane = &mut self.groups[g].panes[p];
+        let status = code.map_or("terminated".to_owned(), |c| format!("exit {c}"));
+        pane.name = format!("{label} ({status})");
+        pane.note(&format!("\r\n\x1b[2m[Task {label} finished: {status}]\x1b[0m\r\n"));
+    }
+
+    pub fn kill_task(&mut self, id: u64) {
+        if let Some((g, p)) = self.task_position(|t| t.id == id) {
+            self.groups[g].panes.remove(p);
+            self.prune();
+        }
     }
 
     fn debug_ui(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, font_size: f32) {
@@ -699,7 +807,7 @@ impl BottomPanel {
 
     fn prune(&mut self) {
         for group in &mut self.groups {
-            group.panes.retain(Terminal::is_alive);
+            group.panes.retain(|p| p.is_alive() || p.task.is_some());
             group.active = group.active.min(group.panes.len().saturating_sub(1));
         }
         self.groups.retain(|g| !g.panes.is_empty());
@@ -736,7 +844,17 @@ impl BottomPanel {
         true
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, settings: &Settings, cwd: Option<&Path>, lsp: &Lsp, cmds: &mut Vec<Command>) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        settings: &Settings,
+        cwd: Option<&Path>,
+        lsp: &Lsp,
+        task_files: &[(PathBuf, Vec<Diagnostic>)],
+        cmds: &mut Vec<Command>,
+    ) {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         self.focused = false;
         self.prune();
@@ -793,7 +911,7 @@ impl BottomPanel {
             match self.tab {
                 PanelTab::Terminal => self.terminals(ui, body, theme, settings, cwd),
                 PanelTab::Ports => self.ports_ui(ui, body, theme),
-                PanelTab::Problems => problems_ui(ui, theme, lsp, cwd, cmds),
+                PanelTab::Problems => problems_ui(ui, theme, lsp, task_files, cwd, cmds),
                 PanelTab::Output => output_ui(ui, theme, lsp, settings.font_size),
                 PanelTab::Debug => self.debug_ui(ui, body, theme, settings.font_size),
             }
@@ -833,7 +951,8 @@ impl BottomPanel {
             return;
         }
 
-        if self.groups.iter().map(|g| g.panes.len()).sum::<usize>() > 1 {
+        let tasks = self.groups.iter().flat_map(|g| &g.panes).any(|p| p.task.is_some());
+        if tasks || self.groups.iter().map(|g| g.panes.len()).sum::<usize>() > 1 {
             let list = Rect::from_min_max(pos2(area.right() - 190.0, area.top()), area.max);
             area.max.x = list.left();
             ui.painter().vline(list.left(), list.y_range(), Stroke::new(1.0, theme.border));
@@ -944,15 +1063,16 @@ impl BottomPanel {
     }
 }
 
-fn problems_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, cwd: Option<&Path>, cmds: &mut Vec<Command>) {
-    let files: Vec<_> = lsp.problems().filter(|file| file.items.iter().any(|d| d.severity <= 3)).collect();
+fn problems_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, task_files: &[(PathBuf, Vec<Diagnostic>)], cwd: Option<&Path>, cmds: &mut Vec<Command>) {
+    let from_tasks = task_files.iter().map(|(path, items)| (path, items));
+    let files: Vec<_> = lsp.problems().map(|file| (&file.path, &file.items)).chain(from_tasks).filter(|(_, items)| items.iter().any(|d| d.severity <= 3)).collect();
     if files.is_empty() {
         return empty(ui, theme, "No problems have been detected in the workspace.");
     }
     ScrollArea::vertical().id_salt("problems").auto_shrink(false).show(ui, |ui| {
         ui.add_space(4.0);
-        for file in files {
-            let shown = cwd.and_then(|root| file.path.strip_prefix(root).ok()).unwrap_or(&file.path);
+        for (path, items) in files {
+            let shown = cwd.and_then(|root| path.strip_prefix(root).ok()).unwrap_or(path);
             let name = shown.file_name().unwrap_or(shown.as_os_str()).to_string_lossy();
             let folder = shown.parent().map(|dir| dir.to_string_lossy()).unwrap_or_default();
             let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
@@ -960,7 +1080,7 @@ fn problems_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, cwd: Option<&Path>, cmds: 
             let title = format!("{}  {name}", icons::FILE_CODE);
             let end = painter.text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(12.5), theme.text);
             painter.text(pos2(end.right() + 10.0, r.center().y), Align2::LEFT_CENTER, folder, FontId::proportional(11.5), theme.text_dim);
-            for problem in file.items.iter().filter(|d| d.severity <= 3) {
+            for problem in items.iter().filter(|d| d.severity <= 3) {
                 let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                 ui::row_bg(ui, theme, r, row.id, row.hovered(), false);
                 let (icon, color) = match problem.severity {
@@ -975,7 +1095,7 @@ fn problems_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, cwd: Option<&Path>, cmds: 
                 let place = format!("{}  [Ln {}, Col {}]", problem.source, problem.start.0 + 1, problem.start.1 + 1);
                 painter.text(pos2(end.right() + 10.0, r.center().y), Align2::LEFT_CENTER, place, FontId::proportional(11.5), theme.text_dim);
                 if row.clicked() {
-                    cmds.push(Command::OpenPath(file.path.clone()));
+                    cmds.push(Command::OpenPath(path.clone()));
                     cmds.push(Command::GoTo(problem.start.0 + 1, problem.start.1 + 1));
                 }
                 row.on_hover_text(&problem.message);

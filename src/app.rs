@@ -39,6 +39,7 @@ pub struct Halo {
     pub accounts: Accounts,
     pub editors: Editors,
     pub bottom: BottomPanel,
+    pub tasks: crate::tasks::Tasks,
     pub ai: AiPanel,
     pub search: Search,
     pub find: FindPanel,
@@ -81,6 +82,7 @@ impl Halo {
             accounts: Accounts::default(),
             editors: Editors::new(),
             bottom: BottomPanel::new(),
+            tasks: Default::default(),
             ai: AiPanel::default(),
             search: Search::default(),
             find: FindPanel::default(),
@@ -233,6 +235,8 @@ impl Halo {
                     Err(error) => ui::notify(error),
                 }
             }
+            RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks | ConfigureDefaultBuildTask
+            | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_) => self.task_command(cmd, ctx),
             OpenSettingsJson => {
                 let path = Settings::path();
                 if !path.exists() {
@@ -478,7 +482,7 @@ impl Halo {
             .size_range(90.0..=900.0)
             .frame(Frame::new().fill(self.theme.panel))
             .show_collapsible(ui, &mut open, |ui| {
-                self.bottom.ui(ui, &self.theme, &self.settings, cwd.as_deref(), &self.editors.lsp, &mut self.cmds);
+                self.bottom.ui(ui, &self.theme, &self.settings, cwd.as_deref(), &self.editors.lsp, &self.tasks.files(), &mut self.cmds);
             })
             .is_none()
             .then(|| self.bottom.blur());
@@ -634,6 +638,7 @@ impl eframe::App for Halo {
             self.explorer.refresh();
             self.editors.reload_clean();
         }
+        self.tasks.poll(&mut self.bottom, &ctx);
         if self.accounts.poll() {
             self.git.refresh_prs();
         }
