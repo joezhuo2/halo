@@ -401,6 +401,7 @@ pub struct Session {
     pub debug_view: bool,
     pub test_view: bool,
     pub breakpoints: BTreeMap<PathBuf, BTreeMap<PathBuf, Vec<crate::debug::Breakpoint>>>,
+    pub layout: crate::workbench::Workbench,
 }
 
 impl Default for Session {
@@ -421,6 +422,7 @@ impl Default for Session {
             debug_view: false,
             test_view: false,
             breakpoints: BTreeMap::new(),
+            layout: Default::default(),
         }
     }
 }
