@@ -1337,8 +1337,14 @@ impl Editors {
         let Some(doc) = self.docs.get(&tab.doc) else { return };
         let mut parts: Vec<(&str, String, Option<Pos>)> = match &doc.buf.path {
             Some(path) => {
-                let shown = self.root.as_deref().and_then(|root| path.strip_prefix(root).ok()).unwrap_or(path);
-                shown.components().map(|part| ("", part.as_os_str().to_string_lossy().into_owned(), None)).collect()
+                let workspace = crate::workspace::current();
+                match workspace.relative(path).filter(|_| workspace.folders.len() > 1) {
+                    Some(relative) => relative.split('/').map(|part| ("", part.to_owned(), None)).collect(),
+                    None => {
+                        let shown = self.root.as_deref().and_then(|root| path.strip_prefix(root).ok()).unwrap_or(path);
+                        shown.components().map(|part| ("", part.as_os_str().to_string_lossy().into_owned(), None)).collect()
+                    }
+                }
             }
             None => vec![("", doc.buf.title.clone(), None)],
         };

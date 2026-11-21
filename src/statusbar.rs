@@ -31,6 +31,12 @@ impl Halo {
                         item(ui, &theme, &format!("{} WSL: {distro}", icons::LINUX_LOGO), true, "This folder is open in WSL");
                     }
 
+                    if let Some(name) = self.session.workspace.name().filter(|_| self.session.workspace.is_multi())
+                        && item(ui, &theme, &format!("{} {name}", icons::FOLDERS), false, "Workspace folders: show the Explorer").clicked()
+                    {
+                        self.cmds.push(Command::ShowExplorer);
+                    }
+
                     if self.settings.status_problems {
                         let (errors, warnings) = if self.settings.diagnostics { self.editors.lsp.counts() } else { (0, 0) };
                         let (task_errors, task_warnings) = self.tasks.counts();

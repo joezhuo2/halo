@@ -101,12 +101,6 @@ impl Workspace {
         true
     }
 
-    pub fn remove(&mut self, index: usize) {
-        if index < self.folders.len() {
-            self.folders.remove(index);
-        }
-    }
-
     pub fn reorder(&mut self, from: usize, to: usize) {
         if from < self.folders.len() && to < self.folders.len() {
             let folder = self.folders.remove(from);
@@ -237,8 +231,7 @@ mod tests {
         assert_eq!(w.find("web"), Some(1));
         w.reorder(3, 0);
         assert_eq!(w.roots()[0], PathBuf::from("/c/src"));
-        w.remove(0);
-        w.remove(9);
+        w.folders.remove(0);
         assert_eq!(w.names(), ["api", "web", "src"]);
         w.folders[1].name = Some("Frontend".into());
         assert_eq!(w.names()[1], "Frontend");
