@@ -3,6 +3,7 @@ use super::diff::{self, Hunk};
 use super::highlight::Highlighter;
 use super::{Doc, Editors, MAX_COLS, Tab, job, notice};
 use crate::command::{self, Command};
+use crate::git::LineChanges;
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
@@ -250,6 +251,7 @@ pub(super) struct Diffs {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     bases: HashMap<u64, Option<Base>>,
+    gutter: HashMap<u64, LineChanges>,
     waiting: Option<(u64, Wait)>,
     peek: Option<(u64, usize)>,
     at: Option<usize>,
@@ -259,7 +261,7 @@ pub(super) struct Diffs {
 impl Default for Diffs {
     fn default() -> Self {
         let (tx, rx) = channel();
-        Self { tx, rx, bases: HashMap::new(), waiting: None, peek: None, at: None, refresh: false }
+        Self { tx, rx, bases: HashMap::new(), gutter: HashMap::new(), waiting: None, peek: None, at: None, refresh: false }
     }
 }
 
@@ -287,14 +289,14 @@ impl Diffs {
     }
 
     fn fresh(&self, doc: u64) -> bool {
-        self.bases.get(&doc).is_some_and(|base| base.as_ref().is_some_and(|base| base.at.elapsed() < Duration::from_secs(3)))
+        self.bases.get(&doc).is_some_and(|base| base.as_ref().is_some_and(|base| self.gutter.contains_key(&doc) || base.at.elapsed() < Duration::from_secs(3)))
     }
 
     fn load_base(&mut self, doc: u64, path: &Path, ctx: &egui::Context) {
         if matches!(self.bases.get(&doc), Some(None)) {
             return;
         }
-        self.bases.insert(doc, None);
+        self.bases.entry(doc).or_insert(None);
         let (tx, ctx, path) = (self.tx.clone(), ctx.clone(), path.to_path_buf());
         std::thread::spawn(move || {
             let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -739,6 +741,17 @@ impl Editors {
         }
     }
 
+    pub(super) fn watch_changes(&mut self, doc: u64, path: &Path, changes: Option<&LineChanges>, ctx: &egui::Context) {
+        match changes {
+            Some(c) if c.is_empty() => drop(self.diffs.gutter.remove(&doc)),
+            Some(c) if !self.diffs.gutter.get(&doc).is_some_and(|seen| Arc::ptr_eq(seen, c)) => {
+                self.diffs.gutter.insert(doc, c.clone());
+                self.diffs.load_base(doc, path, ctx);
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn open_change_peek(&mut self, doc: u64, buf: &Document, tab: &mut Tab, line: usize, ctx: &egui::Context) {
         if self.diffs.fresh(doc) {
             if let Some(pos) = self.diffs.show_peek(doc, buf, line) {
@@ -1012,6 +1025,71 @@ mod tests {
 
     fn hunks(editors: &Editors) -> usize {
         active(editors).0.diff.as_ref().map_or(0, |d| d.model.hunks.len())
+    }
+
+    fn click_bar(ctx: &egui::Context, editors: &mut Editors, id: u64, line: usize) -> bool {
+        let mut tab = std::mem::take(&mut editors.groups[0].tabs[0]);
+        let doc = editors.docs.remove(&id).unwrap();
+        editors.open_change_peek(id, &doc.buf, &mut tab, line, ctx);
+        editors.docs.insert(id, doc);
+        editors.groups[0].tabs[0] = tab;
+        editors.diffs.peek.is_some() && editors.diffs.waiting.is_none()
+    }
+
+    fn prefetched(dir: &Path, ctx: &egui::Context) -> (Editors, u64) {
+        let mut editors = Editors::new();
+        editors.open(&dir.join("a.txt"));
+        editors.finish_loads();
+        let id = editors.find_doc(&dir.join("a.txt")).unwrap();
+        let changes: LineChanges = Arc::new(vec![(1, crate::git::LineChange::Modified, false)]);
+        editors.watch_changes(id, &dir.join("a.txt"), Some(&changes), ctx);
+        settle(ctx, &mut editors, "the prefetched base", |e| e.diffs.bases.get(&id).is_some_and(Option::is_some));
+        (editors, id)
+    }
+
+    #[test]
+    fn a_gutter_click_peeks_from_the_prefetched_base_without_git() {
+        let ctx = egui::Context::default();
+        let dir = repo("gutter", "one\ntwo\nthree\n");
+        std::fs::write(dir.join("a.txt"), "one\nTWO\nthree\n").unwrap();
+        let (mut editors, id) = prefetched(&dir, &ctx);
+        if let Some(Some(base)) = editors.diffs.bases.get_mut(&id) {
+            base.at = Instant::now() - Duration::from_secs(60);
+        }
+        assert!(click_bar(&ctx, &mut editors, id, 1), "the peek must open in the click frame");
+        assert_eq!(editors.diffs.peek, Some((id, 0)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore = "needs git inside the Ubuntu-24.04 WSL distro"]
+    fn times_a_gutter_click_in_wsl() {
+        let ctx = egui::Context::default();
+        let dir = PathBuf::from(format!(r"\\wsl.localhost\Ubuntu-24.04\tmp\halo-gutter-wsl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for args in [&["init", "-q", "-b", "trunk"][..], &["config", "user.email", "t@example.com"], &["config", "user.name", "t"]] {
+            crate::git::exec(&dir, args).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        crate::git::exec(&dir, &["add", "."]).unwrap();
+        crate::git::exec(&dir, &["commit", "-q", "-m", "init"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\nTWO\nthree\n").unwrap();
+
+        let mut cold = Editors::new();
+        cold.open(&dir.join("a.txt"));
+        cold.finish_loads();
+        let id = cold.find_doc(&dir.join("a.txt")).unwrap();
+        let started = Instant::now();
+        assert!(!click_bar(&ctx, &mut cold, id, 1));
+        settle(&ctx, &mut cold, "the cold peek", |e| e.diffs.peek.is_some());
+        eprintln!("click without the gutter base: {:?}", started.elapsed());
+
+        let (mut warm, id) = prefetched(&dir, &ctx);
+        let started = Instant::now();
+        assert!(click_bar(&ctx, &mut warm, id, 1));
+        eprintln!("click with the gutter base: {:?}", started.elapsed());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

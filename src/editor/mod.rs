@@ -2766,6 +2766,9 @@ impl Editors {
         if pressed_text {
             self.intel.dismiss();
         }
+        if let Some(path) = &buf.path {
+            self.watch_changes(doc_id, path, changes.as_ref(), &ctx);
+        }
         if let Some(line) = change_click {
             self.open_change_peek(doc_id, buf, tab, line, &ctx);
         }
