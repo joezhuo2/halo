@@ -1,16 +1,91 @@
 use super::buffer::{After, Document, Kind, Sel};
 use super::diff;
+use super::diff_view::hatch;
 use super::highlight::Highlighter;
-use super::merge::{Merge, Row, State};
-use super::{Editors, notice};
-use crate::command::Command;
-use crate::ui;
-use eframe::egui;
+use super::merge::{self, Merge, Row, State};
+use super::{Doc, Editors, MAX_COLS, Tab, job, notice};
+use crate::command::{self, Command};
+use crate::settings::Settings;
+use crate::theme::Theme;
+use crate::ui::{self, icons};
+use eframe::egui::text::{CCursor, TextFormat};
+use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Painter, Rect, RichText, Stroke, Ui, UiBuilder, pos2, vec2};
 use ropey::Rope;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::Duration;
+
+const BAR: f32 = 28.0;
+const HEAD: f32 = 22.0;
+
+struct Areas {
+    bar: Rect,
+    top: Rect,
+    panes: Vec<(usize, Rect, Rect)>,
+    head: Rect,
+    result: Rect,
+}
+
+fn areas(body: Rect, base: bool) -> Areas {
+    let bar = Rect::from_min_size(body.min, vec2(body.width(), BAR));
+    let split = (bar.bottom() + (body.bottom() - bar.bottom()) * 0.45).round();
+    let top = Rect::from_min_max(pos2(body.left(), bar.bottom()), pos2(body.right(), split));
+    let order: &[usize] = if base { &[0, 2, 1] } else { &[0, 1] };
+    let w = top.width() / order.len() as f32;
+    let panes = order
+        .iter()
+        .enumerate()
+        .map(|(i, pane)| {
+            let r = Rect::from_x_y_ranges(top.left() + i as f32 * w..=top.left() + (i + 1) as f32 * w, top.y_range());
+            (*pane, r.with_max_y(r.top() + HEAD), r.with_min_y(r.top() + HEAD))
+        })
+        .collect();
+    let head = Rect::from_x_y_ranges(body.x_range(), split..=split + HEAD);
+    Areas { bar, top, panes, head, result: body.with_min_y(head.bottom()) }
+}
+
+fn side_color(theme: &Theme, pane: usize) -> Color32 {
+    [theme.accent, theme.added, theme.deleted][pane]
+}
+
+fn state_color(theme: &Theme, state: State) -> Color32 {
+    match state {
+        State::Base => theme.warning,
+        State::Current => theme.added,
+        State::Incoming => theme.accent,
+        State::Both(_) => ui::mix(theme.added, theme.accent, 0.5),
+        State::Edited => theme.modified,
+    }
+}
+
+fn tip(cmd: &Command, ctx: &egui::Context) -> String {
+    let alias = match cmd {
+        Command::MergeNextConflict => Command::NextChange,
+        Command::MergePrevConflict => Command::PrevChange,
+        other => other.clone(),
+    };
+    match command::shortcut_text(ctx, &alias) {
+        Some(keys) => format!("{} ({keys})", cmd.label()),
+        None => cmd.label().to_owned(),
+    }
+}
+
+pub(super) fn tint(painter: &Painter, theme: &Theme, m: &MergeTab, line: usize, band: Rect) {
+    let k = m.ranges.partition_point(|r| r.end <= line);
+    let Some(chunk) = m.model.chunks.get(k).filter(|c| c.kind == merge::Kind::Conflict && m.ranges[k].start <= line) else { return };
+    let alpha = if chunk.state == State::Base { 0.16 } else { 0.07 };
+    painter.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(state_color(theme, chunk.state), alpha));
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_pads(painter: &Painter, theme: &Theme, pads: &[(usize, u32)], starts: &[u32], (first, last): (usize, usize), top: f32, clip: Rect, line_h: f32) {
+    for &(line, count) in pads.iter().filter(|p| p.0 >= first && p.0 <= last + 1) {
+        let y = top + (starts[line.min(starts.len() - 1)] - count) as f32 * line_h;
+        hatch(painter, Rect::from_min_size(pos2(clip.left(), y), vec2(clip.width(), count as f32 * line_h)), theme);
+    }
+}
 
 pub(super) struct Stages {
     top: PathBuf,
@@ -239,6 +314,152 @@ impl Editors {
         (self.groups[g].active, self.want_focus) = (t, true);
     }
 
+    pub(super) fn merge_frame(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, doc: &Doc, tab: &mut Tab, pending: &mut Vec<Command>) -> Rect {
+        let Some(m) = tab.merge.as_mut() else { return body };
+        m.sync(&doc.buf);
+        let a = areas(body, m.base);
+        let ctx = ui.ctx().clone();
+        let painter = ui.painter();
+        let border = Stroke::new(1.0, theme.border);
+        painter.rect_filled(a.bar, CornerRadius::ZERO, theme.panel);
+        painter.hline(a.bar.x_range(), a.bar.bottom() - 0.5, border);
+        let small = FontId::proportional(12.0);
+        let titles = [("Incoming", m.names[0].as_str()), ("Current", m.names[1].as_str()), ("Base", "")];
+        for (pane, head, _) in &a.panes {
+            painter.rect_filled(*head, CornerRadius::ZERO, ui::mix(theme.panel, side_color(theme, *pane), 0.12));
+            let (label, name) = titles[*pane];
+            let x = painter.text(head.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, label, small.clone(), theme.text).right();
+            painter.text(pos2(x + 8.0, head.center().y), Align2::LEFT_CENTER, name, small.clone(), theme.text_dim);
+            if head.left() > a.top.left() {
+                painter.vline(head.left(), a.top.y_range(), border);
+            }
+        }
+        painter.rect_filled(a.head, CornerRadius::ZERO, theme.panel);
+        painter.hline(a.head.x_range(), a.head.top() + 0.5, border);
+        let x = painter.text(a.head.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, "Result", small.clone(), theme.text).right();
+        painter.text(pos2(x + 8.0, a.head.center().y), Align2::LEFT_CENTER, &doc.buf.title, small, theme.text_dim);
+        let status = match (m.model.conflicts().count(), m.model.remaining()) {
+            (0, _) => "No conflicts".to_owned(),
+            (_, 1) => "1 conflict remaining".to_owned(),
+            (_, left) => format!("{left} conflicts remaining"),
+        };
+        let base_icon = if m.base { icons::EYE_SLASH } else { icons::EYE };
+        ui.scope_builder(UiBuilder::new().max_rect(a.bar.shrink2(vec2(8.0, 0.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if ui.button("Complete Merge").on_hover_text(tip(&Command::MergeComplete, &ctx)).clicked() {
+                pending.push(Command::MergeComplete);
+            }
+            ui.add_space(6.0);
+            ui.label(RichText::new(status).size(12.0).color(theme.text_dim));
+            for (icon, cmd) in [(icons::ARROW_DOWN, Command::MergeNextConflict), (icons::ARROW_UP, Command::MergePrevConflict), (base_icon, Command::MergeToggleBase)] {
+                if ui::icon_button(ui, theme, icon, 22.0, false, &tip(&cmd, &ctx)).clicked() {
+                    pending.push(cmd);
+                }
+            }
+            ui.add_space(6.0);
+            for (label, cmd) in [("Accept All Current", Command::MergeAcceptAllCurrent), ("Accept All Incoming", Command::MergeAcceptAllIncoming)] {
+                if ui.button(RichText::new(label).size(12.0)).clicked() {
+                    pending.push(cmd);
+                }
+            }
+        });
+        a.result
+    }
+
+    pub(super) fn merge_after(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, settings: &Settings, doc: &mut Doc, tab: &mut Tab) {
+        let Some(m) = tab.merge.as_mut() else { return };
+        let a = areas(body, m.base);
+        let font = FontId::monospace(settings.font_size);
+        let number_font = FontId::monospace(settings.font_size - 1.0);
+        let char_w = ui.ctx().fonts_mut(|f| f.glyph_width(&font, 'm'));
+        let (line_h, scroll) = (m.line_h, m.scroll);
+        let first = (scroll / line_h).floor().max(0.0) as usize;
+        let mut first_row = vec![None; m.model.chunks.len()];
+        for (r, row) in m.rows.iter().enumerate() {
+            first_row[row.chunk].get_or_insert(r);
+        }
+        for (pane, _, rect) in &a.panes {
+            let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+            painter.rect_filled(*rect, CornerRadius::ZERO, theme.bg);
+            let shown = &m.rows[first.min(m.rows.len())..(first + (rect.height() / line_h) as usize + 2).min(m.rows.len())];
+            let lines = shown.iter().filter_map(|r| r.lines[*pane]);
+            let range = lines.clone().min().unwrap_or(0)..lines.max().map_or(0, |l| l + 1);
+            let p = &mut m.panes[*pane];
+            if !p.hl.ensure(&p.rope, range, theme, Duration::from_millis(4)) {
+                ui.ctx().request_repaint();
+            }
+            let side: &[String] = [&m.model.incoming, &m.model.current, &m.model.base][*pane];
+            let gutter = (side.len().to_string().len().max(3) as f32 + 2.0) * char_w + 14.0;
+            for (i, row) in shown.iter().enumerate() {
+                let band = Rect::from_min_size(pos2(rect.left(), rect.top() + (first + i) as f32 * line_h - scroll), vec2(rect.width(), line_h));
+                let Some(line) = row.lines[*pane] else {
+                    hatch(&painter, band, theme);
+                    continue;
+                };
+                let chunk = &m.model.chunks[row.chunk];
+                let text: String = side[line].trim_end_matches('\n').chars().take(MAX_COLS).collect();
+                let galley = painter.layout_job(job(&text, 0..text.len(), p.hl.get(line), &font, theme.text, &[], &[], &TextFormat::default()));
+                let alpha = match chunk.kind {
+                    merge::Kind::Conflict if chunk.state == State::Base => Some(0.14),
+                    merge::Kind::Conflict => Some(0.06),
+                    merge::Kind::Incoming if *pane == 0 => Some(0.06),
+                    merge::Kind::Current if *pane == 1 => Some(0.06),
+                    _ => None,
+                };
+                if let Some(alpha) = alpha {
+                    let color = side_color(theme, *pane);
+                    painter.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(color, alpha));
+                    for r in m.marks.get(&(*pane, line)).into_iter().flatten() {
+                        let at = |col: usize| rect.left() + gutter + galley.pos_from_cursor(CCursor::new(col)).min.x;
+                        painter.rect_filled(Rect::from_x_y_ranges(at(r.start)..=at(r.end), band.y_range()), CornerRadius::ZERO, ui::with_alpha(color, alpha * 2.2));
+                    }
+                }
+                let number = ui::with_alpha(theme.text_dim, 0.75);
+                painter.text(pos2(rect.left() + gutter - 10.0 - char_w, band.center().y), Align2::RIGHT_CENTER, line + 1, number_font.clone(), number);
+                painter.galley(pos2(rect.left() + gutter, band.top() + (line_h - galley.size().y) / 2.0), galley, theme.text);
+            }
+        }
+        let mut chosen = None;
+        for k in m.model.conflicts() {
+            let (Some(r0), state) = (first_row[k], m.model.chunks[k].state) else { continue };
+            for (pane, _, rect) in a.panes.iter().filter(|p| p.0 < 2) {
+                let y = rect.top() + r0 as f32 * line_h - scroll;
+                if y < rect.top() - 1.0 || y + line_h > rect.bottom() {
+                    continue;
+                }
+                let current = *pane == 1;
+                let checked = matches!((state, current), (State::Current | State::Both(_), true) | (State::Incoming | State::Both(_), false));
+                let r = Rect::from_min_size(pos2(rect.right() - 236.0, y + 1.0), vec2(230.0, line_h - 2.0));
+                ui.painter().rect_filled(r, CornerRadius::same(4), theme.raised);
+                ui.scope_builder(UiBuilder::new().max_rect(r.shrink2(vec2(6.0, 0.0))).layout(Layout::right_to_left(Align::Center)).id_salt(("merge_pick", k, *pane)), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if ui.small_button(RichText::new("Accept Both").size(12.0)).clicked() {
+                        chosen = Some((k, State::Both(current)));
+                    }
+                    let mut on = checked;
+                    if ui.checkbox(&mut on, RichText::new(if current { "Accept Current" } else { "Accept Incoming" }).size(12.0)).clicked() {
+                        chosen = Some((k, merge::toggle(state, current)));
+                    }
+                });
+            }
+            let y = m.text_top + r0 as f32 * line_h - scroll;
+            if state != State::Base && y >= a.result.top() - 1.0 && y + line_h <= a.result.bottom() {
+                let r = Rect::from_min_size(pos2(a.result.right() - 124.0, y + 1.0), vec2(104.0, line_h - 2.0));
+                if ui.put(r, egui::Button::new(RichText::new("Reset to Base").size(12.0)).small()).clicked() {
+                    chosen = Some((k, State::Base));
+                }
+            }
+        }
+        let delta = ui.input(|i| i.smooth_scroll_delta.y);
+        if delta != 0.0 && ui.rect_contains_pointer(a.top) {
+            tab.set_scroll = Some((scroll - delta).max(0.0));
+        }
+        if let Some((k, state)) = chosen {
+            m.set(&mut doc.buf, &mut tab.sels, &[(k, state)]);
+            self.want_focus = true;
+        }
+    }
+
     pub(super) fn merge_exec(&mut self, cmd: &Command, ctx: &egui::Context) -> bool {
         use Command::*;
         if *cmd == MergeOpen {
@@ -359,8 +580,28 @@ impl Editors {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::Settings;
-    use std::time::Duration;
+    use eframe::egui::Event;
+
+    fn frame(ctx: &egui::Context, editors: &mut Editors, events: Vec<Event>) -> Vec<Command> {
+        let (theme, git, settings) = (Theme::dark(), crate::git::Git::new(), Settings::default());
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 700.0))), events, focused: true, ..Default::default() };
+        let mut cmds = vec![];
+        let mut out = ctx.run_ui(input, |ui| editors.ui(ui, &theme, &settings, &git, &mut cmds));
+        out.textures_delta.clear();
+        cmds
+    }
+
+    fn settle(ctx: &egui::Context, editors: &mut Editors, what: &str, done: impl Fn(&Editors) -> bool) -> Vec<Command> {
+        let mut cmds = vec![];
+        for _ in 0..800 {
+            cmds.extend(frame(ctx, editors, vec![]));
+            if done(editors) {
+                return cmds;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out waiting for {what}: {:?}", editors.banner);
+    }
 
     fn conflict_repo(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("halo-merge-{name}-{}", std::process::id()));
@@ -378,7 +619,7 @@ mod tests {
         run(&["add", "."]).unwrap();
         run(&["commit", "-q", "-m", "base"]).unwrap();
         run(&["checkout", "-q", "-b", "feature"]).unwrap();
-        commit("one\nTWO theirs\nthree\nfour\nFIVE\n", "theirs");
+        commit("one\nTWO theirs\nand more\nthree\nfour\nFIVE\n", "theirs");
         run(&["checkout", "-q", "trunk"]).unwrap();
         commit("one\nTWO ours\nthree\nfour\nfive\n", "ours");
         assert!(run(&["merge", "-q", "feature"]).is_err());
@@ -390,7 +631,7 @@ mod tests {
         let dir = conflict_repo("stages");
         let found = stages(&dir.join("a.txt")).unwrap();
         assert_eq!(found.rel, "a.txt");
-        assert_eq!(found.texts, ["one\ntwo\nthree\nfour\nfive\n", "one\nTWO ours\nthree\nfour\nfive\n", "one\nTWO theirs\nthree\nfour\nFIVE\n"].map(str::to_owned));
+        assert_eq!(found.texts, ["one\ntwo\nthree\nfour\nfive\n", "one\nTWO ours\nthree\nfour\nfive\n", "one\nTWO theirs\nand more\nthree\nfour\nFIVE\n"].map(str::to_owned));
         assert_eq!(found.names, ["feature".to_owned(), "trunk".to_owned()]);
         std::fs::write(dir.join("b.txt"), "b").unwrap();
         assert!(stages(&dir.join("b.txt")).err().is_some_and(|e| e.contains("no merge conflict")));
@@ -434,6 +675,51 @@ mod tests {
         assert!(editors.take_merge_refresh());
         assert_eq!(crate::git::exec(&dir, &["diff", "--name-only", "--diff-filter=U"]).unwrap(), "");
         assert_eq!(crate::git::exec(&dir, &["show", ":a.txt"]).unwrap(), "one\nTWO ours\nthree\nfour\nFIVE\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolves_a_conflict_in_the_merge_editor_tab_and_completes() {
+        let dir = conflict_repo("editor");
+        let (ctx, settings) = (egui::Context::default(), Settings::default());
+        let mut editors = Editors::new();
+        editors.open_merge(&dir.join("a.txt"), &ctx);
+        settle(&ctx, &mut editors, "the merge tab", |e| e.groups[0].tabs.first().is_some_and(|t| t.merge.is_some()));
+        frame(&ctx, &mut editors, vec![]);
+        let text = |e: &Editors| e.docs[&e.groups[0].tabs[0].doc].buf.rope.to_string();
+        let tab = &editors.groups[0].tabs[0];
+        let m = tab.merge.as_ref().unwrap();
+        assert_eq!((m.title.as_str(), m.names.clone(), m.model.remaining()), ("Merging: a.txt", ["feature".to_owned(), "trunk".to_owned()], 1));
+        assert_eq!((tab.rows.1.clone(), m.rows.len(), m.pads.clone()), (vec![0, 1, 3, 4, 5, 6, 7], 6, vec![(2, 1)]));
+        assert_eq!(editors.docs[&tab.doc].buf.line_of(tab.sels[0].head), 1);
+        assert_eq!(text(&editors), "one\ntwo\nthree\nfour\nFIVE\n");
+
+        editors.exec(&Command::MergeToggleBase, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        assert!(editors.groups[0].tabs[0].merge.as_ref().is_some_and(|m| m.base && m.rows[1].lines == [Some(1), Some(1), Some(1), Some(1)]));
+        editors.exec(&Command::MergeAcceptIncoming, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        assert_eq!(text(&editors), "one\nTWO theirs\nand more\nthree\nfour\nFIVE\n");
+        let tab = &editors.groups[0].tabs[0];
+        assert_eq!((tab.rows.1.clone(), tab.merge.as_ref().unwrap().model.remaining()), (vec![0, 1, 2, 3, 4, 5, 6, 7], 0));
+
+        editors.exec(&Command::GoTo(3, 1), &settings, &ctx);
+        frame(&ctx, &mut editors, vec![Event::Text("X".into())]);
+        frame(&ctx, &mut editors, vec![]);
+        let resolved = "one\nTWO theirs\nXand more\nthree\nfour\nFIVE\n";
+        assert_eq!(text(&editors), resolved);
+        let m = editors.groups[0].tabs[0].merge.as_ref().unwrap();
+        assert_eq!((m.model.chunks[1].state, m.model.remaining()), (State::Edited, 0));
+        editors.exec(&Command::NextChange, &settings, &ctx);
+        assert!(editors.banner.as_ref().is_some_and(|b| b.0 == "No unresolved conflicts."));
+
+        editors.exec(&Command::MergeComplete, &settings, &ctx);
+        let cmds = settle(&ctx, &mut editors, "the staged merge", |e| e.groups[0].tabs.is_empty());
+        let cmds = [cmds, frame(&ctx, &mut editors, vec![])].concat();
+        assert!(cmds.contains(&Command::RefreshExplorer), "{cmds:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), resolved);
+        assert_eq!(crate::git::exec(&dir, &["show", ":a.txt"]).unwrap(), resolved);
+        assert_eq!(crate::git::exec(&dir, &["diff", "--name-only", "--diff-filter=U"]).unwrap(), "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
