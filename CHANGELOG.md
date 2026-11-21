@@ -6,6 +6,35 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-20
+
+### Added
+
+- **Timeline** section under the outline: the commits that changed the active
+  file, newest first, with a refresh button. Click a commit to open its diff
+  of the file.
+- The source control sections (changes, pull requests and commits) can be
+  minimized and resized by dragging the line between them.
+- Keyboard Shortcuts in the settings are grouped by category.
+- Links in hover descriptions open when clicked.
+- Loading placeholders in the outline, the timeline, source control, search
+  results, the reference counts above declarations, and the accounts and WSL
+  lists. The outline shows a spinner while its symbols load.
+- Animations for collapsing folders in the explorer, for the explorer root,
+  and for opening and closing the side bar sections. Settings checkboxes are
+  animated.
+
+### Changed
+
+- The outline opens and closes without an active file and says why it is
+  empty.
+- Notices such as "No definitions found." go away after a few seconds. File
+  errors stay until they are dismissed.
+- Saving a file, or pressing the save key on an unchanged one, keeps its
+  preview tab.
+- The problems item in the status bar, and `Ctrl+Shift+M`, close the Problems
+  panel when it is already showing.
+
 ## [0.1.2] - 2026-11-20
 
 ### Added
@@ -101,7 +130,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/joezhuo2/halo/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/joezhuo2/halo/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/joezhuo2/halo/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/joezhuo2/halo/releases/tag/v0.1.0
