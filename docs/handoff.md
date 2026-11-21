@@ -6,8 +6,8 @@ Written 2026-11-20. Read [requirements.md](requirements.md), [decisions.md](deci
 
 - Repository: `C:\Users\Joe\Documents\halo`, remote `origin` = https://github.com/joezhuo2/halo.
 - Branches: `main` was created from `m1-shell` (all of milestone 1) and pushed. Milestone 2 is on `m2-scm` and milestone 3 on `m3-ai` (branched from `m2-scm`); neither is pushed or merged. Milestone 4 is on `m4-packaging` (branched from `m3-ai`), also not pushed.
-- Build: `cargo build` is warning-free. `cargo test` passes 35 tests; `cargo test -- --ignored` adds one that needs `rust-analyzer`.
-- Version 0.1.1 (language servers and the community files) is on `main`, tagged `v0.1.1`. The Release workflow builds it and leaves a draft GitHub release to publish.
+- Build: `cargo build` is warning-free. `cargo test` passes 56 tests; `cargo test -- --ignored` adds one that needs `rust-analyzer`.
+- Version 0.1.2 (the editing features of M6 and auto update) is on `main`, tagged `v0.1.2`. The Release workflow builds it and leaves a draft GitHub release to publish. Auto update only sees published releases. The M6 features are covered by tests; they were not checked by hand in the running app.
 - Run: `cargo run --release`, or `target\release\halo.exe [folder-or-file]`.
 - Config written by the app: `%APPDATA%\halo\settings.json`, `session.json` and, once opened, `keybindings.json`. eframe also stores window size and position under `%APPDATA%\Halo`.
 
