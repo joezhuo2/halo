@@ -45,7 +45,7 @@ pub struct Halo {
     pub search: Search,
     pub find: FindPanel,
     pub wsl: Wsl,
-    notices: Vec<String>,
+    pub jobs: crate::theme_import::Jobs,
     pub page: crate::settings_page::SettingsPage,
     font: String,
     pub zone: Zone,
@@ -62,6 +62,7 @@ pub struct Halo {
     update: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pub updated: Option<String>,
     pub debug: crate::debug::Debug,
+    pub testing: crate::testing::Testing,
 }
 
 impl Halo {
@@ -73,6 +74,7 @@ impl Halo {
         crate::editor::configure(&settings);
         let theme = Theme::of(&settings);
         theme.apply(ctx);
+        crate::icon_theme::select(&settings.icon_theme, &crate::settings::dir());
 
         let session = Session::load();
         let font = format!("{}\n{}", settings.font_family, settings.terminal_font_family);
@@ -93,7 +95,7 @@ impl Halo {
             search: Search::default(),
             find: FindPanel::default(),
             wsl: Wsl::default(),
-            notices: vec![],
+            jobs: Default::default(),
             page: Default::default(),
             font,
             zone: Zone::Editor,
@@ -110,6 +112,7 @@ impl Halo {
             update: None,
             updated: None,
             debug: Default::default(),
+            testing: Default::default(),
         };
         app.editors.config = app.settings.clone();
         if app.settings.auto_update && !cfg!(debug_assertions) && std::env::var_os("HALO_COMMANDS").is_none() {
@@ -119,6 +122,7 @@ impl Halo {
         let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().or_else(|_| std::path::absolute(&p)).ok()).map(strip_unc);
         let restore = app.settings.restore_session;
         let last = app.session.folder.clone().filter(|f| restore && f.is_dir());
+        let arg_is_none = arg.is_none();
         let (folder, files) = match arg {
             Some(path) if path.is_dir() => (Some(path), vec![]),
             Some(path) => (last, vec![path]),
@@ -127,8 +131,14 @@ impl Halo {
         let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
         app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
         app.set_folder(folder, ctx);
+        if arg_is_none && restore {
+            let pins: Vec<_> = app.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
+            app.editors.restore_pins(&pins);
+        }
         for file in files.iter().filter(|f| f.is_file()) {
-            app.editors.open_kept(file);
+            if !app.editors.open_paths().contains(file) {
+                app.editors.open_kept(file);
+            }
         }
         app.editors.restore(&app.session.backups);
         app
@@ -163,6 +173,7 @@ impl Halo {
     fn save_session(&mut self) {
         let backups = crate::settings::dir().join("backups");
         self.session.files = self.editors.open_paths();
+        self.session.pinned = self.editors.pinned_paths();
         self.session.backups = if self.settings.hot_exit { self.editors.backup(&backups) } else { vec![] };
         if !self.settings.hot_exit {
             let _ = std::fs::remove_dir_all(backups);
@@ -181,15 +192,12 @@ impl Halo {
             self.zoom_level = Some(self.settings.zoom_level);
             ctx.set_zoom_factor(1.2f32.powf(self.settings.zoom_level).clamp(0.5, 3.0));
         }
-        self.explorer.confirm = self.settings.confirm_delete;
-        if self.explorer.sort != self.settings.explorer_sort {
-            self.explorer.sort = self.settings.explorer_sort.clone();
-            self.explorer.refresh();
-        }
         self.theme = Theme::of(&self.settings);
         self.theme.apply(ctx);
+        crate::icon_theme::select(&self.settings.icon_theme, &crate::settings::dir());
         crate::terminal::configure(&self.settings);
-        let font = format!("{}\n{}", self.settings.font_family, self.settings.terminal_font_family);
+        let font = format!("{}
+{}", self.settings.font_family, self.settings.terminal_font_family);
         if self.font != font {
             self.font = font;
             ctx.set_fonts(crate::theme::fonts(&self.settings.font_family, &self.settings.terminal_font_family));
@@ -222,7 +230,13 @@ impl Halo {
                     self.editors.open(&path);
                 }
             }
-            OpenDiff(title, args) => self.git.diff(title, args),
+            OpenDiff(title, args) => {
+                let inline = !self.settings.diff_side_by_side;
+                if !self.git.top().is_some_and(|top| self.editors.compare(&title, &args, top, inline, ctx)) {
+                    self.git.diff(title, args);
+                }
+            }
+            OpenMerge(path) => self.editors.open_merge(&path, ctx),
             CloseFolder => self.set_folder(None, ctx),
             OpenSettings => self.page.open = true,
             OpenSnippets => {
@@ -276,21 +290,26 @@ impl Halo {
             ShowExplorer | ShowSourceControl | FindInFiles => {
                 let shown = (self.session.search, self.session.source_control && !self.session.search);
                 let wanted = (cmd == FindInFiles, cmd == ShowSourceControl);
-                if self.session.sidebar && shown == wanted && cmd != FindInFiles && !self.session.debug_view {
+                if self.session.sidebar && shown == wanted && cmd != FindInFiles && !self.session.debug_view && !self.session.test_view {
                     self.session.sidebar = false;
                 } else {
                     self.session.sidebar = true;
                     (self.session.search, self.session.source_control) = wanted;
                 }
-                self.session.debug_view = false;
+                (self.session.debug_view, self.session.test_view) = (false, false);
                 if cmd == FindInFiles {
                     self.find.focus();
                 }
             }
             ShowRunAndDebug => {
                 self.session.sidebar = !(self.session.sidebar && self.session.debug_view);
-                (self.session.debug_view, self.session.search, self.session.source_control) = (true, false, false);
+                (self.session.debug_view, self.session.search, self.session.source_control, self.session.test_view) = (true, false, false, false);
             }
+            ShowTesting => {
+                (self.session.sidebar, self.session.test_view, self.session.debug_view, self.session.search, self.session.source_control) = (true, true, false, false, false);
+            }
+            RunAllTests | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
+            | RunAllTestsWithCoverage | ToggleCoverageDisplay => self.testing_exec(&cmd, ctx),
             StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver | StepInto | StepOut
             | RemoveAllBreakpoints | AddWatch | AddConfiguration => {
                 if cmd == AddWatch {
@@ -318,6 +337,15 @@ impl Halo {
                 self.settings.save();
                 self.apply_settings(ctx);
             }
+            SetTheme(name) => {
+                self.theme_fade = Some((ctx.input(|i| i.time), self.theme.bg));
+                self.settings.theme = name;
+                self.settings.save();
+                self.apply_settings(ctx);
+            }
+            ImportTheme | BrowseThemes | SelectTheme | ImportThemeFile(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
+            | ImportIconThemeFile(_) | SetIconTheme(_) => self.theme_command(cmd, ctx),
+            ZoomIn | ZoomOut | ZoomReset if self.zone == Zone::Editor && self.editors.image_zoom(match cmd { ZoomIn => Some(1.25), ZoomOut => Some(0.8), _ => None }) => {}
             ZoomIn => ctx.set_zoom_factor((ctx.zoom_factor() + 0.1).min(3.0)),
             ZoomOut => ctx.set_zoom_factor((ctx.zoom_factor() - 0.1).max(0.5)),
             ZoomReset => ctx.set_zoom_factor(1.0),
@@ -331,12 +359,37 @@ impl Halo {
                 self.session.panel = !(self.session.panel && self.bottom.showing_problems());
                 self.bottom.show_problems();
             }
+            ShowOutput | SelectOutputChannel(_) => {
+                if let SelectOutputChannel(name) = cmd {
+                    crate::output::select(name);
+                }
+                self.session.panel = true;
+                self.bottom.show_output();
+            }
+            ShowOutputChannels => self.search.pick("Select an Output Channel", crate::output::picks()),
+            ClearOutput => crate::output::clear_current(),
+            OpenOutputInEditor => self.editors.open_untitled(&crate::output::current_text()),
+            ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => crate::notifications::exec(&cmd),
             Git(op) | GitAt(op, _) => {
                 let target = if let GitAt(_, value) = cmd { Some(value) } else { None };
                 (self.session.sidebar, self.session.source_control, self.session.search) = (true, true, false);
                 self.scm.start(op, target, &mut self.git, ctx, &mut self.cmds);
             }
             GitSync => self.git.sync(),
+            CutFiles | CopyFiles | PasteFiles => {
+                self.explorer.exec(&cmd, ctx);
+            }
+            FilterExplorer | FocusOpenEditors => {
+                (self.session.sidebar, self.session.debug_view, self.session.search, self.session.source_control) = (true, false, false, false);
+                if cmd == FilterExplorer {
+                    self.explorer.open_filter();
+                } else {
+                    self.explorer.focus_open_editors();
+                }
+            }
+            ShowTab(group, tab) => self.editors.show_tab(group, tab),
+            CloseTab(group, tab) => self.editors.close_open_tab(group, tab),
+            CloseAllEditors => self.editors.close_all_tabs(),
             RefreshExplorer => {
                 self.explorer.refresh();
                 self.git.refresh(ctx);
@@ -346,6 +399,36 @@ impl Halo {
                 self.explorer.refresh();
                 self.git.refresh(ctx);
             }
+            RunRecentLine => {
+                let lines = match self.editors.active_terminal().filter(|_| self.zone == Zone::Editor) {
+                    Some(terminal) => terminal.recent(),
+                    None => self.bottom.recent(),
+                };
+                let items: Vec<_> = lines.into_iter().map(|line| (line.clone(), String::new(), RunCommandLine(line))).collect();
+                match items.is_empty() {
+                    true => ui::notify("No commands were seen in the active terminal yet. It needs shell integration."),
+                    false => self.search.pick("Select a command to run", items),
+                }
+            }
+            ChangeTerminalColor => {
+                let items = crate::terminal::color_names().map(|(color, name)| (name.to_owned(), String::new(), SetTerminalColor(color)));
+                self.search.pick("Select a color for the terminal", items.into());
+            }
+            NewTerminalInEditor => match self.bottom.create(&self.settings, cwd.as_deref(), ctx) {
+                Ok(terminal) => self.editors.add_terminal(terminal),
+                Err(error) => ui::notify(error),
+            },
+            MoveTerminalToEditor => match self.bottom.take_active() {
+                Some(terminal) => self.editors.add_terminal(terminal),
+                None => ui::notify("There is no terminal in the panel to move. Task terminals stay in the panel."),
+            },
+            MoveTerminalToPanel => match self.editors.take_terminal() {
+                Some(terminal) => {
+                    self.bottom.adopt(terminal);
+                    self.session.panel = true;
+                }
+                None => ui::notify("The active editor is not a terminal."),
+            },
             NewTerminal | NewTerminalWith(_) | SplitTerminal => {
                 self.session.panel = true;
                 self.bottom.exec(&cmd, &self.settings, cwd.as_deref(), ctx);
@@ -357,6 +440,7 @@ impl Halo {
             other if self.exec_compare(&other, ctx) => {}
             other => {
                 let _ = match self.zone {
+                    Zone::Explorer if self.explorer.exec(&other, ctx) => true,
                     Zone::Ai => {
                         self.ai.exec(&other, ctx)
                             || self.editors.exec(&other, &self.settings, ctx)
@@ -388,7 +472,7 @@ impl Halo {
 
     fn global_shortcuts(&mut self, ctx: &egui::Context) {
         let bindings = command::bindings();
-        let editor = self.zone == Zone::Editor;
+        let editor = self.zone == Zone::Editor && !self.editors.terminal_focused();
         let keys = command::context();
         ctx.input_mut(|i| {
             let Some(first) = self.chord else {
@@ -415,7 +499,7 @@ impl Halo {
     }
 
     fn when_keys(&self, ctx: &egui::Context) -> serde_json::Map<String, serde_json::Value> {
-        let terminal = self.bottom.has_focus() || self.ai.has_focus();
+        let terminal = self.bottom.has_focus() || self.ai.has_focus() || self.editors.terminal_focused();
         let typing = ctx.memory(|m| m.focused().is_some()) && !terminal;
         let debug = match (self.debug.active(), self.editors.marks.stopped.is_some()) {
             (false, _) => "inactive",
@@ -425,7 +509,7 @@ impl Halo {
         let explorer = self.explorer.has_focus();
         let side = self.session.sidebar && (explorer || self.zone == Zone::Explorer);
         let mut keys: serde_json::Map<String, serde_json::Value> = [
-            ("editorTextFocus", self.editors.has_focus().into()),
+            ("editorTextFocus", (self.editors.has_focus() && !terminal).into()),
             ("editorFocus", (self.zone == Zone::Editor && !self.editors.is_empty() && !terminal).into()),
             ("terminalFocus", terminal.into()),
             ("inDebugMode", self.debug.active().into()),
@@ -477,7 +561,7 @@ impl Halo {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 let (search, source) = (self.session.search, self.session.source_control && !self.session.search);
-                let explorer = self.session.sidebar && !search && !source && !self.session.debug_view;
+                let explorer = self.session.sidebar && !search && !source && !self.session.debug_view && !self.session.test_view;
                 let source = self.session.sidebar && source;
                 if activity_item(ui, &theme, icons::FILES, explorer, "Explorer (Ctrl+Shift+E)").clicked() {
                     self.cmds.push(Command::ShowExplorer);
@@ -490,6 +574,10 @@ impl Halo {
                 }
                 if activity_item(ui, &theme, icons::BUG, self.session.sidebar && self.session.debug_view, "Run and Debug (Ctrl+Shift+D)").clicked() {
                     self.cmds.push(Command::ShowRunAndDebug);
+                }
+                let testing = self.session.sidebar && self.session.test_view && !self.session.debug_view;
+                if activity_item(ui, &theme, icons::FLASK, testing, "Testing").clicked() {
+                    self.cmds.push(if testing { Command::ToggleSidebar } else { Command::ShowTesting });
                 }
                 ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                     if activity_item(ui, &theme, icons::GEAR, false, "Settings (Ctrl+,)").clicked() {
@@ -519,6 +607,9 @@ impl Halo {
                 if self.session.debug_view {
                     return self.debug_view(ui);
                 }
+                if self.session.test_view {
+                    return self.testing_view(ui);
+                }
                 if self.session.search {
                     let folder = self.session.folder.clone();
                     return self.find.ui(ui, &self.theme, folder.as_deref(), &mut self.editors, &mut self.cmds);
@@ -535,7 +626,8 @@ impl Halo {
                 let split = (lower - size(outline_t, 0.4 - 0.1 * timeline_t)).max(full.top() + 80.0).min(lower - 24.0);
                 ui.scope_builder(UiBuilder::new().max_rect(full.with_max_y(split)), |ui| {
                     ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                    self.explorer.ui(ui, &self.theme, &self.git, active.as_deref(), &mut self.cmds);
+                    let tabs = self.editors.open_tabs();
+                    self.explorer.ui(ui, &self.theme, &self.git, active.as_deref(), &self.settings, &tabs, &mut self.cmds);
                 });
                 ui.scope_builder(UiBuilder::new().max_rect(full.with_min_y(split).with_max_y(lower)), |ui| {
                     ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
@@ -586,13 +678,34 @@ impl Halo {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(self.theme.bg))
             .show(ui, |ui| {
+                let area = ui.max_rect();
                 if self.editors.is_empty() {
                     self.welcome(ui);
                 } else {
                     self.editors.ai_open = self.session.ai;
                     self.editors.ui(ui, &self.theme, &self.settings, &self.git, &mut self.cmds);
                 }
+                self.drop_files(ui, area);
             });
+    }
+
+    fn drop_files(&mut self, ui: &mut Ui, area: egui::Rect) {
+        let ctx = ui.ctx().clone();
+        let pointer = ctx.pointer_latest_pos();
+        if self.explorer.dragging() && pointer.is_some_and(|p| area.contains(p)) {
+            ui.painter().rect_stroke(area, 0, Stroke::new(1.0, self.theme.accent), StrokeKind::Inside);
+        }
+        let mut files = vec![];
+        if let Some((paths, _)) = self.explorer.take_drop().filter(|(_, pos)| area.contains(*pos)) {
+            files.extend(paths);
+        }
+        if pointer.is_none_or(|p| area.contains(p)) {
+            let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
+            files.extend(dropped.into_iter().map(|f| f.path().to_path_buf()));
+        }
+        for file in files.iter().filter(|f| f.is_file()) {
+            self.editors.open_kept(file);
+        }
     }
 
     fn welcome(&mut self, ui: &mut Ui) {
@@ -633,35 +746,7 @@ impl Halo {
         });
     }
 
-    fn notices(&mut self, ctx: &egui::Context) {
-        self.notices.extend(ui::take_notices());
-        if self.notices.is_empty() {
-            return;
-        }
-        let theme = self.theme.clone();
-        egui::Area::new(Id::new("notices")).order(egui::Order::Foreground).anchor(Align2::RIGHT_BOTTOM, vec2(-12.0, -34.0)).show(ctx, |ui| {
-            ui.set_opacity(ui::fade_in(ui, Id::new(("notice_fade", self.notices.len()))));
-            let mut dismiss = None;
-            for (index, text) in self.notices.iter().enumerate() {
-                Frame::new().fill(theme.raised).stroke(Stroke::new(1.0, theme.error)).corner_radius(CornerRadius::same(6)).inner_margin(12.0).show(ui, |ui| {
-                    ui.set_max_width(440.0);
-                    ui.horizontal(|ui| {
-                        if ui::icon_button(ui, &theme, icons::X, 20.0, false, "Dismiss").clicked() {
-                            dismiss = Some(index);
-                        }
-                        ui.add(egui::Label::new(RichText::new(text).color(theme.text)).wrap());
-                    });
-                });
-                ui.add_space(4.0);
-            }
-            if let Some(index) = dismiss {
-                self.notices.remove(index);
-            }
-        });
-    }
-
     fn dialogs(&mut self, ctx: &egui::Context) {
-        self.notices(ctx);
         if self.page.open {
             self.settings_dialog(ctx);
         }
@@ -738,6 +823,7 @@ impl eframe::App for Halo {
             self.timeline.reload();
         }
         self.poll_compare(&ctx);
+        self.poll_imports();
         if self.accounts.poll() {
             self.git.refresh_prs();
         }
@@ -778,6 +864,7 @@ impl eframe::App for Halo {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(delay.max(0.05)));
         }
 
+        crate::notifications::show(&ctx, &self.theme, &mut self.cmds);
         self.titlebar(ui);
         self.statusbar(ui);
         self.activity_bar(ui);
@@ -786,6 +873,7 @@ impl eframe::App for Halo {
         self.bottom_panel(ui);
         self.central(ui);
         self.debug_frame(&ctx, window.top() + 44.0);
+        self.testing_frame(&ctx);
         self.dialogs(&ctx);
 
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false));

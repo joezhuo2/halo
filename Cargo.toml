@@ -10,6 +10,7 @@ repository = "https://github.com/joezhuo2/halo"
 alacritty_terminal = "0.26.0"
 dirs = "7.0.0"
 fancy-regex = "0.16"
+polling = "3.11"
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "persistence", "x11", "wayland"] }
 egui-phosphor = "0.14.0"
 rfd = "0.18.0"
@@ -19,6 +20,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 trash = "5.4.0"
+resvg = { version = "0.50.0", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [build-dependencies]
 winresource = "0.1"

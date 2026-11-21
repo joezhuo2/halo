@@ -114,7 +114,7 @@ impl AiPanel {
             ui.set_clip_rect(body.intersect(ui.clip_rect()));
             match &mut self.sessions[self.tab] {
                 Some(session) => {
-                    session.ui(ui, theme, font_size);
+                    session.ui(ui, theme, font_size, cmds);
                     self.focused = session.has_focus();
                 }
                 None => {

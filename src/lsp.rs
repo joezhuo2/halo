@@ -733,6 +733,9 @@ impl Lsp {
     }
 
     pub fn restart(&mut self) {
+        for server in &self.servers {
+            crate::output::log("Language Servers", format!("[{}] stopped", server.name));
+        }
         self.servers.clear();
         self.failed.clear();
         self.problems.clear();
@@ -741,6 +744,7 @@ impl Lsp {
     }
 
     fn note(&mut self, text: String) {
+        crate::output::log("Language Servers", &text);
         self.log.push(text);
         if self.log.len() > 1200 {
             self.log.drain(..200);

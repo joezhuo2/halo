@@ -110,6 +110,7 @@ impl Halo {
             Some(CompareFile), Some(CompareClipboard), Some(CompareSaved), None,
             Some(CloseEditor), Some(CloseFolder), None,
             Some(OpenSettings), Some(OpenSettingsJson), Some(OpenKeybindings), None,
+            Some(SelectTheme), Some(SelectIconTheme), None,
             Some(Exit),
         ]);
         self.menu(ui, "Edit", &[
@@ -124,16 +125,17 @@ impl Halo {
             Some(AddCursorAbove), Some(AddCursorBelow), Some(SelectNextOccurrence),
         ]);
         self.menu(ui, "View", &[
-            Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), None,
-            Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), Some(ShowProblems), None,
-            Some(SplitEditor), Some(ToggleMinimap), None,
+            Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), Some(ShowTesting), None,
+            Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), Some(ShowProblems), Some(ShowOutput), Some(ShowNotifications), None,
+            Some(SplitEditor), Some(ToggleMinimap), Some(MarkdownPreview), Some(MarkdownPreviewSide), None,
             Some(ToggleTheme), Some(ZoomIn), Some(ZoomOut), Some(ZoomReset),
         ]);
         self.menu(ui, "Go", &[
             Some(GoToFile), Some(GoToSymbol), Some(GoToWorkspaceSymbol), Some(GoToLine), Some(FindInFiles), Some(ShowCommands), None,
             Some(GoToDefinition), Some(GoToDeclaration), Some(GoToTypeDefinition), Some(GoToImplementation), Some(FindReferences),
             Some(ShowCallHierarchy), Some(ShowTypeHierarchy), None,
-            Some(GoBack), Some(NextEditor), Some(PrevEditor),
+            Some(GoBack), Some(NextEditor), Some(PrevEditor), None,
+            Some(NextChange), Some(PrevChange),
         ]);
         ui.menu_button("Run", |ui| {
             ui.set_min_width(230.0);
@@ -147,6 +149,10 @@ impl Halo {
             }
             ui.separator();
             for cmd in [ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration] {
+                self.menu_item(ui, cmd);
+            }
+            ui.separator();
+            for cmd in [RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RunAllTestsWithCoverage, CancelTestRun] {
                 self.menu_item(ui, cmd);
             }
             ui.separator();
@@ -173,6 +179,14 @@ impl Halo {
             self.menu_item(ui, NewTerminal);
             self.menu_item(ui, SplitTerminal);
             self.menu_item(ui, KillTerminal);
+            self.menu_item(ui, NewTerminalInEditor);
+            self.menu_item(ui, MoveTerminalToEditor);
+            self.menu_item(ui, MoveTerminalToPanel);
+            ui.separator();
+            self.menu_item(ui, RenameTerminal);
+            self.menu_item(ui, ChangeTerminalColor);
+            self.menu_item(ui, RunRecentLine);
+            self.menu_item(ui, CopyLastCommandOutput);
             ui.separator();
             let names: Vec<String> = self.settings.terminals.iter().map(|p| p.name.clone()).collect();
             for name in names {

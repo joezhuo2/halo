@@ -22,6 +22,7 @@ pub const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 #[serde(default)]
 pub struct Settings {
     pub theme: String,
+    pub icon_theme: String,
     pub font_family: String,
     pub font_size: f32,
     pub tab_size: usize,
@@ -41,6 +42,7 @@ pub struct Settings {
     pub terminal_right_click: String,
     pub send_keybindings_to_shell: bool,
     pub terminals: Vec<ShellProfile>,
+    pub shell_integration: bool,
     pub grammars: String,
     pub associations: BTreeMap<String, String>,
     pub run: BTreeMap<String, String>,
@@ -88,6 +90,7 @@ pub struct Settings {
     pub sticky_scroll: bool,
     pub bracket_colors: bool,
     pub guides: bool,
+    pub diff_side_by_side: bool,
     pub hot_exit: bool,
     pub tab_close_button: String,
     pub enable_preview: bool,
@@ -95,7 +98,11 @@ pub struct Settings {
     pub explorer_sort: String,
     pub zoom_level: f32,
     pub restore_session: bool,
+    pub large_mb: u64,
     pub auto_update: bool,
+    pub files_exclude: Vec<String>,
+    pub compact_folders: bool,
+    pub confirm_drag_and_drop: bool,
     #[serde(skip)]
     pub langs: BTreeMap<String, Settings>,
 }
@@ -105,6 +112,7 @@ impl Default for Settings {
         let terminals = default_terminals();
         Self {
             theme: "dark".into(),
+            icon_theme: "builtin".into(),
             font_family: String::new(),
             font_size: 13.0,
             tab_size: 4,
@@ -124,6 +132,7 @@ impl Default for Settings {
             terminal_right_click: "default".into(),
             send_keybindings_to_shell: false,
             terminals,
+            shell_integration: true,
             grammars: dir().join("grammars").to_string_lossy().into_owned(),
             associations: BTreeMap::new(),
             run: [
@@ -220,6 +229,7 @@ impl Default for Settings {
             sticky_scroll: true,
             bracket_colors: true,
             guides: true,
+            diff_side_by_side: true,
             hot_exit: true,
             tab_close_button: "right".into(),
             enable_preview: true,
@@ -227,7 +237,11 @@ impl Default for Settings {
             explorer_sort: "default".into(),
             zoom_level: 0.0,
             restore_session: true,
+            large_mb: 20,
             auto_update: true,
+            files_exclude: ["**/.git", "**/.svn", "**/.hg", "**/.DS_Store", "**/Thumbs.db"].map(str::to_owned).into(),
+            compact_folders: true,
+            confirm_drag_and_drop: true,
             langs: BTreeMap::new(),
         }
     }
@@ -374,6 +388,7 @@ pub struct Backup {
 pub struct Session {
     pub folder: Option<PathBuf>,
     pub files: Vec<PathBuf>,
+    pub pinned: Vec<(usize, PathBuf)>,
     pub backups: Vec<Backup>,
     pub recent: Vec<PathBuf>,
     pub sidebar: bool,
@@ -384,6 +399,7 @@ pub struct Session {
     pub outline: bool,
     pub timeline: bool,
     pub debug_view: bool,
+    pub test_view: bool,
     pub breakpoints: BTreeMap<PathBuf, BTreeMap<PathBuf, Vec<crate::debug::Breakpoint>>>,
 }
 
@@ -392,6 +408,7 @@ impl Default for Session {
         Self {
             folder: None,
             files: vec![],
+            pinned: vec![],
             backups: vec![],
             recent: vec![],
             sidebar: true,
@@ -402,6 +419,7 @@ impl Default for Session {
             outline: true,
             timeline: false,
             debug_view: false,
+            test_view: false,
             breakpoints: BTreeMap::new(),
         }
     }
@@ -440,5 +458,14 @@ mod tests {
         assert_eq!(settings.servers.get("rs").map(String::as_str), Some("rust-analyzer"));
         assert_eq!(settings.run_command(Path::new("a/b.PY"), "x y.py").as_deref(), Some("python \"x y.py\""));
         assert_eq!(settings.run_command(Path::new("notes.txt"), "notes.txt"), None);
+    }
+
+    #[test]
+    fn sessions_keep_pinned_tabs_and_old_files_still_load() {
+        let session = Session { pinned: vec![(1, PathBuf::from("a.rs"))], ..Session::default() };
+        let back: Session = serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+        assert_eq!(back.pinned, vec![(1, PathBuf::from("a.rs"))]);
+        let old: Session = serde_json::from_str(r#"{"folder":null,"files":["x.rs"],"sidebar":false}"#).unwrap();
+        assert!(old.pinned.is_empty() && old.files.len() == 1 && !old.sidebar);
     }
 }

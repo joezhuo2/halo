@@ -31,6 +31,16 @@ pub enum Command {
     OpenSettingsJson,
     OpenKeybindings,
     OpenSnippets,
+    ImportTheme,
+    BrowseThemes,
+    SelectTheme,
+    ImportThemeFile(PathBuf),
+    SetTheme(String),
+    ImportIconTheme,
+    BrowseIconThemes,
+    SelectIconTheme,
+    ImportIconThemeFile(PathBuf),
+    SetIconTheme(String),
     Exit,
 
     Undo,
@@ -68,6 +78,7 @@ pub enum Command {
     ShowExplorer,
     ShowSourceControl,
     ShowRunAndDebug,
+    ShowTesting,
     ToggleSidebar,
     TogglePanel,
     ToggleAi,
@@ -91,6 +102,30 @@ pub enum Command {
     GoForward,
     ReopenClosed,
     KeepEditor,
+    NextChange,
+    PrevChange,
+    ShowNextChange,
+    ShowPrevChange,
+    ToggleInlineDiff,
+    MarkdownPreview,
+    MarkdownPreviewSide,
+    StageHunk,
+    RevertHunk,
+    UnstageHunk,
+    StageSelectedRanges,
+    RevertSelectedRanges,
+    UnstageSelectedRanges,
+    MergeOpen,
+    OpenMerge(PathBuf),
+    MergeAcceptIncoming,
+    MergeAcceptCurrent,
+    MergeAcceptBoth,
+    MergeAcceptAllIncoming,
+    MergeAcceptAllCurrent,
+    MergeNextConflict,
+    MergePrevConflict,
+    MergeToggleBase,
+    MergeComplete,
 
     GoToDefinition,
     PeekDefinition,
@@ -116,6 +151,17 @@ pub enum Command {
     NewTerminalWith(String),
     SplitTerminal,
     KillTerminal,
+    ScrollToPrevMark,
+    ScrollToNextMark,
+    RunRecentLine,
+    RunCommandLine(String),
+    CopyLastCommandOutput,
+    RenameTerminal,
+    ChangeTerminalColor,
+    SetTerminalColor(Option<usize>),
+    NewTerminalInEditor,
+    MoveTerminalToEditor,
+    MoveTerminalToPanel,
 
     RunFile,
     RunTask(String),
@@ -144,11 +190,39 @@ pub enum Command {
     RemoveAllBreakpoints,
     AddWatch,
     AddConfiguration,
+    RunAllTests,
+    RunFailedTests,
+    RunTestAtCursor,
+    DebugTestAtCursor,
+    RerunLastTestRun,
+    CancelTestRun,
+    RefreshTests,
+    ShowTestOutput,
+    RunAllTestsWithCoverage,
+    ToggleCoverageDisplay,
+
+    ShowOutput,
+    ShowOutputChannels,
+    ClearOutput,
+    OpenOutputInEditor,
+    SelectOutputChannel(String),
+    ShowNotifications,
+    ClearNotifications,
+    ToggleDoNotDisturb,
+    FocusNotification,
 
     GitSync,
     Git(GitCommand),
     GitAt(GitCommand, String),
     RefreshExplorer,
+    CutFiles,
+    CopyFiles,
+    PasteFiles,
+    FilterExplorer,
+    FocusOpenEditors,
+    CloseAllEditors,
+    ShowTab(usize, usize),
+    CloseTab(usize, usize),
     PathChanged(PathBuf, Option<PathBuf>),
     About,
 }
@@ -293,11 +367,21 @@ fn defaults() -> Vec<Binding> {
     let g = |m, k, c| bind(key(m, k), None, Scope::Global, c);
     let e = |m, k, c| bind(key(m, k), None, Scope::Editor, c);
     let k = |m, k, c| bind(key(C, Key::K), Some(key(m, k)), Scope::Global, c);
+    let t = |m, k, c| bind(key(C, Key::Semicolon), Some(key(m, k)), Scope::Global, c);
     let sa = Modifiers::SHIFT | Modifiers::ALT;
     let mut list = vec![
+        t(NONE, Key::A, RunAllTests),
+        t(NONE, Key::E, RunFailedTests),
+        t(NONE, Key::C, RunTestAtCursor),
+        t(C, Key::C, DebugTestAtCursor),
+        t(NONE, Key::L, RerunLastTestRun),
+        t(C, Key::X, CancelTestRun),
         k(C, Key::F, FormatSelection),
+        k(NONE, Key::V, MarkdownPreviewSide),
+        e(cs, Key::V, MarkdownPreview),
         k(C, Key::I, ShowHover),
         g(cs, Key::M, ShowProblems),
+        g(cs, Key::U, ShowOutput),
         g(C, Key::T, GoToWorkspaceSymbol),
         e(cs, Key::Space, TriggerParameterHints),
         e(sa, Key::F, FormatDocument),
@@ -309,6 +393,12 @@ fn defaults() -> Vec<Binding> {
         e(Modifiers::ALT, Key::ArrowLeft, GoBack),
         e(Modifiers::ALT, Key::ArrowRight, GoForward),
         g(cs, Key::T, ReopenClosed),
+        g(sa, Key::F5, PrevChange),
+        g(Modifiers::ALT, Key::F5, NextChange),
+        e(Modifiers::SHIFT, Key::F7, PrevChange),
+        e(NONE, Key::F7, NextChange),
+        e(sa, Key::F3, ShowPrevChange),
+        e(Modifiers::ALT, Key::F3, ShowNextChange),
         k(NONE, Key::Enter, KeepEditor),
         e(C, Key::Space, TriggerSuggest),
         e(C, Key::Period, QuickFix),
@@ -338,6 +428,7 @@ fn defaults() -> Vec<Binding> {
         g(cs, Key::S, SaveAs),
         g(cs, Key::P, ShowCommands),
         g(cs, Key::F, FindInFiles),
+        g(ca, Key::F, FilterExplorer),
         g(cs, Key::O, GoToSymbol),
         g(cs, Key::E, ShowExplorer),
         g(cs, Key::G, ShowSourceControl),
@@ -384,7 +475,7 @@ fn defaults() -> Vec<Binding> {
     ];
     let shell = crate::when::parse(SEND_TO_SHELL).ok().map(Arc::new);
     for b in list.iter_mut().filter(|b| b.scope == Scope::Global && b.shortcut.modifiers == C) {
-        if b.chord.is_some() || [Key::B, Key::J, Key::W, Key::N, Key::O, Key::S].contains(&b.shortcut.logical_key) {
+        if [Key::K, Key::B, Key::J, Key::W, Key::N, Key::O, Key::S].contains(&b.shortcut.logical_key) {
             (b.when, b.cond) = (SEND_TO_SHELL.to_owned(), shell.clone());
         }
     }
@@ -395,23 +486,32 @@ pub fn all() -> Vec<Command> {
     use Command::*;
     let mut commands = vec![
         NewFile, OpenFile, OpenFolder, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, OpenSettings, OpenSettingsJson,
-        OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, Exit,
+        OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected,
+        SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
         SelectAll, AddCursorAbove, AddCursorBelow, SelectNextOccurrence, SelectAllOccurrences, ExpandSelection, ShrinkSelection, CursorUndo,
-        ShowExplorer, ShowSourceControl, ShowRunAndDebug, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
-        ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer,
+        ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
+        ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff, FilterExplorer, FocusOpenEditors,
+        MarkdownPreview, MarkdownPreviewSide,
         GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, NextEditor, PrevEditor, GoBack, GoForward, ReopenClosed,
-        KeepEditor, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
+        KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
         ShowHover, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut,
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
-        OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, GitSync, ToggleInlineBlame, OpenLineChanges,
+        OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
+        ShowTestOutput, RunAllTestsWithCoverage, ToggleCoverageDisplay, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
+        CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, NewTerminalInEditor, MoveTerminalToEditor, MoveTerminalToPanel,
+        GitSync, ToggleInlineBlame, OpenLineChanges,
+        StageHunk, RevertHunk, UnstageHunk, StageSelectedRanges, RevertSelectedRanges, UnstageSelectedRanges,
+        MergeOpen, MergeAcceptIncoming, MergeAcceptCurrent, MergeAcceptBoth, MergeAcceptAllIncoming, MergeAcceptAllCurrent,
+        MergeNextConflict, MergePrevConflict, MergeToggleBase, MergeComplete,
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
+    commands.extend([ShowOutput, ShowOutputChannels, ClearOutput, OpenOutputInEditor, ShowNotifications, ClearNotifications, ToggleDoNotDisturb, FocusNotification]);
     commands.push(About);
     commands
 }
@@ -572,25 +672,37 @@ impl Command {
         use Command::*;
         match self {
             NewFile | OpenFile | OpenFolder | OpenFolderIn(_) | OpenPath(_) | Save | SaveAs | SaveAll | CloseEditor
-            | CloseFolder | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit => "File",
+            | CloseFolder | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit | ImportTheme
+            | BrowseThemes | SelectTheme | ImportThemeFile(_) | SetTheme(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
+            | ImportIconThemeFile(_) | SetIconTheme(_) | CutFiles | CopyFiles | PasteFiles | CloseAllEditors | ShowTab(..) | CloseTab(..) => "File",
             Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
             | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection => "Edit",
             SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence | SelectAllOccurrences | ExpandSelection
             | ShrinkSelection | CursorUndo => "Selection",
-            ShowExplorer | ShowSourceControl | ShowRunAndDebug | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
-            | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer => "View",
+            ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
+            | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | FilterExplorer
+            | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoTo(..) | NextEditor | PrevEditor | GoBack
-            | GoForward | ReopenClosed | KeepEditor | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
+            | GoForward | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
             ShowHover | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_)
             | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
-            | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration => "Run",
-            NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal => "Terminal",
+            | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
+            | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
+            | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
+            NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
+            | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
+            | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
-            OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) => "Source Control",
+            OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) | StageHunk | RevertHunk
+            | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges | MergeOpen | OpenMerge(_)
+            | MergeAcceptIncoming | MergeAcceptCurrent | MergeAcceptBoth | MergeAcceptAllIncoming | MergeAcceptAllCurrent
+            | MergeNextConflict | MergePrevConflict | MergeToggleBase | MergeComplete => "Source Control",
+            ShowOutput | ShowOutputChannels | ClearOutput | OpenOutputInEditor | SelectOutputChannel(_) => "Output",
+            ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => "Notifications",
             About => "Help",
         }
     }
@@ -619,6 +731,16 @@ impl Command {
             OpenSettings => "Settings",
             OpenSettingsJson => "Open settings.json",
             OpenKeybindings => "Keyboard Shortcuts (keybindings.json)",
+            ImportTheme => "Preferences: Import VS Code Theme...",
+            BrowseThemes => "Preferences: Browse Installed VS Code Themes...",
+            SelectTheme => "Preferences: Color Theme",
+            ImportThemeFile(_) => "Preferences: Import VS Code Theme",
+            SetTheme(_) => "Preferences: Set Color Theme",
+            ImportIconTheme => "Preferences: Import VS Code Icon Theme...",
+            BrowseIconThemes => "Preferences: Browse Installed VS Code Icon Themes...",
+            SelectIconTheme => "Preferences: File Icon Theme",
+            ImportIconThemeFile(_) => "Preferences: Import VS Code Icon Theme",
+            SetIconTheme(_) => "Preferences: Set File Icon Theme",
             Exit => "Exit",
             Undo => "Undo",
             Redo => "Redo",
@@ -654,6 +776,7 @@ impl Command {
             ShowExplorer => "Explorer",
             ShowSourceControl => "Source Control",
             ShowRunAndDebug => "Run and Debug",
+            ShowTesting => "Test: Focus on Test Explorer View",
             ToggleSidebar => "Toggle Side Bar",
             TogglePanel => "Toggle Panel",
             ToggleAi => "Toggle AI Panel",
@@ -676,6 +799,29 @@ impl Command {
             GoForward => "Go Forward",
             ReopenClosed => "Reopen Closed Editor",
             KeepEditor => "Keep Editor Open",
+            NextChange => "Go to Next Change",
+            PrevChange => "Go to Previous Change",
+            ShowNextChange => "Show Next Change",
+            ShowPrevChange => "Show Previous Change",
+            ToggleInlineDiff => "Toggle Inline Diff View",
+            MarkdownPreview => "Markdown: Open Preview",
+            MarkdownPreviewSide => "Markdown: Open Preview to the Side",
+            StageHunk => "Stage Hunk",
+            RevertHunk => "Revert Hunk",
+            UnstageHunk => "Unstage Hunk",
+            StageSelectedRanges => "Stage Selected Ranges",
+            RevertSelectedRanges => "Revert Selected Ranges",
+            UnstageSelectedRanges => "Unstage Selected Ranges",
+            MergeOpen | OpenMerge(_) => "Merge Editor: Open",
+            MergeAcceptIncoming => "Merge Editor: Accept Incoming",
+            MergeAcceptCurrent => "Merge Editor: Accept Current",
+            MergeAcceptBoth => "Merge Editor: Accept Both",
+            MergeAcceptAllIncoming => "Merge Editor: Accept All Incoming",
+            MergeAcceptAllCurrent => "Merge Editor: Accept All Current",
+            MergeNextConflict => "Merge Editor: Go to Next Unresolved Conflict",
+            MergePrevConflict => "Merge Editor: Go to Previous Unresolved Conflict",
+            MergeToggleBase => "Merge Editor: Show Base",
+            MergeComplete => "Merge Editor: Complete Merge",
             GoToDefinition => "Go to Definition",
             PeekDefinition => "Peek Definition",
             GoToDeclaration => "Go to Declaration",
@@ -699,6 +845,17 @@ impl Command {
             NewTerminalWith(_) => "New Terminal",
             SplitTerminal => "Split Terminal",
             KillTerminal => "Kill Terminal",
+            ScrollToPrevMark => "Terminal: Scroll to Previous Command",
+            ScrollToNextMark => "Terminal: Scroll to Next Command",
+            RunRecentLine => "Terminal: Run Recent Command...",
+            RunCommandLine(_) => "Terminal: Run Command",
+            CopyLastCommandOutput => "Terminal: Copy Last Command Output",
+            RenameTerminal => "Terminal: Rename...",
+            ChangeTerminalColor => "Terminal: Change Color...",
+            SetTerminalColor(_) => "Terminal: Set Color",
+            NewTerminalInEditor => "Terminal: Create New Terminal in Editor Area",
+            MoveTerminalToEditor => "Terminal: Move Terminal into Editor Area",
+            MoveTerminalToPanel => "Terminal: Move Terminal into Panel",
             RunFile => "Run File",
             RunTask(_) => "Run Task",
             RunTaskPicker => "Tasks: Run Task...",
@@ -727,8 +884,35 @@ impl Command {
             RemoveAllBreakpoints => "Remove All Breakpoints",
             AddWatch => "Debug: Add Watch Expression",
             AddConfiguration => "Debug: Add Configuration...",
+            RunAllTests => "Test: Run All Tests",
+            RunFailedTests => "Test: Run Failed Tests",
+            RunTestAtCursor => "Test: Run Test at Cursor",
+            DebugTestAtCursor => "Test: Debug Test at Cursor",
+            RerunLastTestRun => "Test: Rerun Last Run",
+            CancelTestRun => "Test: Cancel Test Run",
+            RefreshTests => "Test: Refresh Tests",
+            ShowTestOutput => "Test: Show Output",
+            RunAllTestsWithCoverage => "Test: Run All Tests with Coverage",
+            ToggleCoverageDisplay => "Test: Toggle Coverage Display",
+            ShowOutput => "Output: Show Output",
+            ShowOutputChannels => "Output: Show Output Channels...",
+            ClearOutput => "Output: Clear Output",
+            OpenOutputInEditor => "Output: Open Output in Editor",
+            SelectOutputChannel(_) => "Output: Select Output Channel",
+            ShowNotifications => "Notifications: Show Notifications",
+            ClearNotifications => "Notifications: Clear All Notifications",
+            ToggleDoNotDisturb => "Notifications: Toggle Do Not Disturb",
+            FocusNotification => "Notifications: Focus Notification Toast",
             GitSync => "Synchronize Changes",
             RefreshExplorer => "Refresh Explorer",
+            CutFiles => "File: Cut",
+            CopyFiles => "File: Copy",
+            PasteFiles => "File: Paste",
+            CloseAllEditors => "File: Close All Editors",
+            ShowTab(..) => "Show Editor",
+            CloseTab(..) => "Close Editor",
+            FilterExplorer => "Explorer: Filter",
+            FocusOpenEditors => "Explorer: Focus on Open Editors View",
             PathChanged(..) => "Path Changed",
             About => "About Halo",
         }
@@ -743,7 +927,7 @@ mod tests {
     fn commands_are_grouped_in_category_order() {
         let mut groups: Vec<_> = all().iter().map(Command::category).collect();
         groups.dedup();
-        assert_eq!(groups, ["File", "Edit", "Selection", "View", "Go", "Language", "Run", "Terminal", "Source Control", "Help"]);
+        assert_eq!(groups, ["File", "Edit", "Selection", "View", "Go", "Language", "Run", "Terminal", "Source Control", "Output", "Notifications", "Help"]);
     }
 
     #[test]
@@ -788,9 +972,9 @@ mod tests {
     fn later_entries_win_by_when_and_bad_entries_are_reported() {
         let entry = |key: &str, command: &str, when: &str| Entry { key: key.into(), command: command.into(), when: when.into(), ..Default::default() };
         let user = [
-            entry("ctrl+shift+u", "find", "editorLangId == rust"),
-            entry("ctrl+shift+u", "replace", "editorTextFocus"),
-            entry("ctrl+shift+u", "-replace", "other"),
+            entry("ctrl+alt+u", "find", "editorLangId == rust"),
+            entry("ctrl+alt+u", "replace", "editorTextFocus"),
+            entry("ctrl+alt+u", "-replace", "other"),
             entry("ctrl+nope", "find", ""),
             entry("ctrl+e", "find", "a &&"),
             entry("ctrl+b", "-toggleSidebar", ""),
@@ -802,7 +986,7 @@ mod tests {
         assert!(errors[1].contains("entry 5") && errors[1].contains("a &&"));
         let pick = |keys: serde_json::Value| {
             let keys = keys.as_object().unwrap().clone();
-            let shortcut = parse_key("ctrl+shift+u").unwrap();
+            let shortcut = parse_key("ctrl+alt+u").unwrap();
             built.iter().find(|b| b.shortcut == shortcut && b.active(&keys)).map(|b| b.command.clone())
         };
         assert_eq!(pick(serde_json::json!({"editorTextFocus": true, "editorLangId": "rust"})), Some(Command::Replace));

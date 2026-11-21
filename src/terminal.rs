@@ -1,6 +1,9 @@
 use crate::command::Command;
 use crate::lsp::{Diagnostic, Lsp};
 use crate::settings::{Settings, ShellProfile};
+use crate::shell_integration::{Integration, Record, Tap};
+use crate::terminal_find::FindBar;
+use crate::terminal_links::{Link, Target};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use alacritty_terminal::event::{Event as TermEvent, EventListener, WindowSize};
@@ -15,7 +18,7 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, Event, EventFilter, FontId, Id, Key, Layout, Modifiers, Pos2, Rect,
-    RichText, ScrollArea, Sense, Stroke, StrokeKind, Ui, UiBuilder, ViewportCommand, pos2, vec2,
+    RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, ViewportCommand, pos2, vec2,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -193,6 +196,20 @@ fn look() -> Look {
     LOOK.lock().unwrap().clone().unwrap_or(Look { line_height: 1.15, blink: true, scrollback: 5000, ..Default::default() })
 }
 
+type HoveredLink = (i32, Vec<(usize, usize)>, Link);
+
+fn grid_rows(term: &Term<Proxy>, from: i32, to: i32) -> Vec<(Vec<char>, bool)> {
+    let last = term.last_column();
+    let spacer = Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER;
+    (from..=to)
+        .map(|line| {
+            let row = &term.grid()[Line(line)];
+            let chars = (0..=last.0).map(|c| if row[Column(c)].flags.intersects(spacer) { '\0' } else { row[Column(c)].c }).collect();
+            (chars, row[last].flags.contains(Flags::WRAPLINE))
+        })
+        .collect()
+}
+
 pub struct Terminal {
     term: Arc<FairMutex<Term<Proxy>>>,
     sender: EventLoopSender,
@@ -206,6 +223,13 @@ pub struct Terminal {
     last_input: f64,
     task: Option<String>,
     pub pid: Option<u32>,
+    start_dir: Option<PathBuf>,
+    integration: Arc<Mutex<Integration>>,
+    links: (i32, String, Vec<(usize, usize)>, Vec<Link>),
+    find: FindBar,
+    pub label: Option<String>,
+    pub color: Option<usize>,
+    pub profile: Option<ShellProfile>,
 }
 
 impl Drop for Terminal {
@@ -221,6 +245,16 @@ impl Terminal {
 
     pub fn spawn_with(id: u64, name: &str, program: &str, args: &[String], cwd: Option<&Path>, env: &[(String, String)], ctx: egui::Context) -> std::io::Result<Self> {
         Self::start(id, name, program, args, &env.iter().cloned().collect(), cwd, None, ctx)
+    }
+
+    pub fn spawn_shell(id: u64, profile: &ShellProfile, cwd: Option<&Path>, integrate: bool, ctx: egui::Context) -> std::io::Result<Self> {
+        let (args, env) = match integrate {
+            true => crate::shell_integration::prepare(&profile.program, &profile.args),
+            false => (profile.args.clone(), vec![]),
+        };
+        let mut terminal = Self::start(id, &profile.name, &profile.program, &args, &env.into_iter().collect(), cwd, None, ctx)?;
+        terminal.profile = Some(profile.clone());
+        Ok(terminal)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -250,10 +284,12 @@ impl Terminal {
         let pid = Some(pty.child().id());
         let shared =
             Arc::new(Shared { exited: AtomicBool::new(false), title: Mutex::new(None), sender: Mutex::new(None), code: Mutex::new(None) });
-        let proxy = Proxy { ctx, shared: shared.clone() };
+        let proxy = Proxy { ctx: ctx.clone(), shared: shared.clone() };
         let config = Config { scrolling_history: look().scrollback, ..Default::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &Size { cols: 80, rows: 24 }, proxy.clone())));
-        let event_loop = EventLoop::new(term.clone(), proxy, pty, task.is_some(), false)?;
+        let integration = Arc::new(Mutex::new(Integration::default()));
+        let tap = Tap::new(pty, term.clone(), integration.clone(), ctx);
+        let event_loop = EventLoop::new(term.clone(), proxy, tap, task.is_some(), false)?;
         let sender = event_loop.channel();
         *shared.sender.lock().unwrap() = Some(sender.clone());
         event_loop.spawn();
@@ -270,6 +306,13 @@ impl Terminal {
             last_input: 0.0,
             task: task.map(str::to_owned),
             pid,
+            start_dir: options.working_directory,
+            integration,
+            links: Default::default(),
+            find: FindBar::default(),
+            label: None,
+            color: None,
+            profile: None,
         })
     }
 
@@ -300,6 +343,9 @@ impl Terminal {
     }
 
     pub fn title(&self) -> String {
+        if let Some(label) = &self.label {
+            return label.clone();
+        }
         if self.task.is_some() {
             return self.name.clone();
         }
@@ -307,7 +353,52 @@ impl Terminal {
     }
 
     pub fn has_focus(&self) -> bool {
-        self.focused
+        self.focused || self.find.has_focus
+    }
+
+    pub fn exec(&mut self, cmd: &Command, ctx: &egui::Context) -> bool {
+        match cmd {
+            Command::Find | Command::Replace => self.find.show(),
+            Command::Copy => {
+                if let Some(text) = self.selection() {
+                    ctx.copy_text(text);
+                }
+            }
+            Command::Paste => {
+                self.focus();
+                ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+            }
+            Command::ScrollToPrevMark | Command::ScrollToNextMark => self.scroll_to_command(*cmd == Command::ScrollToNextMark),
+            Command::CopyLastCommandOutput => match self.last_output() {
+                Some(text) => ctx.copy_text(text),
+                None => ui::notify("No finished command output was found. It needs shell integration in the active terminal."),
+            },
+            Command::RunCommandLine(line) => {
+                self.write(format!("{line}\r"));
+                self.focus();
+            }
+            Command::SetTerminalColor(color) => self.color = *color,
+            _ => return false,
+        }
+        ctx.request_repaint();
+        true
+    }
+
+    pub fn tint(&self, theme: &Theme) -> Color32 {
+        match (self.failed(), self.color) {
+            (true, _) => theme.error,
+            (_, Some(color)) => theme.ansi[color],
+            _ => theme.text_dim,
+        }
+    }
+
+    fn reveal(&self, line: i32) {
+        let mut term = self.term.lock();
+        let (rows, offset) = (term.screen_lines() as i32, term.grid().display_offset() as i32);
+        if !(0..rows).contains(&(line + offset)) {
+            let target = (rows / 2 - line).clamp(0, term.history_size() as i32);
+            term.scroll_display(Scroll::Delta(target - offset));
+        }
     }
 
     pub fn focus(&mut self) {
@@ -346,7 +437,76 @@ impl Terminal {
         (Point::new(Line(row as i32 - offset as i32), Column(column)), side)
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, font_size: f32) {
+    pub fn cwd(&self) -> Option<PathBuf> {
+        let reported = self.integration.lock().unwrap().cwd.clone();
+        reported.map(|dir| crate::shell_integration::native_dir(&dir, self.start_dir.as_deref())).or_else(|| self.start_dir.clone())
+    }
+
+    pub fn failed(&self) -> bool {
+        self.integration.lock().unwrap().last_finished().is_some_and(Record::failed)
+    }
+
+    pub fn recent(&self) -> Vec<String> {
+        self.integration.lock().unwrap().recent()
+    }
+
+    pub fn scroll_to_command(&self, forward: bool) {
+        let mut term = self.term.lock();
+        let (offset, history) = (term.grid().display_offset() as i64, term.history_size() as i64);
+        let integration = self.integration.lock().unwrap();
+        let base = integration.dropped + history;
+        let lines = integration.commands.iter().filter(|r| r.ran()).map(|r| r.prompt - base);
+        let target = if forward { lines.filter(|l| *l > -offset).min() } else { lines.filter(|l| *l < -offset).max() };
+        drop(integration);
+        match target {
+            Some(line) => term.scroll_display(Scroll::Delta(((-line).clamp(0, history) - offset) as i32)),
+            None if forward => term.scroll_display(Scroll::Bottom),
+            None => {}
+        }
+    }
+
+    pub fn last_output(&self) -> Option<String> {
+        let term = self.term.lock();
+        let integration = self.integration.lock().unwrap();
+        let record = integration.commands.iter().rev().find(|r| r.output.is_some() && r.end.is_some())?;
+        let base = integration.dropped + term.history_size() as i64;
+        let (from, (end, col)) = ((record.output? - base).max(term.topmost_line().0 as i64), record.end?);
+        let end = end - base;
+        if end < term.topmost_line().0 as i64 || end > term.bottommost_line().0 as i64 {
+            return None;
+        }
+        let last = match col {
+            0 if end <= from => return Some(String::new()),
+            0 => Point::new(Line(end as i32 - 1), term.last_column()),
+            _ => Point::new(Line(end as i32), Column(col - 1)),
+        };
+        Some(term.bounds_to_string(Point::new(Line(from as i32), Column(0)), last).trim_end().to_owned())
+    }
+
+    fn hovered_link(&mut self, point: Point) -> Option<HoveredLink> {
+        let term = self.term.lock();
+        let wrapped = |line: i32| term.grid()[Line(line)][term.last_column()].flags.contains(Flags::WRAPLINE);
+        let (top, bottom, at) = (term.topmost_line().0, term.bottommost_line().0, point.line.0);
+        let (mut from, mut to) = (at, at);
+        while from > top && at - from < 40 && wrapped(from - 1) {
+            from -= 1;
+        }
+        while to < bottom && to - at < 40 && wrapped(to) {
+            to += 1;
+        }
+        let (text, cells) = crate::terminal_links::join(&grid_rows(&term, from, to));
+        drop(term);
+        if self.links.0 != from || self.links.1 != text {
+            let (cwd, home) = (self.cwd(), dirs::home_dir());
+            let links = crate::terminal_links::find(&text, cwd.as_deref(), home.as_deref(), Path::is_file);
+            self.links = (from, text, cells, links);
+        }
+        let index = self.links.2.iter().position(|&(r, c)| from + r as i32 == at && c == point.column.0)?;
+        let link = self.links.3.iter().find(|l| l.start <= index && index < l.end)?.clone();
+        Some((from, self.links.2[link.start..link.end].to_vec(), link))
+    }
+
+    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, font_size: f32, cmds: &mut Vec<Command>) {
         let ctx = ui.ctx().clone();
         let rect = ui.available_rect_before_wrap().shrink2(vec2(10.0, 4.0));
         let id = Id::new(("terminal", self.id));
@@ -371,6 +531,7 @@ impl Terminal {
         self.focused = resp.has_focus();
         let now = ui.input(|i| i.time);
         let mode = *self.term.lock().mode();
+        let mut step = 0;
 
         if self.focused {
             ui.memory_mut(|m| {
@@ -389,6 +550,20 @@ impl Terminal {
                         None => self.write([3u8]),
                     },
                     Event::Cut => self.write([0x18u8]),
+                    Event::Key { key: Key::F, pressed: true, modifiers, .. } if modifiers.command && !modifiers.alt => {
+                        self.find.show();
+                        continue;
+                    }
+                    Event::Key { key: key @ (Key::ArrowUp | Key::ArrowDown), pressed: true, modifiers, .. }
+                        if modifiers.command && !modifiers.shift && !modifiers.alt && self.integration.lock().unwrap().seen =>
+                    {
+                        self.scroll_to_command(key == Key::ArrowDown);
+                        continue;
+                    }
+                    Event::Key { key: Key::F3, pressed: true, modifiers, .. } if self.find.open => {
+                        step = if modifiers.shift { -1 } else { 1 };
+                        continue;
+                    }
                     Event::Key { key, pressed: true, modifiers, .. } => {
                         if let Some(bytes) = encode_key(key, modifiers, mode.contains(TermMode::APP_CURSOR)) {
                             self.write(bytes);
@@ -401,7 +576,34 @@ impl Terminal {
             }
         }
 
+        let mut scroll_to = None;
+        if let Some(fresh) = self.find.due(now) {
+            let term = self.term.lock();
+            let top = term.topmost_line().0;
+            let (text, cells) = crate::terminal_links::join(&grid_rows(&term, top, term.bottommost_line().0));
+            drop(term);
+            self.find.run(&text, &cells, top, now, fresh);
+            if fresh {
+                scroll_to = self.find.current.and_then(|c| self.find.matches[c].first()).map(|s| s.0);
+            }
+        }
+        if self.find.open {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
         let offset = self.term.lock().grid().display_offset();
+        let link = match (ui.input(|i| i.modifiers.command), resp.hover_pos()) {
+            (true, Some(pos)) => self.hovered_link(self.point_at(rect, pos, cell, offset).0),
+            _ => None,
+        };
+        if let Some((_, _, link)) = link.as_ref().filter(|_| resp.clicked()) {
+            match &link.target {
+                Target::Url(url) => ui::open_url(url),
+                Target::File(path, place) => {
+                    cmds.push(Command::OpenPath(path.clone()));
+                    cmds.extend(place.map(|(line, col)| Command::GoTo(line, col)));
+                }
+            }
+        }
         if let Some(pos) = resp.interact_pointer_pos() {
             let (point, side) = self.point_at(rect, pos, cell, offset);
             let mut term = self.term.lock();
@@ -418,7 +620,7 @@ impl Terminal {
                 term.selection = Some(Selection::new(SelectionType::Lines, point, side));
             } else if resp.double_clicked() {
                 term.selection = Some(Selection::new(SelectionType::Semantic, point, side));
-            } else if resp.clicked() {
+            } else if resp.clicked() && link.is_none() {
                 term.selection = None;
             }
             if resp.secondary_clicked() {
@@ -440,7 +642,7 @@ impl Terminal {
             ctx.copy_text(text);
         }
         if resp.hovered() {
-            ctx.set_cursor_icon(egui::CursorIcon::Text);
+            ctx.set_cursor_icon(if link.is_some() { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Text });
             self.wheel += ui.input(|i| i.smooth_scroll_delta.y);
             let lines = (self.wheel / cell.y) as i32;
             if lines != 0 {
@@ -459,6 +661,9 @@ impl Terminal {
         }
 
         let fade = ui::fade_in(ui, id.with("born"));
+        if let Some(color) = self.color {
+            ui.painter().vline(rect.left() - 9.0, rect.expand2(vec2(0.0, 4.0)).y_range(), Stroke::new(2.0, theme.ansi[color]));
+        }
         let painter = ui.painter().with_clip_rect(rect.expand(2.0));
         let term = self.term.lock();
         let content = term.renderable_content();
@@ -536,7 +741,20 @@ impl Terminal {
         }
         flush(&mut run, run_at);
         flush_bg(&mut bg_run);
+        for (index, segments) in self.find.matches.iter().enumerate() {
+            let alpha = if self.find.current == Some(index) { 0.6 } else { 0.25 };
+            for &(line, from, to) in segments.iter().filter(|s| (0..self.size.1 as i32).contains(&(s.0 + offset))) {
+                let r = Rect::from_min_max(cell_pos(line + offset, from), cell_pos(line + offset + 1, to));
+                backgrounds.push(egui::Shape::rect_filled(r, CornerRadius::same(2), ui::with_alpha(theme.accent, alpha)));
+            }
+        }
         painter.set(under_text, egui::Shape::Vec(backgrounds));
+        if let Some((top, cells, _)) = &link {
+            for &(r, c) in cells {
+                let row = top + r as i32 + offset;
+                painter.hline(cell_pos(row, c).x..=cell_pos(row, c + 1).x, cell_pos(row + 1, c).y - 2.0, Stroke::new(1.0, theme.accent));
+            }
+        }
 
         if content.mode.contains(TermMode::SHOW_CURSOR) && content.cursor.shape != CursorShape::Hidden {
             let point = content.cursor.point;
@@ -559,7 +777,53 @@ impl Terminal {
                 }
             }
         }
+        let marks: Vec<(i64, Record)> = {
+            let integration = self.integration.lock().unwrap();
+            let base = integration.dropped + term.history_size() as i64 - offset as i64;
+            let shown = |r: &&Record| r.ran() && (0..self.size.1 as i64).contains(&(r.row() - base));
+            integration.commands.iter().filter(shown).map(|r| (r.row() - base, r.clone())).collect()
+        };
+        drop(term);
+        for (row, record) in marks {
+            let y = rect.top() + row as f32 * cell.y;
+            let mark = Rect::from_min_max(pos2(rect.left() - 8.0, y + 2.0), pos2(rect.left() - 5.0, y + cell.y - 2.0));
+            let color = match (record.end, record.failed()) {
+                (None, _) => theme.text_dim,
+                (_, true) => theme.error,
+                _ => theme.accent,
+            };
+            ui.painter().rect_filled(mark, CornerRadius::same(1), color);
+            let mut tip = if record.line.is_empty() { "Command".to_owned() } else { record.line.clone() };
+            match (record.end, record.duration, record.started) {
+                (None, _, Some(started)) => tip += &format!("\nRunning for {:.1} s", started.elapsed().as_secs_f32()),
+                (_, Some(took), _) => tip += &format!("\nTook {:.1} s", took.as_secs_f32()),
+                _ => {}
+            }
+            if let Some(code) = record.exit {
+                tip += &format!("\nExit code {code}");
+            }
+            ui.interact(mark.expand2(vec2(3.0, 0.0)), id.with(("mark", row)), Sense::hover()).on_hover_text(tip);
+        }
+        if self.find.open {
+            let (bar_step, closed) = self.find.ui(ui, rect.expand2(vec2(10.0, 4.0)), theme);
+            step += bar_step;
+            self.want_focus |= closed;
+        }
+        if step != 0 {
+            scroll_to = self.find.step(step > 0);
+        }
+        if let Some(line) = scroll_to {
+            self.reveal(line);
+            ctx.request_repaint();
+        }
     }
+}
+
+pub fn color_names() -> [(Option<usize>, &'static str); 9] {
+    [
+        (None, "None"), (Some(1), "Red"), (Some(2), "Green"), (Some(3), "Yellow"), (Some(4), "Blue"),
+        (Some(5), "Magenta"), (Some(6), "Cyan"), (Some(7), "White"), (Some(0), "Black"),
+    ]
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -569,14 +833,16 @@ enum PanelTab {
     Debug,
     Terminal,
     Ports,
+    Tests,
 }
 
-const TABS: [(PanelTab, &str); 5] = [
+const TABS: [(PanelTab, &str); 6] = [
     (PanelTab::Problems, "PROBLEMS"),
     (PanelTab::Output, "OUTPUT"),
     (PanelTab::Debug, "DEBUG CONSOLE"),
     (PanelTab::Terminal, "TERMINAL"),
     (PanelTab::Ports, "PORTS"),
+    (PanelTab::Tests, "TEST RESULTS"),
 ];
 
 struct Group {
@@ -679,6 +945,9 @@ pub struct BottomPanel {
     run_line: String,
     debug: String,
     pub console: crate::debug::Console,
+    pub test_output: String,
+    integrate: bool,
+    renaming: Option<(u64, String, bool)>,
 }
 
 impl BottomPanel {
@@ -698,6 +967,9 @@ impl BottomPanel {
             run_line: String::new(),
             debug: String::new(),
             console: Default::default(),
+            test_output: String::new(),
+            integrate: true,
+            renaming: None,
         }
     }
 
@@ -715,6 +987,14 @@ impl BottomPanel {
 
     pub fn showing_problems(&self) -> bool {
         self.tab == PanelTab::Problems
+    }
+
+    pub fn show_tests(&mut self) {
+        self.tab = PanelTab::Tests;
+    }
+
+    pub fn show_output(&mut self) {
+        self.tab = PanelTab::Output;
     }
 
     pub fn show_debug(&mut self) {
@@ -735,7 +1015,7 @@ impl BottomPanel {
     fn spawn(&mut self, profile: &ShellProfile, cwd: Option<&Path>, ctx: &egui::Context) -> Option<Terminal> {
         let id = self.next_id;
         self.next_id += 1;
-        match Terminal::spawn(id, &profile.name, &profile.program, &profile.args, cwd, ctx.clone()) {
+        match Terminal::spawn_shell(id, profile, cwd, self.integrate, ctx.clone()) {
             Ok(terminal) => {
                 self.error = None;
                 Some(terminal)
@@ -765,7 +1045,8 @@ impl BottomPanel {
             self.new_group(default_profile(settings, cwd).as_ref(), cwd, ctx);
             return;
         };
-        if let Some(terminal) = self.spawn(&profile, cwd, ctx) {
+        let here = self.active_pane().and_then(|p| p.cwd());
+        if let Some(terminal) = self.spawn(&profile, here.as_deref().or(cwd), ctx) {
             let group = &mut self.groups[self.active];
             group.panes.push(terminal);
             group.active = group.panes.len() - 1;
@@ -777,6 +1058,7 @@ impl BottomPanel {
             let pane = |g: &Group| g.panes.iter().position(|p| Some(p.id) == id && p.is_alive());
             groups.iter().enumerate().find_map(|(index, g)| Some((index, pane(g)?)))
         };
+        self.integrate = settings.shell_integration;
         if find(&self.groups, self.run_id).is_none() {
             self.run_id = Some(self.next_id);
             self.new_group(default_profile(settings, cwd).as_ref(), cwd, ctx);
@@ -900,8 +1182,43 @@ impl BottomPanel {
         group.panes.get_mut(group.active)
     }
 
+    pub fn recent(&mut self) -> Vec<String> {
+        self.active_pane().map(|p| p.recent()).unwrap_or_default()
+    }
+
+    pub fn create(&mut self, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) -> Result<Terminal, String> {
+        self.integrate = settings.shell_integration;
+        let profile = default_profile(settings, cwd).ok_or("No terminal profile is configured in settings.json.")?;
+        self.spawn(&profile, cwd, ctx).ok_or_else(|| self.error.take().unwrap_or_default())
+    }
+
+    pub fn take_active(&mut self) -> Option<Terminal> {
+        let group = self.groups.get_mut(self.active).filter(|g| g.panes.get(g.active).is_some_and(|p| p.task.is_none()))?;
+        let pane = group.panes.remove(group.active);
+        self.prune();
+        Some(pane)
+    }
+
+    pub fn adopt(&mut self, mut terminal: Terminal) {
+        let profile = terminal.profile.clone().unwrap_or_else(|| ShellProfile { name: terminal.name.clone(), program: String::new(), args: vec![] });
+        terminal.focus();
+        self.groups.push(Group { panes: vec![terminal], active: 0, profile });
+        (self.active, self.started, self.tab) = (self.groups.len() - 1, true, PanelTab::Terminal);
+    }
+
     pub fn exec(&mut self, cmd: &Command, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) -> bool {
+        self.integrate = settings.shell_integration;
         match cmd {
+            Command::ScrollToPrevMark | Command::ScrollToNextMark | Command::CopyLastCommandOutput | Command::RunCommandLine(_) | Command::SetTerminalColor(_) => {
+                let Some(pane) = self.active_pane() else { return false };
+                pane.exec(cmd, ctx);
+                self.tab = PanelTab::Terminal;
+            }
+            Command::RenameTerminal => {
+                let Some(pane) = self.active_pane() else { return false };
+                let rename = (pane.id, pane.title(), true);
+                (self.renaming, self.tab) = (Some(rename), PanelTab::Terminal);
+            }
             Command::NewTerminal => self.new_group(default_profile(settings, cwd).as_ref(), cwd, ctx),
             Command::NewTerminalWith(name) => self.new_group(settings.terminal(name), cwd, ctx),
             Command::SplitTerminal => {
@@ -938,6 +1255,7 @@ impl BottomPanel {
     ) {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         self.focused = false;
+        self.integrate = settings.shell_integration;
         self.prune();
         let ctx = ui.ctx().clone();
         let header = Rect::from_min_size(ui.max_rect().min, vec2(ui.max_rect().width(), 32.0));
@@ -990,16 +1308,17 @@ impl BottomPanel {
         ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
             ui.set_clip_rect(body.intersect(ui.clip_rect()));
             match self.tab {
-                PanelTab::Terminal => self.terminals(ui, body, theme, settings, cwd),
+                PanelTab::Terminal => self.terminals(ui, body, theme, settings, cwd, cmds),
                 PanelTab::Ports => self.ports_ui(ui, body, theme),
                 PanelTab::Problems => problems_ui(ui, theme, lsp, task_files, cwd, cmds),
-                PanelTab::Output => output_ui(ui, theme, lsp, settings.font_size),
+                PanelTab::Output => crate::output::ui(ui, theme, settings.font_size, cmds),
                 PanelTab::Debug => self.debug_ui(ui, body, theme, settings.font_size),
+                PanelTab::Tests => test_output_ui(ui, theme, &self.test_output, settings.font_size),
             }
         });
     }
 
-    fn terminals(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, settings: &Settings, cwd: Option<&Path>) {
+    fn terminals(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, settings: &Settings, cwd: Option<&Path>, cmds: &mut Vec<Command>) {
         let ctx = ui.ctx().clone();
         if self.groups.is_empty() && !self.started {
             self.new_group(default_profile(settings, cwd).as_ref(), cwd, &ctx);
@@ -1033,7 +1352,7 @@ impl BottomPanel {
         }
 
         let tasks = self.groups.iter().flat_map(|g| &g.panes).any(|p| p.task.is_some());
-        if tasks || self.groups.iter().map(|g| g.panes.len()).sum::<usize>() > 1 {
+        if tasks || self.renaming.is_some() || self.groups.iter().map(|g| g.panes.len()).sum::<usize>() > 1 {
             let list = Rect::from_min_max(pos2(area.right() - 190.0, area.top()), area.max);
             area.max.x = list.left();
             ui.painter().vline(list.left(), list.y_range(), Stroke::new(1.0, theme.border));
@@ -1052,8 +1371,51 @@ impl BottomPanel {
                                 _ => ("├", FontId::monospace(13.0)),
                             };
                             let p = ui.painter().with_clip_rect(r.shrink2(vec2(26.0, 0.0)).translate(vec2(-16.0, 0.0)));
-                            ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, icon, font, theme.text_dim);
-                            p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, group.panes[at].title(), FontId::proportional(12.5), theme.text);
+                            let pane = &mut group.panes[at];
+                            let failed = pane.failed();
+                            ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, icon, font, pane.tint(theme));
+                            match self.renaming.as_mut().filter(|(id, _, _)| *id == pane.id) {
+                                Some((_, text, focus)) => {
+                                    let field = ui.put(r.shrink2(vec2(28.0, 2.0)).translate(vec2(2.0, 0.0)), TextEdit::singleline(text).margin(ui::FIELD));
+                                    if std::mem::take(focus) {
+                                        field.request_focus();
+                                    }
+                                    if field.lost_focus() {
+                                        if !ui.input(|i| i.key_pressed(Key::Escape)) {
+                                            pane.label = Some(text.trim().to_owned()).filter(|t| !t.is_empty());
+                                        }
+                                        self.renaming = None;
+                                        pane.focus();
+                                    }
+                                }
+                                None => {
+                                    p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, pane.title(), FontId::proportional(12.5), theme.text);
+                                }
+                            }
+                            let mut to_editor = false;
+                            resp.context_menu(|ui| {
+                                ui::menu_pad(ui);
+                                if ui.button("Rename...").clicked() {
+                                    self.renaming = Some((pane.id, pane.title(), true));
+                                }
+                                ui.menu_button("Change Color", |ui| {
+                                    for (color, name) in color_names() {
+                                        if ui.button(name).clicked() {
+                                            pane.color = color;
+                                        }
+                                    }
+                                });
+                                if pane.task.is_none() && ui.button("Move Terminal into Editor Area").clicked() {
+                                    to_editor = true;
+                                }
+                                if ui.button("Kill Terminal").clicked() {
+                                    kill = Some((index, at));
+                                }
+                            });
+                            if to_editor {
+                                (self.active, group.active) = (index, at);
+                                cmds.push(Command::MoveTerminalToEditor);
+                            }
                             let trash = Rect::from_center_size(pos2(r.right() - 16.0, r.center().y), vec2(20.0, 20.0));
                             if resp.hovered() {
                                 let over = ui.rect_contains_pointer(trash);
@@ -1067,6 +1429,11 @@ impl BottomPanel {
                                 group.active = at;
                                 group.panes[at].focus();
                             }
+                            let mut tip = group.panes[at].cwd().map(|dir| dir.display().to_string()).unwrap_or_default();
+                            if failed {
+                                tip += "\nThe last command failed";
+                            }
+                            resp.on_hover_text(tip.trim());
                         }
                     }
                 });
@@ -1083,7 +1450,7 @@ impl BottomPanel {
         for (index, pane) in group.panes.iter_mut().enumerate() {
             let rect = Rect::from_min_size(pos2(area.left() + index as f32 * width, area.top()), vec2(width, area.height()));
             ui.scope_builder(UiBuilder::new().max_rect(rect).id_salt(("terminal_pane", pane.id)), |ui| {
-                pane.ui(ui, theme, settings.font_size);
+                pane.ui(ui, theme, settings.font_size, cmds);
             });
             if index > 0 {
                 ui.painter().vline(rect.left(), rect.y_range(), Stroke::new(1.0, theme.border));
@@ -1185,18 +1552,16 @@ fn problems_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, task_files: &[(PathBuf, Ve
     });
 }
 
-fn output_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, font_size: f32) {
-    if lsp.log.is_empty() {
-        return empty(ui, theme, "Messages from language servers appear here.");
+fn test_output_ui(ui: &mut Ui, theme: &Theme, text: &str, font_size: f32) {
+    if text.is_empty() {
+        return empty(ui, theme, "The output of the last test run appears here.");
     }
-    ScrollArea::both().id_salt("output").auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
+    ScrollArea::both().id_salt("test_output").auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
         ui.add_space(4.0);
-        for line in &lsp.log {
-            ui.horizontal(|ui| {
-                ui.add_space(12.0);
-                ui.label(RichText::new(line).font(FontId::monospace(font_size - 1.0)).color(theme.text));
-            });
-        }
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(RichText::new(text).font(FontId::monospace(font_size - 1.0)).color(theme.text));
+        });
     });
 }
 
@@ -1257,6 +1622,71 @@ mod tests {
         assert!(seen);
         assert!(terminal.is_alive());
         assert!(Terminal::spawn(2, "bad", "halo-no-such-program-xyz", &[], None, egui::Context::default()).is_err());
+    }
+
+    fn integrated(program: &str, base: &[&str], lines: &[&str]) -> (Terminal, Vec<Record>, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("halo-shell-{}-{}", std::process::id(), base.len()));
+        assert!(crate::shell_integration::write_scripts(&dir));
+        let base: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+        let (args, env) = crate::shell_integration::inject(program, &base, &dir).unwrap();
+        let terminal = Terminal::spawn_with(1, "test", program, &args, Some(&dir.join("zsh")), &env, egui::Context::default()).unwrap();
+        let finished = |t: &Terminal| t.integration.lock().unwrap().commands.iter().filter(|r| r.end.is_some()).count();
+        let started = std::time::Instant::now();
+        for (index, line) in lines.iter().enumerate() {
+            while !(finished(&terminal) == index && terminal.integration.lock().unwrap().commands.len() > index) && started.elapsed().as_secs() < 30 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            terminal.write(format!("{line}\r"));
+        }
+        while finished(&terminal) < lines.len() && started.elapsed().as_secs() < 30 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let records = terminal.integration.lock().unwrap().commands.iter().filter(|r| r.end.is_some()).cloned().collect();
+        (terminal, records, dir)
+    }
+
+    fn check_shell(program: &str, base: &[&str], fail: &str, code: i32) {
+        let (terminal, done, dir) = integrated(program, base, &["cd ..", fail, "echo halo-out"]);
+        let shown = |t: &Terminal| t.text();
+        assert_eq!(done.iter().map(|r| (r.line.as_str(), r.exit)).collect::<Vec<_>>(), vec![("cd ..", Some(0)), (fail, Some(code)), ("echo halo-out", Some(0))], "{}", shown(&terminal));
+        assert_eq!(terminal.cwd().and_then(|c| c.canonicalize().ok()), dir.canonicalize().ok());
+        assert!(done[1].failed() && !terminal.failed());
+        assert_eq!(terminal.recent()[0], "echo halo-out");
+        assert_eq!(terminal.last_output().as_deref(), Some("halo-out"));
+        drop(terminal);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn real_shells_report_commands_exit_codes_and_folders() {
+        if cfg!(windows) {
+            check_shell("powershell.exe", &["-NoLogo", "-NoProfile"], "cmd /c exit 3", 3);
+        } else {
+            check_shell("bash", &[], "(exit 3)", 3);
+        }
+        let git_bash = Path::new(r"C:\Program Files\Git\bin\bash.exe");
+        if cfg!(windows) && git_bash.is_file() {
+            check_shell(&git_bash.to_string_lossy(), &["--login", "-i"], "false", 1);
+        }
+    }
+
+    #[test]
+    fn renames_and_colours_the_active_terminal() {
+        let ctx = egui::Context::default();
+        let shell = if cfg!(windows) { "cmd.exe" } else { "sh" };
+        let settings = Settings { terminals: vec![ShellProfile { name: "test".into(), program: shell.into(), args: vec![] }], default_terminal: "test".into(), ..Settings::default() };
+        let mut panel = BottomPanel::new();
+        panel.exec(&Command::NewTerminal, &settings, None, &ctx);
+        assert!(panel.exec(&Command::RenameTerminal, &settings, None, &ctx));
+        assert_eq!(panel.renaming.as_ref().map(|r| (r.1.as_str(), r.2)), Some(("test", true)));
+        panel.exec(&Command::SetTerminalColor(Some(1)), &settings, None, &ctx);
+        let theme = Theme::dark();
+        let pane = panel.active_pane().unwrap();
+        assert_eq!((pane.color, pane.tint(&theme)), (Some(1), theme.ansi[1]));
+        pane.label = Some("build".into());
+        assert_eq!(pane.title(), "build");
+        pane.label = None;
+        assert_ne!(pane.title(), "build");
     }
 
     #[test]

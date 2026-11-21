@@ -33,6 +33,21 @@ pub struct Theme {
     pub warning: Color32,
     pub syntax: Syntax,
     pub ansi: [Color32; 16],
+    pub tokens: Tokens,
+    pub semantic: [Option<Color32>; 3],
+}
+
+#[derive(Clone)]
+pub struct Tokens {
+    pub id: usize,
+    pub rules: std::sync::Arc<Vec<syntect::highlighting::ThemeItem>>,
+}
+
+impl Tokens {
+    pub fn new(rules: Vec<syntect::highlighting::ThemeItem>) -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        Self { id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), rules: rules.into() }
+    }
 }
 
 const fn rgb(hex: u32) -> Color32 {
@@ -68,7 +83,13 @@ impl Theme {
     }
 
     pub fn of(settings: &Settings) -> Self {
-        let mut theme = Self::named(&settings.theme);
+        let mut theme = match settings.theme.as_str() {
+            "dark" | "light" => Self::named(&settings.theme),
+            name => crate::theme_import::load(&crate::settings::dir(), name).unwrap_or_else(|error| {
+                crate::ui::notify(format!("The theme {name} could not be loaded, Dark is in use: {error}"));
+                Self::dark()
+            }),
+        };
         if let Some(custom) = settings.colors.get(&settings.theme) {
             for (name, color) in theme.colors() {
                 if let Some(chosen) = custom.get(name).and_then(|hex| Color32::from_hex(hex).ok()) {
@@ -137,6 +158,8 @@ impl Theme {
                 rgb(0x6f7682), rgb(0xff8f87), rgb(0x9be7a5), rgb(0xf5d67d),
                 rgb(0x9fdcf7), rgb(0xdccdfb), rgb(0xa9e3dc), rgb(0xf2f4f7),
             ],
+            tokens: Tokens::new(vec![]),
+            semantic: [None; 3],
         }
     }
 
@@ -174,6 +197,8 @@ impl Theme {
                 rgb(0x6c727c), rgb(0xe0554d), rgb(0x3bb454), rgb(0xc99a00),
                 rgb(0x1f8fc2), rgb(0x8166dc), rgb(0x25a394), rgb(0xf5f6f8),
             ],
+            tokens: Tokens::new(vec![]),
+            semantic: [None; 3],
         }
     }
 

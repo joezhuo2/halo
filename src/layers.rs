@@ -13,6 +13,12 @@ const OS: &str = "linux";
 
 pub const VSCODE: &[(&str, &str)] = &[
     ("theme", "workbench.colorTheme"),
+    ("icon_theme", "workbench.iconTheme"),
+    ("shell_integration", "terminal.integrated.shellIntegration.enabled"),
+    ("diff_side_by_side", "diffEditor.renderSideBySide"),
+    ("files_exclude", "files.exclude"),
+    ("compact_folders", "explorer.compactFolders"),
+    ("confirm_drag_and_drop", "explorer.confirmDragAndDrop"),
     ("font_family", "editor.fontFamily"),
     ("font_size", "editor.fontSize"),
     ("tab_size", "editor.tabSize"),
@@ -115,6 +121,7 @@ pub fn to_halo(key: &str, value: Value) -> Value {
         ("inlay_hints", Value::String(s)) => json!(s.starts_with("on")),
         ("semantic_highlighting", Value::String(_)) => json!(true),
         ("rulers", Value::Array(list)) => list.into_iter().map(|r| r.get("column").cloned().unwrap_or(r)).collect(),
+        ("files_exclude", Value::Object(map)) => map.into_iter().filter(|(_, on)| on.as_bool() == Some(true)).map(|(k, _)| json!(k)).collect(),
         ("associations", Value::Object(map)) => Value::Object(map.into_iter().map(|(k, v)| (k.trim_start_matches("*.").to_owned(), v)).collect()),
         ("font_family" | "terminal_font_family", Value::String(s)) => font_path(&s),
         ("terminals", Value::Object(map)) => map
@@ -136,6 +143,10 @@ pub fn to_vscode(key: &str, value: Value) -> Value {
         "restore_session" => on(&value, "all", "none"),
         "auto_update" => on(&value, "default", "none"),
         "inlay_hints" => on(&value, "on", "off"),
+        "files_exclude" => match value {
+            Value::Array(list) => Value::Object(list.into_iter().filter_map(|p| Some((p.as_str()?.to_owned(), json!(true)))).collect()),
+            other => other,
+        },
         "associations" => match value {
             Value::Object(map) => Value::Object(map.into_iter().map(|(k, v)| (format!("*.{k}"), v)).collect()),
             other => other,
@@ -412,7 +423,12 @@ mod tests {
         for (halo, code) in VSCODE {
             assert_eq!(halo_key(code), Some(*halo));
             assert_eq!(vscode_key(halo).as_deref(), Some(*code));
-            let value = defaults[*halo].clone();
+            let mut value = defaults[*halo].clone();
+            if let Value::Array(list) = &mut value
+                && *halo == "files_exclude"
+            {
+                list.sort_by_key(|v| v.to_string());
+            }
             assert_eq!(to_halo(halo, to_vscode(halo, value.clone())), value, "{halo}");
             for flipped in [json!(true), json!(false)].into_iter().filter(|_| value.is_boolean()) {
                 assert_eq!(to_halo(halo, to_vscode(halo, flipped.clone())), flipped, "{halo}");
@@ -422,6 +438,8 @@ mod tests {
         let profiles = json!([{"name": "a", "program": "a.exe", "args": ["-x"]}, {"name": "b", "program": "b", "args": []}]);
         assert_eq!(to_halo("terminals", to_vscode("terminals", profiles.clone())), profiles);
         assert_eq!(to_vscode("associations", json!({"h": "cpp"})), json!({"*.h": "cpp"}));
+        assert_eq!(to_vscode("files_exclude", json!(["**/.git", "out"])), json!({"**/.git": true, "out": true}));
+        assert_eq!(to_halo("files_exclude", json!({"**/.git": true, "dist": false, "out": true})), json!(["**/.git", "out"]));
         assert_eq!(to_halo("word_wrap", json!("bounded")), json!("bounded"));
         assert_eq!(to_halo("word_wrap", json!(true)), json!("on"));
         assert_eq!(to_halo("render_whitespace", json!(false)), json!("none"));

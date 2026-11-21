@@ -27,11 +27,14 @@ pub struct Highlighter {
     key: Option<Key>,
 }
 
-type Key = [Color32; 11];
+type Key = ([Color32; 11], usize);
 
 fn key(theme: &Theme) -> Key {
     let s = &theme.syntax;
-    [theme.text, s.comment, s.string, s.number, s.constant, s.keyword, s.function, s.type_name, s.punctuation, theme.added, theme.deleted]
+    (
+        [theme.text, s.comment, s.string, s.number, s.constant, s.keyword, s.function, s.type_name, s.punctuation, theme.added, theme.deleted],
+        theme.tokens.id,
+    )
 }
 
 pub fn languages() -> &'static [(String, String)] {
@@ -73,7 +76,7 @@ fn build_theme(theme: &Theme) -> SynTheme {
         style: StyleModifier { foreground: Some(color(c)), background: None, font_style: None },
     };
     let s = &theme.syntax;
-    SynTheme {
+    let mut built = SynTheme {
         name: None,
         author: None,
         settings: ThemeSettings { foreground: Some(color(theme.text)), ..Default::default() },
@@ -95,7 +98,9 @@ fn build_theme(theme: &Theme) -> SynTheme {
             item("markup.inserted", theme.added),
             item("markup.deleted", theme.deleted),
         ],
-    }
+    };
+    built.scopes.extend(theme.tokens.rules.iter().cloned());
+    built
 }
 
 fn syn_theme(theme: &Theme) -> Arc<SynTheme> {
@@ -172,6 +177,12 @@ impl Highlighter {
 
     pub fn named(name: &str, rope: &Rope) -> Self {
         let syntax = syntaxes().find_syntax_by_name(name).filter(|s| s.name != "Plain Text" && rope.len_bytes() <= MAX_FILE);
+        Self { syntax, ..Self::new(None, &Rope::new()) }.labelled()
+    }
+
+    pub fn fenced(token: &str, rope: &Rope) -> Self {
+        let set = syntaxes();
+        let syntax = set.find_syntax_by_token(token).filter(|s| s.name != "Plain Text" && rope.len_bytes() <= MAX_FILE);
         Self { syntax, ..Self::new(None, &Rope::new()) }.labelled()
     }
 

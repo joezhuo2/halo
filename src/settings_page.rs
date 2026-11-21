@@ -53,6 +53,7 @@ pub const SETTINGS: &[Meta] = &[
     m("font_family", 0, ED, "Font Family", "The font of the editor and the terminal.", Kind::Custom),
     m("font_size", 0, ED, "Font Size", "The font size in pixels.", Kind::Float(8.0, 32.0)),
     m("tab_size", 0, ED, "Tab Size", "The number of spaces a tab is equal to.", Kind::Int(1, 8)),
+    m("large_mb", 0, ED, "Large File Size (MB)", "Files above this size open without highlighting, language servers, minimap, git gutter, blame, word wrap and local history.", Kind::Int(1, 250)),
     m("insert_spaces", 0, ED, "Insert Spaces", "Insert spaces when pressing Tab.", Kind::Toggle),
     m("word_wrap", 0, ED, "Word Wrap", "How long lines wrap (Alt+Z toggles).", Kind::Choice(&[("off", "Off"), ("on", "At the editor width"), ("wordWrapColumn", "At the wrap column"), ("bounded", "At the editor width or the wrap column, whichever is less")])),
     m("word_wrap_column", 0, ED, "Word Wrap Column", "The column lines wrap at when Word Wrap uses the wrap column.", Kind::Int(1, 1000)),
@@ -78,6 +79,7 @@ pub const SETTINGS: &[Meta] = &[
     m("sticky_scroll", 0, ED, "Sticky Scroll", "Keep the lines that open the current scopes at the top while scrolling.", Kind::Toggle),
     m("bracket_colors", 0, ED, "Bracket Pair Colors", "Color brackets by how deeply they are nested.", Kind::Toggle),
     m("guides", 0, ED, "Guides", "Draw indentation guides and highlight the guide of the bracket pair around the cursor.", Kind::Toggle),
+    m("diff_side_by_side", 0, ED, "Side by Side Diff", "Open changes in two columns. Off shows one column with the removed lines above the added ones.", Kind::Toggle),
     m("rulers", 0, ED, "Rulers", "Columns that get a vertical line, separated by commas.", Kind::Custom),
     m("minimap", 0, ED, "Minimap", "Show the minimap beside the editor.", Kind::Toggle),
     m("minimap_side", 0, ED, "Minimap Side", "The side of the editor the minimap is on.", Kind::Choice(&[("right", "Right"), ("left", "Left")])),
@@ -103,12 +105,17 @@ pub const SETTINGS: &[Meta] = &[
     m("restore_session", 2, "Window", "Restore Session", "Open the last folder and its files when Halo starts.", Kind::Toggle),
     m("tab_close_button", 2, "Workbench", "Tab Close Button", "Where the close button of an editor tab is.", Kind::Choice(&[("right", "Right"), ("left", "Left"), ("off", "Off")])),
     m("enable_preview", 2, "Workbench", "Enable Preview", "Open files from a single click in a preview tab that the next one replaces.", Kind::Toggle),
+    m("compact_folders", 1, "Explorer", "Compact Folders", "Show a chain of folders that each hold only one folder as a single row in the Explorer.", Kind::Toggle),
+    m("confirm_drag_and_drop", 1, "Explorer", "Confirm Drag And Drop", "Ask before moving files and folders by dragging them in the Explorer.", Kind::Toggle),
+    m("files_exclude", 1, FILES, "Exclude", "Glob patterns of files and folders the Explorer hides. Supports *, **, ?, [abc] and {a,b}.", Kind::Custom),
     m("confirm_delete", 2, "Explorer", "Confirm Delete", "Ask before moving a file to the recycle bin from the Explorer.", Kind::Toggle),
     m("explorer_sort", 2, "Explorer", "Sort Order", "How the Explorer orders files and folders.", Kind::Choice(&[("default", "Folders first, by name"), ("mixed", "By name"), ("filesFirst", "Files first"), ("type", "Folders first, by extension"), ("modified", "Folders first, newest first")])),
-    m("theme", 2, "Workbench", "Color Theme", "The base theme. Custom colors are kept for each theme.", Kind::Choice(&[("dark", "Dark"), ("light", "Light")])),
+    m("theme", 2, "Workbench", "Color Theme", "The base theme. Custom colors are kept for each theme. Import more with Preferences: Import VS Code Theme.", Kind::Custom),
+    m("icon_theme", 2, "Workbench", "File Icon Theme", "The icons shown next to files and folders. Import more with Preferences: Import VS Code Icon Theme.", Kind::Custom),
     m("colors", 2, "Workbench", "Colors", "Interface colors on the left, syntax colors on the right.", Kind::Custom),
     m("default_terminal", 3, "Terminal", "Default Profile", "The shell a new terminal starts with.", Kind::Custom),
     m("terminals", 3, "Terminal", "Profiles", "The name, program and arguments of each shell.", Kind::Custom),
+    m("shell_integration", 3, "Terminal", "Shell Integration", "Let PowerShell, bash and zsh report their prompts, commands, exit codes and folder, for command marks and navigation.", Kind::Toggle),
     m("terminal_font_family", 3, "Terminal", "Font Family", "The font of the terminals. Empty uses the editor font.", Kind::Custom),
     m("terminal_font_size", 3, "Terminal", "Font Size", "The font size of the terminals in pixels. 0 uses the editor font size.", Kind::Float(0.0, 32.0)),
     m("terminal_line_height", 3, "Terminal", "Line Height", "The height of a terminal row as a multiple of the font height.", Kind::Float(1.0, 3.0)),
@@ -135,11 +142,14 @@ pub struct SettingsPage {
     layer: usize,
     query: String,
     focus: bool,
+    pub(crate) themes: Option<(Vec<String>, Vec<String>)>,
+    confirm: Option<String>,
     fonts: Option<Vec<(&'static str, String)>>,
     new_run: (String, String),
     new_association: (String, String),
     new_server: (String, String),
     new_adapter: (String, String),
+    new_exclude: String,
 }
 
 pub struct Query {
@@ -533,6 +543,23 @@ fn custom(ui: &mut Ui, theme: &Theme, key: &str, s: &mut Settings, page: &mut Se
         "rulers" => rulers(ui, s),
         "word_separators" => drop(field(ui, &mut s.word_separators, 320.0, "separators")),
         "colors" => colors(ui, theme, s),
+        "theme" | "icon_theme" => {
+            let (themes, icon_themes) = page
+                .themes
+                .get_or_insert_with(|| {
+                    let config = crate::settings::dir();
+                    (crate::theme_import::installed(&config), crate::icon_theme::installed(&config))
+                })
+                .clone();
+            let removed = match key {
+                "theme" => choose(ui, "color_theme", &mut s.theme, &[("dark", "Dark"), ("light", "Light")], &themes, &mut page.confirm, crate::theme_import::remove),
+                _ => choose(ui, "icon_theme", &mut s.icon_theme, &[("builtin", "Halo (default)"), ("none", "None")], &icon_themes, &mut page.confirm, crate::icon_theme::remove),
+            };
+            if removed {
+                page.themes = None;
+            }
+        }
+        "files_exclude" => exclude_editor(ui, theme, &mut s.files_exclude, &mut page.new_exclude),
         "default_terminal" => {
             let names: Vec<String> = s.terminals.iter().map(|p| p.name.clone()).collect();
             egui::ComboBox::from_id_salt("default_terminal").width(240.0).selected_text(s.default_terminal.clone()).show_ui(ui, |ui| {
@@ -583,6 +610,44 @@ fn rulers(ui: &mut Ui, s: &mut Settings) {
         s.rulers = parse(&text);
     }
     ui.data_mut(|d| d.insert_temp(id, text));
+}
+
+fn choose(
+    ui: &mut Ui,
+    id: &str,
+    current: &mut String,
+    fixed: &[(&str, &str)],
+    imported: &[String],
+    confirm: &mut Option<String>,
+    remove: fn(&Path, &str),
+) -> bool {
+    let shown = fixed.iter().find(|(value, _)| value == current).map_or_else(|| current.clone(), |(_, label)| (*label).to_owned());
+    let mut removed = false;
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt(id).width(240.0).selected_text(shown).show_ui(ui, |ui| {
+            for (value, label) in fixed {
+                ui.selectable_value(current, (*value).to_owned(), *label);
+            }
+            for name in imported {
+                ui.selectable_value(current, name.clone(), name);
+            }
+        });
+        if imported.contains(current) {
+            let key = format!("{id}:{current}");
+            let armed = confirm.as_deref() == Some(key.as_str());
+            if ui.button(if armed { "Click again to remove" } else { "Remove" }).clicked() {
+                if armed {
+                    remove(&crate::settings::dir(), current);
+                    *current = fixed[0].0.to_owned();
+                    *confirm = None;
+                    removed = true;
+                } else {
+                    *confirm = Some(key);
+                }
+            }
+        }
+    });
+    removed
 }
 
 fn colors(ui: &mut Ui, theme: &Theme, s: &mut Settings) {
@@ -670,6 +735,28 @@ fn map_editor(ui: &mut Ui, theme: &Theme, id: &str, map: &mut BTreeMap<String, S
     });
     if let Some(key) = remove {
         map.remove(&key);
+    }
+}
+
+fn exclude_editor(ui: &mut Ui, theme: &Theme, patterns: &mut Vec<String>, new: &mut String) {
+    let mut remove = None;
+    grid(ui, "settings_exclude", 2, |ui| {
+        for (index, pattern) in patterns.iter_mut().enumerate() {
+            field(ui, pattern, 380.0, "pattern");
+            if remove_button(ui, theme) {
+                remove = Some(index);
+            }
+            ui.end_row();
+        }
+        field(ui, new, 380.0, "**/node_modules");
+        if ui.add_enabled(!new.trim().is_empty(), egui::Button::new("Add")).clicked() {
+            patterns.push(new.trim().to_owned());
+            new.clear();
+        }
+        ui.end_row();
+    });
+    if let Some(index) = remove {
+        patterns.remove(index);
     }
 }
 

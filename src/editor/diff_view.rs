@@ -1,0 +1,1094 @@
+use super::buffer::{After, Document, Kind, Sel};
+use super::diff::{self, Hunk};
+use super::highlight::Highlighter;
+use super::{Doc, Editors, MAX_COLS, Tab, job, notice};
+use crate::command::{self, Command};
+use crate::settings::Settings;
+use crate::theme::Theme;
+use crate::ui::{self, icons};
+use eframe::egui::text::{CCursor, LayoutJob, TextFormat};
+use eframe::egui::{
+    self, Align, Align2, CornerRadius, Event, FontId, Id, Key, Layout, Painter, Rect, RichText, Sense, Stroke, StrokeKind, Ui,
+    UiBuilder, pos2, vec2,
+};
+use ropey::Rope;
+use std::collections::HashMap;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant};
+
+const GAP: f32 = 26.0;
+const BAR: f32 = 28.0;
+pub(super) const RULER: f32 = 14.0;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Side {
+    Working,
+    Staged,
+    Fixed,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Spec {
+    rel: String,
+    left: String,
+    right: Option<String>,
+}
+
+impl Spec {
+    fn parse(args: &[String]) -> Option<Spec> {
+        let at = args.iter().position(|a| a == "--").filter(|at| at + 2 == args.len())?;
+        let head: Vec<&str> = args[..at].iter().map(String::as_str).collect();
+        let (left, right) = match head[..] {
+            ["diff"] => (String::new(), None),
+            ["diff", "--cached"] => ("HEAD".to_owned(), Some(String::new())),
+            ["show", "--format=", "--diff-merges=first-parent", hash] => (format!("{hash}^"), Some(hash.to_owned())),
+            _ => return None,
+        };
+        Some(Spec { rel: args[at + 1].clone(), left, right })
+    }
+
+    fn side(&self) -> Side {
+        match self.right.as_deref() {
+            None => Side::Working,
+            Some("") => Side::Staged,
+            Some(_) => Side::Fixed,
+        }
+    }
+
+    fn label(rev: Option<&str>) -> String {
+        match rev {
+            None => "Working Tree".to_owned(),
+            Some("") => "Index".to_owned(),
+            Some(rev) => {
+                let (hash, parent) = rev.strip_suffix('^').map_or((rev, ""), |hash| (hash, "^"));
+                format!("{}{parent}", &hash[..hash.len().min(8)])
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Model {
+    hunks: Vec<Hunk>,
+    left: HashMap<usize, Vec<Range<usize>>>,
+    right: HashMap<usize, Vec<Range<usize>>>,
+}
+
+fn model(left: &str, right: &str) -> Model {
+    let hunks = diff::lines(left, right);
+    let (a, b) = (diff::split(left), diff::split(right));
+    let mut out = Model::default();
+    for hunk in &hunks {
+        for k in 0..hunk.left.len().min(hunk.right.len()) {
+            let (l, r) = (hunk.left.start + k, hunk.right.start + k);
+            let (x, y) = (a[l].trim_end_matches('\n'), b[r].trim_end_matches('\n'));
+            if x.len() + y.len() < 4000 {
+                let (ml, mr) = diff::intra(x, y);
+                out.left.insert(l, ml);
+                out.right.insert(r, mr);
+            }
+        }
+    }
+    out.hunks = hunks;
+    out
+}
+
+fn eol(text: &str, crlf: bool) -> String {
+    if crlf { text.replace('\n', "\r\n") } else { text.to_owned() }
+}
+
+fn line_text(rope: &Rope, line: usize) -> String {
+    if line >= rope.len_lines() {
+        return String::new();
+    }
+    let text: String = rope.line(line).chars().take(MAX_COLS).collect();
+    text.trim_end_matches('\n').to_owned()
+}
+
+fn hunk_in(hunks: &[Hunk], line: usize, left: bool) -> Option<&Hunk> {
+    let range = |h: &Hunk| if left { h.left.clone() } else { h.right.clone() };
+    hunks.get(hunks.partition_point(|h| range(h).end <= line)).filter(|h| range(h).contains(&line))
+}
+
+pub(super) struct DiffTab {
+    pub title: String,
+    top: PathBuf,
+    spec: Spec,
+    args: Vec<String>,
+    left: Arc<String>,
+    rope: Rope,
+    hl: Highlighter,
+    crlf: bool,
+    model: Model,
+    computed: u64,
+    seen: (u64, f64),
+    job: Option<Receiver<(u64, Model)>>,
+    rows: ((u64, usize), Vec<diff::Row>),
+    pub inline: bool,
+    pub scroll: f32,
+    pub text_top: f32,
+    pub line_h: f32,
+}
+
+impl DiffTab {
+    fn new(load: &Load, left: String) -> Self {
+        let crlf = left.contains("\r\n");
+        let left = left.replace("\r\n", "\n");
+        let rope = Rope::from_str(&left);
+        let hl = Highlighter::new(Some(&load.top.join(&load.spec.rel)), &rope);
+        Self {
+            title: load.title.clone(),
+            top: load.top.clone(),
+            spec: load.spec.clone(),
+            args: load.args.clone(),
+            left: Arc::new(left),
+            rope,
+            hl,
+            crlf,
+            model: Model::default(),
+            computed: 0,
+            seen: (0, 0.0),
+            job: None,
+            rows: ((0, 0), vec![]),
+            inline: load.inline,
+            scroll: 0.0,
+            text_top: 0.0,
+            line_h: 16.0,
+        }
+    }
+
+    pub fn pads(&self) -> Vec<(usize, u32)> {
+        if self.inline { diff::inline_pads(&self.model.hunks) } else { diff::pads(&self.model.hunks, false) }
+    }
+
+    fn sync(&mut self, buf: &Document) {
+        if self.computed != buf.version {
+            self.model = model(&self.left, &buf.rope.to_string());
+            self.computed = buf.version;
+            self.job = None;
+        }
+    }
+
+    fn refresh(&mut self, buf: &Document, now: f64, ctx: &egui::Context) {
+        if let Some(found) = self.job.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            (self.computed, self.model, self.job) = (found.0, found.1, None);
+        }
+        if self.computed == buf.version || self.job.is_some() {
+            return;
+        }
+        if buf.rope.len_bytes() + self.left.len() < 400_000 {
+            return self.sync(buf);
+        }
+        if self.seen.0 != buf.version {
+            self.seen = (buf.version, now);
+        }
+        let wait = 0.3 - (now - self.seen.1);
+        if wait > 0.0 && self.computed != 0 {
+            return ctx.request_repaint_after(Duration::from_secs_f64(wait));
+        }
+        let (tx, rx) = channel();
+        let (left, right, version, ctx) = (self.left.clone(), buf.rope.to_string(), buf.version, ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send((version, model(&left, &right)));
+            ctx.request_repaint();
+        });
+        self.job = Some(rx);
+    }
+}
+
+#[derive(Clone)]
+struct Load {
+    title: String,
+    top: PathBuf,
+    spec: Spec,
+    args: Vec<String>,
+    inline: bool,
+    focus: bool,
+}
+
+pub(super) struct Base {
+    top: PathBuf,
+    rel: String,
+    text: Arc<String>,
+    crlf: bool,
+    model: Model,
+    version: u64,
+    at: Instant,
+}
+
+impl Base {
+    fn sync(&mut self, buf: &Document) {
+        if self.version != buf.version {
+            self.model = model(&self.text, &buf.rope.to_string());
+            self.version = buf.version;
+        }
+    }
+}
+
+enum Msg {
+    Loaded(Load, String, Option<String>),
+    Text(String, String),
+    Base(u64, Result<Base, String>),
+    Applied(PathBuf, Result<&'static str, String>),
+}
+
+enum Wait {
+    Peek(usize),
+    Run(Command, usize, Vec<Range<usize>>),
+}
+
+pub(super) struct Diffs {
+    tx: Sender<Msg>,
+    rx: Receiver<Msg>,
+    bases: HashMap<u64, Option<Base>>,
+    waiting: Option<(u64, Wait)>,
+    peek: Option<(u64, usize)>,
+    at: Option<usize>,
+    refresh: bool,
+}
+
+impl Default for Diffs {
+    fn default() -> Self {
+        let (tx, rx) = channel();
+        Self { tx, rx, bases: HashMap::new(), waiting: None, peek: None, at: None, refresh: false }
+    }
+}
+
+impl Diffs {
+    fn load(&self, load: Load, ctx: &egui::Context) {
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let show = |rev: &str| crate::git::exec(&load.top, &["show", &format!("{rev}:{}", load.spec.rel)]);
+            let left = show(&load.spec.left);
+            let right = load.spec.right.as_deref().map(show);
+            let binary = |text: &Result<String, String>| text.as_ref().is_ok_and(|t| t.as_bytes().iter().take(8000).any(|b| *b == 0));
+            let missing = match &right {
+                Some(right) => left.is_err() && right.is_err(),
+                None => !load.top.join(&load.spec.rel).is_file(),
+            };
+            let msg = if missing || binary(&left) || right.as_ref().is_some_and(binary) {
+                let args: Vec<&str> = load.args.iter().map(String::as_str).collect();
+                Msg::Text(load.title.clone(), crate::git::exec(&load.top, &args).unwrap_or_else(|error| error))
+            } else {
+                Msg::Loaded(load, left.unwrap_or_default(), right.map(Result::unwrap_or_default))
+            };
+            let _ = tx.send(msg);
+            ctx.request_repaint();
+        });
+    }
+
+    fn fresh(&self, doc: u64) -> bool {
+        self.bases.get(&doc).is_some_and(|base| base.as_ref().is_some_and(|base| base.at.elapsed() < Duration::from_secs(3)))
+    }
+
+    fn load_base(&mut self, doc: u64, path: &Path, ctx: &egui::Context) {
+        if matches!(self.bases.get(&doc), Some(None)) {
+            return;
+        }
+        self.bases.insert(doc, None);
+        let (tx, ctx, path) = (self.tx.clone(), ctx.clone(), path.to_path_buf());
+        std::thread::spawn(move || {
+            let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let result = crate::git::exec(&dir, &["rev-parse", "--show-toplevel", "--show-prefix"]).map(|out| {
+                let mut lines = out.lines();
+                let top = crate::wsl::local(&dir, lines.next().unwrap_or_default().trim());
+                let rel = format!("{}{name}", lines.next().unwrap_or_default().trim());
+                let text = crate::git::exec(&top, &["show", &format!("HEAD:{rel}")]).unwrap_or_default();
+                let crlf = text.contains("\r\n");
+                let text = Arc::new(text.replace("\r\n", "\n"));
+                Base { top, rel, text, crlf, model: Model::default(), version: 0, at: Instant::now() }
+            });
+            let _ = tx.send(Msg::Base(doc, result.map_err(|_| format!("{name} is not in a Git repository."))));
+            ctx.request_repaint();
+        });
+    }
+
+    fn apply(&self, top: PathBuf, rel: String, old: &str, new: &str, reverse: bool, ctx: &egui::Context) {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let patch = diff::patch(&rel, old, new);
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let name = format!("halo-{}-{}.patch", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+            let result = crate::git::exec(&top, &["rev-parse", "--git-path", &name]).and_then(|found| {
+                let found = found.trim().to_owned();
+                let file = if found.starts_with('/') || Path::new(&found).is_absolute() { crate::wsl::local(&top, &found) } else { top.join(&found) };
+                std::fs::write(&file, &patch).map_err(|e| format!("Could not write the patch: {e}"))?;
+                let mut args = vec!["apply", "--cached", "--whitespace=nowarn"];
+                args.extend(reverse.then_some("-R"));
+                args.push(&found);
+                let done = crate::git::exec(&top, &args);
+                let _ = std::fs::remove_file(&file);
+                done.map(|_| if reverse { "Change unstaged." } else { "Change staged." })
+            });
+            let _ = tx.send(Msg::Applied(top.join(&rel), result));
+            ctx.request_repaint();
+        });
+    }
+
+    fn anchor(&mut self, doc: u64, buf: &Document) -> Option<usize> {
+        let (_, index) = self.peek.filter(|p| p.0 == doc)?;
+        let base = self.bases.get_mut(&doc)?.as_mut()?;
+        base.sync(buf);
+        let hunk = base.model.hunks.get(index)?;
+        Some(if hunk.right.is_empty() { hunk.right.start.saturating_sub(1) } else { hunk.right.end - 1 })
+    }
+
+    fn show_peek(&mut self, doc: u64, buf: &Document, line: usize) -> Option<usize> {
+        let base = self.bases.get_mut(&doc)?.as_mut()?;
+        base.sync(buf);
+        let index = diff::hunk_at(&base.model.hunks, line).or_else(|| diff::step(&base.model.hunks, line, true))?;
+        self.peek = Some((doc, index));
+        Some(buf.line_start(base.model.hunks[index].right.start))
+    }
+}
+
+pub(super) fn hatch(painter: &Painter, rect: Rect, theme: &Theme) {
+    let rect = rect.intersect(painter.clip_rect());
+    if !rect.is_positive() {
+        return;
+    }
+    let p = painter.with_clip_rect(rect);
+    p.rect_filled(rect, CornerRadius::ZERO, ui::mix(theme.bg, theme.panel, 0.6));
+    let stroke = Stroke::new(1.0, ui::with_alpha(theme.border, 0.8));
+    let mut c = ((rect.left() + rect.top()) / 8.0).floor() * 8.0;
+    while c < rect.right() + rect.bottom() {
+        p.line_segment([pos2(c - rect.bottom(), rect.bottom()), pos2(c - rect.top(), rect.top())], stroke);
+        c += 8.0;
+    }
+}
+
+fn marks(painter: &Painter, galley: &egui::Galley, x: f32, row: Rect, ranges: Option<&Vec<Range<usize>>>, color: egui::Color32) {
+    for r in ranges.into_iter().flatten() {
+        let at = |col: usize| x + galley.pos_from_cursor(CCursor::new(col)).min.x;
+        painter.rect_filled(Rect::from_x_y_ranges(at(r.start)..=at(r.end), row.y_range()), CornerRadius::ZERO, color);
+    }
+}
+
+pub(super) fn tint(painter: &Painter, theme: &Theme, d: &DiffTab, line: usize, band: Rect, x: &dyn Fn(usize) -> f32) {
+    if hunk_in(&d.model.hunks, line, false).is_none() {
+        return;
+    }
+    painter.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(theme.added, 0.13));
+    for r in d.model.right.get(&line).into_iter().flatten() {
+        painter.rect_filled(Rect::from_x_y_ranges(x(r.start)..=x(r.end), band.y_range()), CornerRadius::ZERO, ui::with_alpha(theme.added, 0.3));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_pads(
+    painter: &Painter,
+    theme: &Theme,
+    d: &mut DiffTab,
+    pads: &[(usize, u32)],
+    top: &dyn Fn(usize) -> f32,
+    lines: (usize, usize),
+    clip: Rect,
+    (text_x, number_x): (f32, f32),
+    font: &FontId,
+    line_h: f32,
+) {
+    let number_font = FontId::monospace(font.size - 1.0);
+    for &(line, count) in pads.iter().filter(|p| p.0 >= lines.0 && p.0 <= lines.1) {
+        let y = top(line);
+        let rect = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), y + count as f32 * line_h));
+        if !d.inline {
+            hatch(painter, rect, theme);
+            continue;
+        }
+        let Some(hunk) = d.model.hunks.iter().find(|h| h.right.start == line && !h.left.is_empty()).cloned() else { continue };
+        if !d.hl.ensure(&d.rope, hunk.left.clone(), theme, Duration::from_millis(4)) {
+            painter.ctx().request_repaint();
+        }
+        for (k, l) in hunk.left.clone().enumerate() {
+            let row = Rect::from_min_size(pos2(clip.left(), y + k as f32 * line_h), vec2(clip.width(), line_h));
+            painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.13));
+            let text = line_text(&d.rope, l);
+            let galley = painter.layout_job(job(&text, 0..text.len(), d.hl.get(l), font, theme.text, &[], &[], &TextFormat::default()));
+            marks(painter, &galley, text_x, row, d.model.left.get(&l), ui::with_alpha(theme.deleted, 0.3));
+            painter.text(pos2(number_x, row.center().y), Align2::RIGHT_CENTER, l + 1, number_font.clone(), ui::with_alpha(theme.deleted, 0.9));
+            painter.galley(pos2(text_x, row.top() + (line_h - galley.size().y) / 2.0), galley, theme.text);
+        }
+    }
+}
+
+fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, right_len: usize, font: &FontId, char_w: f32) {
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    painter.rect_filled(rect, CornerRadius::ZERO, theme.bg);
+    let total = d.rope.len_lines();
+    if d.rows.0 != (d.computed, right_len) {
+        d.rows = ((d.computed, right_len), diff::align(&d.model.hunks, total, right_len));
+    }
+    let line_h = d.line_h;
+    let first = (d.scroll / line_h).floor().max(0.0) as usize;
+    let shown = &d.rows.1[first.min(d.rows.1.len())..(first + (rect.height() / line_h) as usize + 2).min(d.rows.1.len())];
+    let lines = shown.iter().filter_map(|r| r.left);
+    let range = lines.clone().min().unwrap_or(0)..lines.max().map_or(0, |l| l + 1);
+    if !d.hl.ensure(&d.rope, range, theme, Duration::from_millis(6)) {
+        ui.ctx().request_repaint();
+    }
+    let gutter = (total.to_string().len().max(3) as f32 + 2.0) * char_w + 14.0;
+    let number_font = FontId::monospace(font.size - 1.0);
+    for (index, found) in shown.iter().enumerate() {
+        let y = d.text_top + (first + index) as f32 * line_h - d.scroll;
+        let row = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), line_h));
+        let Some(line) = found.left else {
+            hatch(&painter, row, theme);
+            continue;
+        };
+        let text = line_text(&d.rope, line);
+        let galley = painter.layout_job(job(&text, 0..text.len(), d.hl.get(line), font, theme.text, &[], &[], &TextFormat::default()));
+        if found.changed {
+            painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.13));
+            marks(&painter, &galley, rect.left() + gutter, row, d.model.left.get(&line), ui::with_alpha(theme.deleted, 0.3));
+        }
+        let number = if found.changed { theme.text } else { ui::with_alpha(theme.text_dim, 0.75) };
+        painter.text(pos2(rect.left() + gutter - 10.0 - char_w, row.center().y), Align2::RIGHT_CENTER, line + 1, number_font.clone(), number);
+        painter.galley(pos2(rect.left() + gutter, row.top() + (line_h - galley.size().y) / 2.0), galley, theme.text);
+    }
+}
+
+fn tip(cmd: &Command, ctx: &egui::Context) -> String {
+    match command::shortcut_text(ctx, cmd) {
+        Some(keys) => format!("{} ({keys})", cmd.label()),
+        None => cmd.label().to_owned(),
+    }
+}
+
+impl Editors {
+    pub fn compare(&mut self, title: &str, args: &[String], top: &Path, inline: bool, ctx: &egui::Context) -> bool {
+        let Some(spec) = Spec::parse(args) else { return false };
+        let load = Load { title: title.to_owned(), top: top.to_path_buf(), spec, args: args.to_vec(), inline, focus: true };
+        self.diffs.load(load, ctx);
+        true
+    }
+
+    pub(super) fn poll_diffs(&mut self, ctx: &egui::Context) {
+        while let Ok(msg) = self.diffs.rx.try_recv() {
+            match msg {
+                Msg::Loaded(load, left, right) => self.place_diff(load, left, right),
+                Msg::Text(title, text) => self.open_text(&title, &text, Some(Path::new("changes.diff"))),
+                Msg::Base(doc, Ok(base)) => {
+                    self.diffs.bases.insert(doc, Some(base));
+                    if let Some((_, wait)) = self.diffs.waiting.take_if(|w| w.0 == doc) {
+                        match wait {
+                            Wait::Peek(line) => {
+                                let shown = self.docs.get(&doc).and_then(|d| self.diffs.show_peek(doc, &d.buf, line));
+                                if let (Some(pos), Some((g, t))) = (shown, self.active_tab()) {
+                                    self.groups[g].tabs[t].reveal = Some(pos);
+                                }
+                            }
+                            Wait::Run(cmd, line, ranges) => self.run_change(doc, &cmd, line, ranges, ctx),
+                        }
+                    }
+                }
+                Msg::Base(doc, Err(error)) => {
+                    self.diffs.bases.remove(&doc);
+                    self.diffs.waiting = None;
+                    self.banner = notice(error);
+                }
+                Msg::Applied(path, Ok(done)) => {
+                    self.diffs.refresh = true;
+                    self.banner = notice(done.to_owned());
+                    let key = crate::lsp::key(&path);
+                    let tabs = self.groups.iter().flat_map(|g| &g.tabs).filter_map(|t| t.diff.as_deref());
+                    let loads: Vec<Load> = tabs
+                        .filter(|d| crate::lsp::key(&d.top.join(&d.spec.rel)) == key)
+                        .map(|d| Load { title: d.title.clone(), top: d.top.clone(), spec: d.spec.clone(), args: d.args.clone(), inline: d.inline, focus: false })
+                        .collect();
+                    loads.into_iter().for_each(|load| self.diffs.load(load, ctx));
+                }
+                Msg::Applied(_, Err(error)) => self.banner = Some((format!("Git could not apply the change: {error}"), None)),
+            }
+        }
+    }
+
+    pub(super) fn take_git_refresh(&mut self) -> bool {
+        std::mem::take(&mut self.diffs.refresh)
+    }
+
+    fn place_diff(&mut self, load: Load, left: String, right: Option<String>) {
+        let path = load.top.join(&load.spec.rel);
+        let found = self
+            .groups
+            .iter()
+            .enumerate()
+            .find_map(|(g, group)| Some((g, group.tabs.iter().position(|t| t.diff.as_ref().is_some_and(|d| d.title == load.title))?)));
+        let doc = match &right {
+            None => match self.find_doc(&path) {
+                Some(id) => id,
+                None => match Document::load(&path) {
+                    Ok(buf) => self.insert_doc(buf),
+                    Err(error) => {
+                        self.banner = Some((error, None));
+                        return;
+                    }
+                },
+            },
+            Some(text) => {
+                let mut buf = Document::from_text(&text.replace("\r\n", "\n"), load.title.clone());
+                buf.read_only = true;
+                let hl = Highlighter::new(Some(&path), &buf.rope);
+                let old = found.map(|(g, t)| self.groups[g].tabs[t].doc).filter(|id| self.docs.get(id).is_some_and(|d| d.buf.read_only));
+                let id = old.unwrap_or_else(|| self.insert_doc(Document::from_text("", String::new())));
+                if let Some(doc) = self.docs.get_mut(&id) {
+                    (doc.hl, doc.max_cols, doc.buf) = (hl, (0, 0), buf);
+                }
+                id
+            }
+        };
+        let mut fresh = DiffTab::new(&load, left);
+        if let Some(d) = self.docs.get(&doc) {
+            fresh.sync(&d.buf);
+        }
+        let first = fresh.model.hunks.first().map(|h| h.right.start);
+        match found {
+            Some((g, t)) => {
+                let tab = &mut self.groups[g].tabs[t];
+                fresh.inline = tab.diff.as_ref().map_or(fresh.inline, |d| d.inline);
+                tab.diff = Some(Box::new(fresh));
+                let old = std::mem::replace(&mut tab.doc, doc);
+                if load.focus {
+                    (self.active, self.groups[g].active, self.want_focus) = (g, t, true);
+                }
+                if old != doc {
+                    self.drop_doc(old);
+                }
+            }
+            None => {
+                self.add_tab(doc, vec![Sel::caret(0)]);
+                let pos = first.zip(self.docs.get(&doc)).map(|(line, d)| d.buf.line_start(line));
+                if let Some(tab) = self.groups[self.active].tabs.last_mut() {
+                    tab.diff = Some(Box::new(fresh));
+                    if let Some(pos) = pos {
+                        (tab.sels, tab.reveal) = (vec![Sel::caret(pos)], Some(pos));
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn diff_frame(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, doc: &Doc, tab: &mut Tab, pending: &mut Vec<Command>) -> Rect {
+        let Some(d) = tab.diff.as_mut() else { return body };
+        let ctx = ui.ctx().clone();
+        d.refresh(&doc.buf, ui.input(|i| i.time), &ctx);
+        let bar = Rect::from_min_size(body.min, vec2(body.width(), BAR));
+        let area = body.with_min_y(bar.bottom());
+        let right_col = if d.inline { area } else { area.with_min_x(area.center().x + GAP / 2.0) };
+        let painter = ui.painter();
+        painter.rect_filled(bar, CornerRadius::ZERO, theme.panel);
+        painter.hline(bar.x_range(), bar.bottom() - 0.5, Stroke::new(1.0, theme.border));
+        let (left_label, right_label) = (Spec::label(Some(&d.spec.left)), Spec::label(d.spec.right.as_deref()));
+        let font = FontId::proportional(12.0);
+        if d.inline {
+            painter.text(bar.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, format!("{left_label}  vs  {right_label}"), font, theme.text_dim);
+        } else {
+            painter.text(bar.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, left_label, font.clone(), theme.text_dim);
+            painter.text(pos2(right_col.left() + 12.0, bar.center().y), Align2::LEFT_CENTER, right_label, font, theme.text_dim);
+        }
+        let line = doc.buf.line_of(tab.sels.first().map_or(0, |s| s.head));
+        let hunks = &d.model.hunks;
+        let status = match (hunks.len(), diff::current(hunks, line)) {
+            (0, _) => "No changes".to_owned(),
+            (count, at) => format!("{} of {count}", at.map_or(0, |at| at + 1)),
+        };
+        let selected = tab.sels.iter().any(|s| !s.is_empty());
+        let mut actions: Vec<(&str, Command)> = vec![(if d.inline { icons::COLUMNS } else { icons::ROWS }, Command::ToggleInlineDiff)];
+        actions.extend([(icons::ARROW_DOWN, Command::NextChange), (icons::ARROW_UP, Command::PrevChange)]);
+        let ranges = match d.spec.side() {
+            Side::Working => vec![(icons::ARROW_U_UP_LEFT, Command::RevertSelectedRanges), (icons::PLUS, Command::StageSelectedRanges)],
+            Side::Staged => vec![(icons::MINUS, Command::UnstageSelectedRanges)],
+            Side::Fixed => vec![],
+        };
+        ui.scope_builder(UiBuilder::new().max_rect(bar.shrink2(vec2(8.0, 0.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (icon, cmd) in actions {
+                if ui::icon_button(ui, theme, icon, 22.0, false, &tip(&cmd, &ctx)).clicked() {
+                    pending.push(cmd);
+                }
+            }
+            ui.label(RichText::new(&status).size(12.0).color(theme.text_dim));
+            if selected {
+                ui.add_space(8.0);
+                for (icon, cmd) in ranges {
+                    if ui::icon_button(ui, theme, icon, 22.0, false, &tip(&cmd, &ctx)).clicked() {
+                        pending.push(cmd);
+                    }
+                }
+            }
+        });
+        right_col
+    }
+
+    pub(super) fn diff_after(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, settings: &Settings, tab: &mut Tab, pending: &mut Vec<Command>) {
+        let Some(d) = tab.diff.as_mut() else { return };
+        let area = body.with_min_y(body.top() + BAR);
+        let starts = &tab.rows.1;
+        let Some(rows) = starts.last().map(|r| *r as usize) else { return };
+        let font = FontId::monospace(settings.font_size);
+        let char_w = ui.ctx().fonts_mut(|f| f.glyph_width(&font, 'm'));
+        let id = Id::new(("diff_view", &d.title));
+        if !d.inline {
+            let left = area.with_max_x(area.center().x - GAP / 2.0);
+            paint_left(ui, theme, d, left, starts.len() - 1, &font, char_w);
+            let gap = Rect::from_min_max(pos2(left.right(), area.top()), pos2(area.center().x + GAP / 2.0, area.bottom()));
+            ui.painter().rect_filled(gap, CornerRadius::ZERO, theme.bg);
+            ui.painter().vline(gap.center().x, gap.y_range(), Stroke::new(1.0, theme.border));
+            let delta = ui.input(|i| i.smooth_scroll_delta.y);
+            if delta != 0.0 && ui.rect_contains_pointer(left.union(gap)) {
+                tab.set_scroll = Some((d.scroll - delta).max(0.0));
+            }
+        }
+        let line_h = d.line_h;
+        let y_of = |row: usize| d.text_top + row as f32 * line_h - d.scroll;
+        let span = |h: &Hunk| if d.inline { h.left.len() + h.right.len() } else { h.left.len().max(h.right.len()) };
+        let pads = d.pads();
+        let row_of = |line: usize| {
+            let pad = pads.iter().find(|p| p.0 == line).map_or(0, |p| p.1 as usize);
+            starts.get(line).map_or(rows, |r| *r as usize).saturating_sub(pad)
+        };
+        let strip = Rect::from_min_max(pos2(area.right() - RULER, area.top()), area.max);
+        let painter = ui.painter().with_clip_rect(strip);
+        painter.rect_filled(strip, CornerRadius::ZERO, theme.bg);
+        painter.vline(strip.left(), strip.y_range(), Stroke::new(1.0, ui::with_alpha(theme.border, 0.6)));
+        let scale = strip.height() / rows.max(1) as f32;
+        for h in &d.model.hunks {
+            let y = strip.top() + row_of(h.right.start) as f32 * scale;
+            let color = if h.left.is_empty() { theme.added } else if h.right.is_empty() { theme.deleted } else { theme.modified };
+            let mark = Rect::from_min_max(pos2(strip.left() + 3.0, y), pos2(strip.right() - 3.0, y + (span(h) as f32 * scale).max(3.0)));
+            painter.rect_filled(mark, CornerRadius::ZERO, color);
+        }
+        let shown = area.height() / line_h;
+        let slider = Rect::from_min_size(pos2(strip.left() + 1.0, strip.top() + d.scroll / line_h * scale), vec2(RULER - 1.0, (shown * scale).max(8.0)));
+        painter.rect_filled(slider, CornerRadius::ZERO, ui::with_alpha(theme.text, 0.08));
+        let resp = ui.interact(strip, id.with("ruler"), Sense::click_and_drag());
+        if (resp.clicked() || resp.dragged())
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            tab.set_scroll = Some((((pos.y - strip.top()) / scale - shown / 2.0) * line_h).max(0.0));
+        }
+        let buttons: &[(&str, Command)] = match d.spec.side() {
+            Side::Working => &[(icons::PLUS, Command::StageHunk), (icons::ARROW_U_UP_LEFT, Command::RevertHunk)],
+            Side::Staged => &[(icons::MINUS, Command::UnstageHunk)],
+            Side::Fixed => &[],
+        };
+        let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|pos| area.contains(*pos));
+        for h in d.model.hunks.iter().filter(|_| !buttons.is_empty()) {
+            let (y0, y1) = (y_of(row_of(h.right.start)), y_of(row_of(h.right.start) + span(h).max(1)));
+            if !pointer.is_some_and(|pos| pos.y >= y0 && pos.y < y1.max(y0 + 22.0 * buttons.len() as f32)) || y1 < area.top() {
+                continue;
+            }
+            for (index, (icon, cmd)) in buttons.iter().enumerate() {
+                let at = match d.inline {
+                    true => pos2(area.right() - RULER - 30.0 - 24.0 * index as f32, y0.max(area.top()) + 1.0),
+                    false => pos2(area.center().x - 11.0, y0.max(area.top()) + 1.0 + 24.0 * index as f32),
+                };
+                let r = Rect::from_min_size(at, vec2(22.0, 22.0));
+                ui.painter().with_clip_rect(area).rect_filled(r, CornerRadius::same(4), theme.raised);
+                let clicked = ui.scope_builder(UiBuilder::new().max_rect(r), |ui| {
+                    ui.set_clip_rect(area.intersect(ui.clip_rect()));
+                    ui::icon_button(ui, theme, icon, 22.0, false, cmd.label()).clicked()
+                });
+                if clicked.inner {
+                    self.diffs.at = Some(h.right.start);
+                    pending.push(cmd.clone());
+                }
+            }
+        }
+    }
+
+    pub(super) fn change_anchor(&mut self, doc: u64, buf: &Document) -> Option<usize> {
+        self.diffs.anchor(doc, buf)
+    }
+
+    pub(super) fn peek_escape(&mut self, events: &mut Vec<Event>, doc: u64) {
+        if self.diffs.peek.is_none_or(|p| p.0 != doc) {
+            return;
+        }
+        let before = events.len();
+        events.retain(|e| !matches!(e, Event::Key { key: Key::Escape, pressed: true, .. }));
+        if events.len() != before {
+            self.diffs.peek = None;
+        }
+    }
+
+    pub(super) fn open_change_peek(&mut self, doc: u64, buf: &Document, tab: &mut Tab, line: usize, ctx: &egui::Context) {
+        if self.diffs.fresh(doc) {
+            if let Some(pos) = self.diffs.show_peek(doc, buf, line) {
+                tab.reveal = Some(pos);
+            }
+            return;
+        }
+        if let Some(path) = buf.path.clone() {
+            self.diffs.waiting = Some((doc, Wait::Peek(line)));
+            self.diffs.load_base(doc, &path, ctx);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn change_peek_ui(&mut self, ui: &mut Ui, theme: &Theme, font: &FontId, area: Rect, below: Option<f32>, doc: u64, buf: &Document, pending: &mut Vec<Command>) {
+        let Some((_, index)) = self.diffs.peek.filter(|p| p.0 == doc) else { return };
+        let Some(base) = self.diffs.bases.get_mut(&doc).and_then(Option::as_mut) else { return };
+        base.sync(buf);
+        let count = base.model.hunks.len();
+        let Some(hunk) = base.model.hunks.get(index).cloned() else {
+            self.diffs.peek = None;
+            return;
+        };
+        let row_h = (font.size * 1.35).round();
+        let lines = hunk.left.len() + hunk.right.len();
+        let height = (34.0 + lines as f32 * row_h).min(260.0).min((area.height() - 30.0).max(80.0));
+        let top = below.filter(|y| *y > area.top()).unwrap_or(area.top()).min(area.bottom() - height).max(area.top());
+        let rect = Rect::from_min_size(pos2(area.left() + 6.0, top), vec2(area.width() - 14.0, height));
+        ui.interact(rect, Id::new(("change_peek", doc)), Sense::click());
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect(rect, CornerRadius::same(3), theme.panel, Stroke::new(1.0, theme.accent), StrokeKind::Inside);
+        let header = Rect::from_min_size(rect.min, vec2(rect.width(), 26.0)).shrink(1.0);
+        painter.rect_filled(header, CornerRadius::ZERO, ui::mix(theme.panel, theme.accent, 0.14));
+        let ctx = ui.ctx().clone();
+        let mut chosen = None;
+        ui.scope_builder(UiBuilder::new().max_rect(header.shrink2(vec2(8.0, 0.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if ui::icon_button(ui, theme, icons::X, 22.0, false, "Close (Escape)").clicked() {
+                chosen = Some(None);
+            }
+            let items = [
+                (icons::PLUS, "Stage Change", Command::StageHunk),
+                (icons::ARROW_U_UP_LEFT, "Revert Change", Command::RevertHunk),
+                (icons::ARROW_DOWN, "Next Change", Command::ShowNextChange),
+                (icons::ARROW_UP, "Previous Change", Command::ShowPrevChange),
+            ];
+            for (icon, label, cmd) in items {
+                let keys = command::shortcut_text(&ctx, &cmd).map_or(String::new(), |keys| format!(" ({keys})"));
+                if ui::icon_button(ui, theme, icon, 22.0, false, &format!("{label}{keys}")).clicked() {
+                    chosen = Some(Some(cmd));
+                }
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.label(RichText::new(&buf.title).color(theme.text));
+                let detail = format!("Change {} of {count} since HEAD", index + 1);
+                ui.add(egui::Label::new(RichText::new(detail).size(12.0).color(theme.text_dim)).truncate());
+            });
+        });
+        let left = diff::split(&base.text);
+        let body = Rect::from_min_max(pos2(rect.left() + 1.0, header.bottom() + 4.0), rect.max - vec2(1.0, 1.0));
+        let text_x = body.left() + 28.0;
+        let rows = hunk.left.clone().map(|l| (left[l].trim_end_matches('\n').to_owned(), base.model.left.get(&l), true));
+        let added = hunk.right.clone().map(|r| (buf.line_text(r), base.model.right.get(&r), false));
+        for (k, (text, ranges, removed)) in rows.chain(added).enumerate() {
+            let row = Rect::from_min_size(pos2(body.left(), body.top() + k as f32 * row_h), vec2(body.width(), row_h));
+            if row.top() > body.bottom() {
+                break;
+            }
+            let color = if removed { theme.deleted } else { theme.added };
+            painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(color, 0.13));
+            let shown: String = text.chars().take(MAX_COLS).collect();
+            let galley = painter.layout_job(LayoutJob::simple_singleline(shown, font.clone(), theme.text));
+            marks(&painter, &galley, text_x, row, ranges, ui::with_alpha(color, 0.3));
+            painter.text(pos2(body.left() + 14.0, row.center().y), Align2::CENTER_CENTER, if removed { "-" } else { "+" }, font.clone(), color);
+            painter.galley(pos2(text_x, row.top() + (row_h - galley.size().y) / 2.0), galley, theme.text);
+        }
+        match chosen {
+            Some(None) => {
+                self.diffs.peek = None;
+                self.want_focus = true;
+            }
+            Some(Some(cmd)) => {
+                self.diffs.at = Some(hunk.right.start);
+                pending.push(cmd);
+            }
+            None => {}
+        }
+    }
+
+    pub(super) fn diff_exec(&mut self, cmd: &Command, ctx: &egui::Context) -> bool {
+        use Command::*;
+        let ranged = matches!(cmd, StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges);
+        if !ranged && !matches!(cmd, NextChange | PrevChange | ShowNextChange | ShowPrevChange | ToggleInlineDiff | StageHunk | RevertHunk | UnstageHunk) {
+            return false;
+        }
+        let at = self.diffs.at.take();
+        let Some((g, t)) = self.active_tab() else { return true };
+        let tab = &mut self.groups[g].tabs[t];
+        let doc_id = tab.doc;
+        let Some(doc) = self.docs.get_mut(&doc_id) else { return true };
+        if *cmd == ToggleInlineDiff {
+            if let Some(d) = tab.diff.as_mut() {
+                d.inline ^= true;
+            }
+            return true;
+        }
+        doc.buf.clamp(&mut tab.sels);
+        let line = at.unwrap_or_else(|| doc.buf.line_of(tab.sels[0].head));
+        let ranges = match ranged && at.is_none() {
+            true => tab.sels.iter().map(|s| doc.buf.line_of(s.start())..doc.buf.line_of(s.end()) + 1).collect(),
+            false => vec![],
+        };
+        if tab.diff.is_none() && !self.diffs.fresh(doc_id) {
+            match doc.buf.path.clone() {
+                Some(path) => {
+                    self.diffs.waiting = Some((doc_id, Wait::Run(cmd.clone(), line, ranges)));
+                    self.diffs.load_base(doc_id, &path, ctx);
+                }
+                None => self.banner = notice("Save the file to compare it with Git.".to_owned()),
+            }
+            return true;
+        }
+        self.run_change(doc_id, cmd, line, ranges, ctx);
+        true
+    }
+
+    fn run_change(&mut self, doc_id: u64, cmd: &Command, line: usize, ranges: Vec<Range<usize>>, ctx: &egui::Context) {
+        use Command::*;
+        let Some((g, t)) = self.active_tab().filter(|(g, t)| self.groups[*g].tabs[*t].doc == doc_id) else { return };
+        let tab = &mut self.groups[g].tabs[t];
+        let Some(doc) = self.docs.get_mut(&doc_id) else { return };
+        let buf = &mut doc.buf;
+        let (left, hunks, side, top, rel, crlf) = match tab.diff.as_mut() {
+            Some(d) => {
+                d.sync(buf);
+                (d.left.clone(), d.model.hunks.clone(), d.spec.side(), d.top.clone(), d.spec.rel.clone(), d.crlf)
+            }
+            None => {
+                let Some(Some(base)) = self.diffs.bases.get_mut(&doc_id) else { return };
+                base.sync(buf);
+                (base.text.clone(), base.model.hunks.clone(), Side::Working, base.top.clone(), base.rel.clone(), base.crlf)
+            }
+        };
+        let in_diff = tab.diff.is_some();
+        if matches!(cmd, NextChange | PrevChange | ShowNextChange | ShowPrevChange) {
+            let Some(index) = diff::step(&hunks, line, matches!(cmd, NextChange | ShowNextChange)) else {
+                self.banner = notice("No changes.".to_owned());
+                return;
+            };
+            let pos = buf.line_start(hunks[index].right.start);
+            if in_diff || matches!(cmd, NextChange | PrevChange) {
+                tab.sels = vec![Sel::caret(pos)];
+            }
+            tab.reveal = Some(pos);
+            if !in_diff && matches!(cmd, ShowNextChange | ShowPrevChange) {
+                self.diffs.peek = Some((doc_id, index));
+            }
+            return;
+        }
+        let whole = ranges.is_empty();
+        let chosen: Vec<usize> = match whole {
+            true => diff::hunk_at(&hunks, line).into_iter().collect(),
+            false => (0..hunks.len()).filter(|i| ranges.iter().any(|r| diff::touches(&hunks[*i], r))).collect(),
+        };
+        if chosen.is_empty() {
+            self.banner = notice(if whole { "There is no change at the cursor." } else { "The selection has no changes." }.to_owned());
+            return;
+        }
+        let picked = |r: usize| whole || ranges.iter().any(|x| x.contains(&r));
+        let pick_right = |r: usize| chosen.iter().any(|i| hunks[*i].right.contains(&r)) && picked(r);
+        let pick_left = |l: usize| {
+            chosen.iter().map(|i| &hunks[*i]).filter(|h| h.left.contains(&l)).any(|h| match l - h.left.start {
+                _ if whole => true,
+                k if k < h.right.len() => picked(h.right.start + k),
+                _ => ranges.iter().any(|x| diff::touches(&Hunk { left: 0..0, right: h.right.end..h.right.end }, x)),
+            })
+        };
+        let right = buf.rope.to_string();
+        let (a, b) = (diff::split(&left), diff::split(&right));
+        match (cmd, side) {
+            (_, Side::Fixed) => self.banner = notice("Both sides of this comparison are fixed.".to_owned()),
+            (RevertHunk | RevertSelectedRanges, Side::Working) => {
+                let edit = |h: &Hunk| (buf.line_start(h.right.start), buf.line_start(h.right.end), diff::hunk_text(&a, &b, h, pick_left, |r| !pick_right(r)));
+                let edits = chosen.iter().map(|i| edit(&hunks[*i])).collect();
+                buf.apply(&mut tab.sels, edits, Kind::Other, After::Map);
+                tab.reveal = tab.sels.first().map(|s| s.head);
+            }
+            (StageHunk | StageSelectedRanges, Side::Working) => {
+                let target = diff::splice(&a, &b, &hunks, |l| !pick_left(l), pick_right);
+                self.diffs.apply(top, rel, &eol(&left, crlf), &eol(&target, crlf), false, ctx);
+            }
+            (UnstageHunk | UnstageSelectedRanges, Side::Staged) => {
+                let target = diff::splice(&a, &b, &hunks, pick_left, |r| !pick_right(r));
+                self.diffs.apply(top, rel, &eol(&target, crlf), &eol(&right, crlf), true, ctx);
+            }
+            (UnstageHunk | UnstageSelectedRanges, _) => self.banner = notice("Open the staged changes of this file to unstage.".to_owned()),
+            (RevertHunk | RevertSelectedRanges, _) => self.banner = notice("Unstage the change first, then revert it in the working tree.".to_owned()),
+            _ => self.banner = notice("This change is already staged.".to_owned()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn reads_what_a_diff_compares_from_git_arguments() {
+        let working = Spec::parse(&strings(&["diff", "--", "src/a.rs"])).unwrap();
+        assert_eq!((working.rel.as_str(), working.left.as_str(), working.right.as_deref(), working.side()), ("src/a.rs", "", None, Side::Working));
+        let staged = Spec::parse(&strings(&["diff", "--cached", "--", "a.rs"])).unwrap();
+        assert_eq!((staged.left.as_str(), staged.right.as_deref(), staged.side()), ("HEAD", Some(""), Side::Staged));
+        let shown = Spec::parse(&strings(&["show", "--format=", "--diff-merges=first-parent", "abcdef1234", "--", "b.rs"])).unwrap();
+        assert_eq!((shown.left.as_str(), shown.right.as_deref(), shown.side()), ("abcdef1234^", Some("abcdef1234"), Side::Fixed));
+        assert_eq!((Spec::label(Some(&shown.left)), Spec::label(shown.right.as_deref())), ("abcdef12^".to_owned(), "abcdef12".to_owned()));
+        assert!(Spec::parse(&strings(&["log", "--", "a"])).is_none());
+        assert!(Spec::parse(&strings(&["diff", "--", "a", "b"])).is_none());
+    }
+
+    fn frame(ctx: &egui::Context, editors: &mut Editors, events: Vec<Event>) -> Vec<Command> {
+        let (theme, git, settings) = (Theme::dark(), crate::git::Git::new(), Settings::default());
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 600.0))), events, focused: true, ..Default::default() };
+        let mut cmds = vec![];
+        let mut out = ctx.run_ui(input, |ui| editors.ui(ui, &theme, &settings, &git, &mut cmds));
+        out.textures_delta.clear();
+        cmds
+    }
+
+    fn settle(ctx: &egui::Context, editors: &mut Editors, what: &str, done: impl Fn(&Editors) -> bool) {
+        for _ in 0..800 {
+            frame(ctx, editors, vec![]);
+            if done(editors) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out waiting for {what}: {:?}", editors.banner);
+    }
+
+    fn repo(name: &str, text: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("halo-diff-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for args in [&["init", "-q", "-b", "trunk"][..], &["config", "user.email", "t@example.com"], &["config", "user.name", "t"], &["config", "core.autocrlf", "false"]] {
+            crate::git::exec(&dir, args).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), text).unwrap();
+        crate::git::exec(&dir, &["add", "."]).unwrap();
+        crate::git::exec(&dir, &["commit", "-q", "-m", "init"]).unwrap();
+        dir
+    }
+
+    fn active(editors: &Editors) -> (&Tab, &Document) {
+        let (g, t) = editors.active_tab().unwrap();
+        let tab = &editors.groups[g].tabs[t];
+        (tab, &editors.docs[&tab.doc].buf)
+    }
+
+    fn caret_line(editors: &Editors) -> usize {
+        let (tab, buf) = active(editors);
+        buf.line_of(tab.sels[0].head)
+    }
+
+    fn cached(dir: &Path) -> String {
+        crate::git::exec(dir, &["diff", "--cached", "--no-color", "-U0"]).unwrap()
+    }
+
+    fn hunks(editors: &Editors) -> usize {
+        active(editors).0.diff.as_ref().map_or(0, |d| d.model.hunks.len())
+    }
+
+    #[test]
+    fn stages_unstages_and_reverts_hunks_and_selected_lines() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let numbers: String = (1..=12).map(|i| format!("{i}\n")).collect();
+        let dir = repo("stage", &numbers);
+        let changed = numbers.replace("2\n3\n", "TWO\n3\n").replace("11\n", "ELEVEN\n") + "thirteen\nfourteen\n";
+        std::fs::write(dir.join("a.txt"), &changed).unwrap();
+
+        let mut editors = Editors::new();
+        assert!(!editors.compare("a.txt (changes)", &strings(&["log"]), &dir, false, &ctx));
+        assert!(editors.compare("a.txt (changes)", &strings(&["diff", "--", "a.txt"]), &dir, false, &ctx));
+        settle(&ctx, &mut editors, "the diff tab", |e| e.active_tab().is_some_and(|(g, t)| e.groups[g].tabs[t].diff.is_some()));
+        assert_eq!(hunks(&editors), 3);
+        assert_eq!(caret_line(&editors), 1);
+        let (tab, buf) = active(&editors);
+        assert_eq!(buf.rope.to_string(), changed);
+        assert!(!buf.read_only && tab.rows.1.len() == buf.lines() + 1);
+
+        editors.exec(&Command::NextChange, &settings, &ctx);
+        assert_eq!(caret_line(&editors), 10);
+        editors.exec(&Command::NextChange, &settings, &ctx);
+        assert_eq!(caret_line(&editors), 12);
+        editors.exec(&Command::NextChange, &settings, &ctx);
+        assert_eq!(caret_line(&editors), 1);
+        editors.exec(&Command::PrevChange, &settings, &ctx);
+        assert_eq!(caret_line(&editors), 12);
+
+        editors.exec(&Command::PrevChange, &settings, &ctx);
+        editors.exec(&Command::PrevChange, &settings, &ctx);
+        editors.exec(&Command::StageHunk, &settings, &ctx);
+        settle(&ctx, &mut editors, "the staged hunk", |e| hunks(e) == 2);
+        assert!(cached(&dir).contains("+TWO") && !cached(&dir).contains("ELEVEN"), "{}", cached(&dir));
+
+        let (g, t) = editors.active_tab().unwrap();
+        let tab = &mut editors.groups[g].tabs[t];
+        let buf = &editors.docs[&tab.doc].buf;
+        tab.sels = vec![Sel::new(buf.line_start(12), buf.line_start(12) + 3)];
+        editors.exec(&Command::StageSelectedRanges, &settings, &ctx);
+        settle(&ctx, &mut editors, "the staged line", |_| cached(&dir).contains("+thirteen"));
+        let staged = crate::git::exec(&dir, &["show", ":a.txt"]).unwrap();
+        assert!(staged.ends_with("12\nthirteen\n") && staged.contains("TWO\n") && !staged.contains("ELEVEN"), "{staged}");
+
+        editors.exec(&Command::GoTo(11, 1), &settings, &ctx);
+        editors.exec(&Command::RevertHunk, &settings, &ctx);
+        assert_eq!(active(&editors).1.line_text(10), "11");
+        editors.exec(&Command::Undo, &settings, &ctx);
+        assert_eq!(active(&editors).1.line_text(10), "ELEVEN");
+
+        assert!(editors.compare("a.txt (staged)", &strings(&["diff", "--cached", "--", "a.txt"]), &dir, false, &ctx));
+        settle(&ctx, &mut editors, "the staged diff", |e| active(e).0.diff.as_ref().is_some_and(|d| d.title == "a.txt (staged)"));
+        assert!(active(&editors).1.read_only);
+        assert_eq!((hunks(&editors), caret_line(&editors)), (2, 1));
+        editors.exec(&Command::RevertHunk, &settings, &ctx);
+        assert!(editors.banner.as_ref().is_some_and(|b| b.0.contains("Unstage")));
+        editors.exec(&Command::UnstageHunk, &settings, &ctx);
+        settle(&ctx, &mut editors, "the unstaged hunk", |_| !cached(&dir).contains("TWO"));
+        assert!(cached(&dir).contains("+thirteen"));
+        settle(&ctx, &mut editors, "the reloaded staged diff", |e| hunks(e) == 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edits_the_right_side_of_a_side_by_side_diff_and_peeks_from_the_gutter() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let dir = repo("edit", "one\ntwo\nthree\nfour\n");
+        std::fs::write(dir.join("a.txt"), "one\nthree\nfour\nfive\n").unwrap();
+        let mut editors = Editors::new();
+        editors.open(&dir.join("a.txt"));
+        editors.finish_loads();
+        let plain = editors.find_doc(&dir.join("a.txt")).unwrap();
+        assert!(editors.compare("a.txt (changes)", &strings(&["diff", "--", "a.txt"]), &dir, false, &ctx));
+        settle(&ctx, &mut editors, "the diff tab", |e| e.groups[0].tabs.len() == 2);
+        let (tab, _) = active(&editors);
+        assert_eq!(tab.doc, plain);
+        assert_eq!(tab.rows.1, vec![0, 2, 3, 4, 5, 6]);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Text("2".into())]);
+        frame(&ctx, &mut editors, vec![]);
+        let (tab, buf) = active(&editors);
+        assert_eq!(buf.rope.to_string(), "one\n2three\nfour\nfive\n");
+        assert!(buf.is_dirty() && tab.diff.as_ref().unwrap().computed == buf.version);
+        assert_eq!(hunks(&editors), 2);
+        editors.exec(&Command::ToggleInlineDiff, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        assert_eq!(active(&editors).0.rows.1, vec![0, 3, 4, 5, 6, 7]);
+
+        editors.groups[0].active = 0;
+        editors.exec(&Command::GoTo(1, 1), &settings, &ctx);
+        editors.exec(&Command::ShowNextChange, &settings, &ctx);
+        settle(&ctx, &mut editors, "the change peek", |e| e.diffs.peek.is_some());
+        assert_eq!(editors.diffs.peek, Some((plain, 0)));
+        frame(&ctx, &mut editors, vec![Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }]);
+        assert!(editors.diffs.peek.is_none());
+        editors.exec(&Command::GoTo(2, 1), &settings, &ctx);
+        editors.exec(&Command::RevertHunk, &settings, &ctx);
+        assert_eq!(active(&editors).1.rope.to_string(), "one\ntwo\nthree\nfour\nfive\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

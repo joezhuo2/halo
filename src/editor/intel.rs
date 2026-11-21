@@ -1,4 +1,5 @@
 use super::buffer::{After, Document, Kind, Sel, is_word};
+use super::load::Place;
 use super::{Editors, Tab, links, notice, snippet};
 use crate::command::Command;
 use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
@@ -126,7 +127,7 @@ pub(super) fn from_lsp(buf: &Document, (line, col): Pos) -> usize {
 }
 
 pub(super) fn sync(lsp: &mut Lsp, buf: &Document, lang: &mut Lang, ctx: &egui::Context) {
-    let Some(path) = buf.path.as_deref().filter(|_| !buf.read_only) else { return };
+    let Some(path) = buf.path.as_deref().filter(|_| !buf.read_only && !buf.large) else { return };
     if lang.synced == 0 {
         lang.attached = buf.rope.len_bytes() < 2_000_000 && lsp.open(path, || buf.rope.to_string(), ctx);
         lang.lines = buf.lines();
@@ -147,11 +148,12 @@ fn tone(name: &str) -> u8 {
 }
 
 pub(super) fn tone_color(theme: &Theme, tone: u8) -> Color32 {
-    match tone {
+    let own = theme.semantic[(tone as usize).clamp(1, 3) - 1];
+    own.unwrap_or(match tone {
         1 => theme.syntax.type_name,
         2 => theme.syntax.function,
         _ => theme.syntax.constant,
-    }
+    })
 }
 
 pub(super) fn severity_color(theme: &Theme, severity: u8) -> Color32 {
@@ -731,7 +733,9 @@ impl Editors {
             self.remember();
         }
         self.show_path(path);
-        self.with_active(|buf, tab| tab.sels = vec![Sel::caret(from_lsp(buf, at))]);
+        if !self.pend_place(Place::Lsp(at)) {
+            self.with_active(|buf, tab| tab.sels = vec![Sel::caret(from_lsp(buf, at))]);
+        }
     }
 
     fn apply_workspace_edit(&mut self, changes: Vec<(PathBuf, Vec<lsp::Edit>)>) {
@@ -1338,6 +1342,7 @@ impl Editors {
             }
             None => vec![("", doc.buf.title.clone(), None)],
         };
+        let path_parts = if doc.buf.path.is_some() { parts.len() } else { 0 };
         let line = doc.buf.line_of(tab.sels.first().map_or(0, |s| s.head));
         let mut chain: Vec<&Symbol> = vec![];
         for symbol in doc.lang.symbols.iter().filter(|s| s.line <= line && line <= s.end_line) {
@@ -1352,6 +1357,11 @@ impl Editors {
             for (index, (icon, name, target)) in parts.iter().enumerate() {
                 if index > 0 {
                     ui.label(RichText::new(icons::CARET_RIGHT).size(10.0).color(theme.text_dim));
+                }
+                if index < path_parts && crate::icon_theme::active() {
+                    let kind = if index + 1 == path_parts { crate::icon_theme::Kind::File } else { crate::icon_theme::Kind::Folder };
+                    let (slot, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
+                    crate::icon_theme::paint(ui.painter(), slot.center(), 13.0, name, kind, 1.0);
                 }
                 let text = if icon.is_empty() { name.clone() } else { format!("{icon} {name}") };
                 let label = egui::Label::new(RichText::new(text).size(12.0).color(theme.text_dim));

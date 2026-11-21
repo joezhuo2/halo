@@ -449,10 +449,10 @@ fn submit_form(op: Op, target: &str, first: &str, second: &str, git: &mut Git) {
             };
             let Some(parent) = rfd::FileDialog::new().set_title("Clone into parent folder").pick_folder() else { return };
             let url = first.to_owned();
-            git.job(move || {
+            git.job(move || crate::git::tracked(Some(format!("Cloning {url}")), |_| {
                 exec(&parent, &["clone", "--", &url, &name])?;
                 Ok(Some(parent.join(name)))
-            });
+            }));
         }
         AddRemote if second.is_empty() => git.set_error("Enter a remote URL.".into()),
         AddRemote => git.act(&[&["remote", "add", "--", first, second]]),
@@ -487,7 +487,8 @@ fn remote_action(op: Op, target: &str, remote: &str, git: &mut Git) {
         Push | Pull => {
             let Some(top) = git.top().map(Path::to_path_buf) else { return };
             let remote = remote.to_owned();
-            git.job(move || {
+            let title = Some(format!("Git {} {remote}", if op == Pull { "pull from" } else { "push to" }));
+            git.job(move || crate::git::tracked(title, |_| {
                 let current = exec(&top, &["symbolic-ref", "--short", "HEAD"])?;
                 if current.trim_end() != branch {
                     return Err("The current branch changed. Select the remote again.".into());
@@ -503,7 +504,7 @@ fn remote_action(op: Op, target: &str, remote: &str, git: &mut Git) {
                     _ => exec(&top, &["push", "-u", "--", &remote, &format!("HEAD:{dest}")])?,
                 };
                 Ok(None)
-            });
+            }));
         }
         _ => unreachable!(),
     }
