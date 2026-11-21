@@ -116,6 +116,9 @@ pub const SETTINGS: &[Meta] = &[
     m("zen_restore", 2, "Zen Mode", "Restore", "Start in zen mode when Halo was closed in zen mode.", Kind::Toggle),
     m("compact_folders", 1, "Explorer", "Compact Folders", "Show a chain of folders that each hold only one folder as a single row in the Explorer.", Kind::Toggle),
     m("confirm_drag_and_drop", 1, "Explorer", "Confirm Drag And Drop", "Ask before moving files and folders by dragging them in the Explorer.", Kind::Toggle),
+    m("file_nesting", 1, "Explorer", "File Nesting", "Show related files, such as a lock file or compiled output, nested under the file they belong to.", Kind::Toggle),
+    m("file_nesting_expand", 1, "Explorer", "File Nesting Expand", "Start nested groups expanded.", Kind::Toggle),
+    m("file_nesting_patterns", 1, "Explorer", "File Nesting Patterns", "Files matching the patterns on the right nest under a file matching the one on the left. The left pattern may have one *, used as ${capture}; the right ones may use ${capture}, ${basename}, ${extname}, ${dirname} and *.", Kind::Custom),
     m("files_exclude", 1, FILES, "Exclude", "Glob patterns of files and folders the Explorer hides. Supports *, **, ?, [abc] and {a,b}.", Kind::Custom),
     m("confirm_delete", 2, "Explorer", "Confirm Delete", "Ask before moving a file to the recycle bin from the Explorer.", Kind::Toggle),
     m("explorer_sort", 2, "Explorer", "Sort Order", "How the Explorer orders files and folders.", Kind::Choice(&[("default", "Folders first, by name"), ("mixed", "By name"), ("filesFirst", "Files first"), ("type", "Folders first, by extension"), ("modified", "Folders first, newest first")])),
@@ -160,6 +163,7 @@ pub struct SettingsPage {
     new_association: (String, String),
     new_server: (String, String),
     new_adapter: (String, String),
+    new_nesting: (String, String),
     new_exclude: String,
 }
 
@@ -602,6 +606,7 @@ fn custom(ui: &mut Ui, theme: &Theme, key: &str, s: &mut Settings, page: &mut Se
         "associations" => map_editor(ui, theme, "settings_associations", &mut s.associations, &mut page.new_association, "language"),
         "servers" => map_editor(ui, theme, "settings_servers", &mut s.servers, &mut page.new_server, "command"),
         "debug_adapters" => map_editor(ui, theme, "settings_adapters", &mut s.debug_adapters, &mut page.new_adapter, "command"),
+        "file_nesting_patterns" => map_editor(ui, theme, "settings_nesting", &mut s.file_nesting_patterns, &mut page.new_nesting, "child patterns"),
         _ => {}
     }
 }
@@ -751,9 +756,10 @@ fn map_editor(ui: &mut Ui, theme: &Theme, id: &str, map: &mut BTreeMap<String, S
             }
             ui.end_row();
         }
-        field(ui, &mut new.0, 90.0, "extension");
+        let patterns = id == "settings_nesting";
+        field(ui, &mut new.0, 90.0, if patterns { "*.ts" } else { "extension" });
         field(ui, &mut new.1, 380.0, hint);
-        let key = new.0.trim().trim_start_matches('.').to_lowercase();
+        let key = if patterns { new.0.trim().to_owned() } else { new.0.trim().trim_start_matches('.').to_lowercase() };
         if ui.add_enabled(!key.is_empty() && !new.1.trim().is_empty(), egui::Button::new("Add")).clicked() {
             map.insert(key, new.1.trim().to_owned());
             *new = Default::default();
