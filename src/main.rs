@@ -13,6 +13,7 @@ mod find;
 mod git;
 mod history;
 mod jsonc;
+mod layers;
 mod lsp;
 mod scm;
 mod search;

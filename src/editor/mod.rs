@@ -47,6 +47,7 @@ pub struct EditorStatus {
 }
 
 fn indent_unit(buf: &Document, settings: &Settings) -> (bool, usize, String) {
+    let settings = settings.of(buf.path.as_deref());
     let (spaces, size) = match buf.indent {
         Some((spaces, size)) => (spaces, if size == 0 { settings.tab_size } else { size }),
         None => (settings.insert_spaces, settings.tab_size),
@@ -220,7 +221,7 @@ pub struct Editors {
     intel: Intel,
     closed: Vec<PathBuf>,
     switcher: Option<(usize, usize)>,
-    tidy: (bool, bool),
+    config: Settings,
     pub history: crate::history::Recorder,
     disk_jobs: Vec<(u64, bool)>,
 }
@@ -532,7 +533,7 @@ impl Editors {
             intel: Intel::default(),
             closed: vec![],
             switcher: None,
-            tidy: (false, false),
+            config: Settings::default(),
             history: Default::default(),
             disk_jobs: vec![],
         }
@@ -765,7 +766,8 @@ impl Editors {
             return false;
         }
         doc.stale = false;
-        let (trim, newline) = self.tidy;
+        let tidy = self.config.of(doc.buf.path.as_deref());
+        let (trim, newline) = (tidy.trim_trailing_whitespace, tidy.insert_final_newline);
         let mut none = vec![];
         let sels = self.groups.iter_mut().flat_map(|group| &mut group.tabs).find(|tab| tab.doc == id).map_or(&mut none, |tab| &mut tab.sels);
         doc.buf.tidy(sels, trim, newline);
@@ -1274,7 +1276,9 @@ impl Editors {
             self.drag = None;
         }
         self.active = self.active.min(self.groups.len().saturating_sub(1));
-        self.tidy = (settings.trim_trailing_whitespace, settings.insert_final_newline);
+        if self.config != *settings {
+            self.config = settings.clone();
+        }
         self.history.context = settings.local_history.then(|| ui.ctx().clone());
         self.process(settings, ui.ctx());
         let rect = ui.available_rect_before_wrap();
@@ -1640,6 +1644,7 @@ impl Editors {
         doc: &mut Doc,
         tab: &mut Tab,
     ) {
+        let settings = settings.of(doc.buf.path.as_deref());
         let ctx = ui.ctx().clone();
         let now = ui.input(|i| i.time);
         let doc_id = tab.doc;

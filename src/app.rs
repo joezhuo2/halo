@@ -137,6 +137,8 @@ impl Halo {
             None => "Halo".to_owned(),
         };
         ctx.send_viewport_cmd(ViewportCommand::Title(title));
+        crate::layers::set_folder(folder.as_deref());
+        self.reload_settings(ctx);
         self.explorer.set_root(folder.clone());
         self.editors.set_root(folder.clone());
         self.git.set_root(folder.clone(), ctx);
@@ -354,7 +356,7 @@ impl Halo {
         self.git.refresh(ctx);
         self.explorer.refresh();
         let active = self.editors.active_path();
-        if active.as_ref().is_some_and(|p| *p == Settings::path()) {
+        if active.as_ref().is_some_and(|p| *p == Settings::path() || Some(p) == crate::layers::workspace_path().as_ref()) {
             self.reload_settings(ctx);
         }
         if active.as_ref().is_some_and(|p| *p == command::path()) {
@@ -703,6 +705,7 @@ impl eframe::App for Halo {
             let rgba = ui::logo_image(128, dark).pixels.iter().flat_map(|p| p.to_srgba_unmultiplied()).collect();
             ctx.send_viewport_cmd(ViewportCommand::Icon(Some(std::sync::Arc::new(egui::IconData { rgba, width: 128, height: 128 }))));
         }
+        self.page.keys(&ctx);
         if self.page.recording.is_none() {
             self.global_shortcuts(&ctx);
         }

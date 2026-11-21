@@ -115,7 +115,8 @@ impl Halo {
                                     }
                                 });
                             });
-                            let fallback = (self.settings.insert_spaces, self.settings.tab_size);
+                            let scoped = self.settings.of(self.editors.active_path().as_deref());
+                            let fallback = (scoped.insert_spaces, scoped.tab_size);
                             let (spaces, size) = status.indent.map_or(fallback, |(spaces, size)| (spaces, if size == 0 { fallback.1 } else { size }));
                             let label = format!("{}: {size}", if spaces { "Spaces" } else { "Tab Size" });
                             let indent = item(ui, &theme, &label, false, "Select indentation");

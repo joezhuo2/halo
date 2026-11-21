@@ -57,6 +57,8 @@ pub struct Settings {
     pub guides: bool,
     pub hot_exit: bool,
     pub auto_update: bool,
+    #[serde(skip)]
+    pub langs: BTreeMap<String, Settings>,
 }
 
 impl Default for Settings {
@@ -150,6 +152,7 @@ impl Default for Settings {
             guides: true,
             hot_exit: true,
             auto_update: true,
+            langs: BTreeMap::new(),
         }
     }
 }
@@ -214,13 +217,35 @@ fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
         .ok()
 }
 
-fn write<T: Serialize>(path: &Path, value: &T) {
+pub(crate) fn write<T: Serialize>(path: &Path, value: &T) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(text) = serde_json::to_string_pretty(value) {
-        let _ = std::fs::write(path, text);
+    if let Ok(text) = serde_json::to_string_pretty(value)
+        && let Err(error) = std::fs::write(path, text)
+    {
+        crate::ui::notify(format!("{} could not be written: {error}", path.display()));
     }
+}
+
+pub fn font_files() -> Vec<(&'static str, String)> {
+    let windows = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_default().join("Fonts");
+    [
+        ("Consolas", windows.join("consola.ttf")),
+        ("Cascadia Code", windows.join("CascadiaCode.ttf")),
+        ("Cascadia Mono", windows.join("CascadiaMono.ttf")),
+        ("Courier New", windows.join("cour.ttf")),
+        ("Lucida Console", windows.join("lucon.ttf")),
+        ("Menlo", "/System/Library/Fonts/Menlo.ttc".into()),
+        ("Monaco", "/System/Library/Fonts/Monaco.ttf".into()),
+        ("DejaVu Sans Mono", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf".into()),
+        ("Liberation Mono", "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf".into()),
+        ("Ubuntu Mono", "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf".into()),
+    ]
+    .into_iter()
+    .filter(|(_, file)| file.is_file())
+    .map(|(name, file)| (name, file.to_string_lossy().into_owned()))
+    .collect()
 }
 
 impl Settings {
@@ -229,17 +254,22 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        let path = Self::path();
-        if !path.exists() {
-            let settings = Self::default();
-            settings.save();
-            return settings;
-        }
-        read(&path).unwrap_or_default()
+        crate::layers::load()
     }
 
-    pub fn save(&self) {
-        write(&Self::path(), self);
+    pub fn save(&mut self) {
+        *self = crate::layers::save(self);
+    }
+
+    pub fn lang(&self, id: &str) -> &Settings {
+        self.langs.get(id).unwrap_or(self)
+    }
+
+    pub fn of(&self, path: Option<&Path>) -> &Settings {
+        match path {
+            Some(path) if !self.langs.is_empty() => self.lang(&crate::lsp::language_id(path)),
+            _ => self,
+        }
     }
 
     pub fn terminal(&self, name: &str) -> Option<&ShellProfile> {
