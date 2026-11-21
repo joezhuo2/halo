@@ -865,6 +865,29 @@ impl Document {
         changed
     }
 
+    // shortcut: whitespace right before a caret is kept so auto save does not eat what is being typed
+    pub fn tidy(&mut self, sels: &mut Vec<Sel>, trim: bool, newline: bool) -> bool {
+        let mut edits: EditList = vec![];
+        for line in (0..self.lines()).filter(|_| trim) {
+            let end = self.line_end(line);
+            let mut before = self.rope.chars_at(end);
+            let blanks = std::iter::from_fn(|| before.prev()).take_while(|c| *c == ' ' || *c == '\t').count();
+            if blanks > 0 && !sels.iter().any(|s| s.head == end) {
+                edits.push((end - blanks, end, String::new()));
+            }
+        }
+        let open = newline && self.len() > 0 && self.rope.char(self.len() - 1) != '\n';
+        if open {
+            edits.push((self.len(), self.len(), "\n".to_owned()));
+        }
+        let changed = self.apply(sels, edits, Kind::Other, After::Map);
+        let len = self.len();
+        for s in sels.iter_mut().filter(|_| open && changed) {
+            *s = Sel::new(s.anchor - usize::from(s.anchor == len), s.head - usize::from(s.head == len));
+        }
+        changed
+    }
+
     pub fn word_left(&self, pos: usize) -> usize {
         let mut i = pos.min(self.len());
         while i > 0 && self.rope.char(i - 1).is_whitespace() && self.rope.char(i - 1) != '\n' {
@@ -1446,6 +1469,18 @@ mod tests {
             seen.push((s.start(), s.end()));
         }
         assert_eq!(seen, vec![(14, 16), (14, 19), (13, 20), (10, 20), (9, 21), (0, 22), (0, 23), (0, 34)]);
+    }
+
+    #[test]
+    fn tidies_trailing_whitespace_and_the_final_newline() {
+        let mut d = doc("a  \n\tb \t\n  \nc ");
+        let mut sels = vec![Sel::caret(14)];
+        assert!(d.tidy(&mut sels, true, true));
+        assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("a\n\tb\n\nc \n", 8));
+        assert!(!d.tidy(&mut sels, true, true));
+        let mut sels = vec![Sel::caret(0)];
+        assert!(d.tidy(&mut sels, true, false));
+        assert_eq!(d.rope.to_string(), "a\n\tb\n\nc\n");
     }
 
     #[test]

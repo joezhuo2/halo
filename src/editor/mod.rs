@@ -131,6 +131,7 @@ pub struct Editors {
     intel: Intel,
     closed: Vec<PathBuf>,
     switcher: Option<(usize, usize)>,
+    tidy: (bool, bool),
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -419,6 +420,7 @@ impl Editors {
             intel: Intel::default(),
             closed: vec![],
             switcher: None,
+            tidy: (false, false),
         }
     }
 
@@ -640,6 +642,10 @@ impl Editors {
             }
             doc.lang = Lang::default();
         }
+        let (trim, newline) = self.tidy;
+        let mut none = vec![];
+        let sels = self.groups.iter_mut().flat_map(|group| &mut group.tabs).find(|tab| tab.doc == id).map_or(&mut none, |tab| &mut tab.sels);
+        doc.buf.tidy(sels, trim, newline);
         match doc.buf.save() {
             Ok(()) => {
                 self.lsp.save(doc.buf.path.as_deref().unwrap_or(Path::new("")));
@@ -961,6 +967,7 @@ impl Editors {
         self.focused = false;
         self.drop = None;
         self.active = self.active.min(self.groups.len().saturating_sub(1));
+        self.tidy = (settings.trim_trailing_whitespace, settings.insert_final_newline);
         self.process(settings, ui.ctx());
         let rect = ui.available_rect_before_wrap();
         let count = self.groups.len();

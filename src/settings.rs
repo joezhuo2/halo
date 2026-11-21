@@ -45,6 +45,8 @@ pub struct Settings {
     pub format_on_paste: bool,
     pub word_wrap: bool,
     pub auto_close: bool,
+    pub trim_trailing_whitespace: bool,
+    pub insert_final_newline: bool,
 }
 
 impl Default for Settings {
@@ -116,6 +118,8 @@ impl Default for Settings {
             format_on_paste: false,
             word_wrap: false,
             auto_close: true,
+            trim_trailing_whitespace: false,
+            insert_final_newline: false,
         }
     }
 }
