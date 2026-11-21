@@ -1,4 +1,5 @@
 mod buffer;
+pub mod diff;
 mod emmet;
 mod highlight;
 mod intel;
