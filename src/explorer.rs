@@ -4,13 +4,15 @@ use crate::theme::Theme;
 use crate::ui::{self, icons};
 use eframe::egui::{
     self, Align, Align2, Color32, FontId, Id, Key, Layout, Modifiers, Rect, RichText, ScrollArea, Sense, Stroke, Ui,
-    UiBuilder, epaint::TextShape, pos2, vec2,
+    UiBuilder, pos2, vec2,
 };
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 const ROW: f32 = 22.0;
 const INDENT: f32 = 12.0;
+const FOLDER_TIME: f64 = (ui::ANIM * 1.4) as f64;
 
 #[derive(Clone)]
 struct Entry {
@@ -26,6 +28,20 @@ struct Row {
     depth: usize,
     is_dir: bool,
     editing: bool,
+}
+
+struct FolderAnimation {
+    dir: Option<PathBuf>,
+    start: f64,
+    outgoing: Vec<Row>,
+    spans: Vec<(Range<usize>, bool)>,
+}
+
+impl FolderAnimation {
+    fn progress(&self, now: f64) -> f32 {
+        let t = ((now - self.start) / FOLDER_TIME).clamp(0.0, 1.0) as f32;
+        if self.outgoing.is_empty() { t } else { 1.0 - t }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -69,7 +85,7 @@ pub struct Explorer {
     error: Option<String>,
     focused: bool,
     collapsed: bool,
-    opened: Option<(PathBuf, f64)>,
+    animation: Option<FolderAnimation>,
 }
 
 fn read_dir(dir: &Path) -> Vec<Entry> {
@@ -163,7 +179,7 @@ impl Explorer {
             error: None,
             focused: false,
             collapsed: false,
-            opened: None,
+            animation: None,
         }
     }
 
@@ -202,11 +218,15 @@ impl Explorer {
 
     fn build(&mut self) {
         self.dirty = false;
+        self.animation = None;
         let mut rows = vec![];
         if let Some(root) = self.root.clone() {
             self.push_rows(&root, 0, &mut rows);
         }
         self.rows = rows;
+        if let Some(path) = &self.selected && !self.rows.iter().any(|r| r.path == *path) {
+            self.selected = self.rows.iter().rev().find(|r| path.starts_with(&r.path)).map(|r| r.path.clone());
+        }
     }
 
     fn push_rows(&self, dir: &Path, depth: usize, rows: &mut Vec<Row>) {
@@ -317,17 +337,50 @@ impl Explorer {
         }
     }
 
+    fn toggle_folders(&mut self, dir: Option<PathBuf>, now: f64) {
+        if dir.is_none() && self.expanded.is_empty() {
+            return;
+        }
+        if self.dirty {
+            self.build();
+        }
+        let opening = dir.as_ref().is_some_and(|d| !self.expanded.contains(d));
+        let elapsed = self.animation.as_ref().filter(|a| a.dir == dir).map_or(0.0, |a| {
+            let t = a.progress(now);
+            f64::from(if opening { t } else { 1.0 - t }) * FOLDER_TIME
+        });
+        let outgoing = if opening { vec![] } else { std::mem::take(&mut self.rows) };
+        if let Some(path) = &dir {
+            self.selected = Some(path.clone());
+            if opening {
+                self.expand(path);
+            } else {
+                self.expanded.remove(path);
+            }
+        } else {
+            self.expanded.clear();
+        }
+        self.build();
+        if self.edit.is_some() && !self.rows.iter().any(|r| r.editing) {
+            self.edit = None;
+        }
+        let rows = if opening { &self.rows } else { &outgoing };
+        let moving = |r: &Row| r.depth > 0 && dir.as_ref().is_none_or(|p| r.path != *p && r.path.starts_with(p));
+        let mut first = 0;
+        let mut spans = Vec::new();
+        for group in rows.chunk_by(|a, b| moving(a) == moving(b)) {
+            let end = first + group.len();
+            spans.push((first..end, moving(&group[0])));
+            first = end;
+        }
+        if spans.iter().any(|(_, moving)| *moving) {
+            self.animation = Some(FolderAnimation { dir, start: now - elapsed, outgoing, spans });
+        }
+    }
+
     fn apply(&mut self, action: Action, ui: &Ui, cmds: &mut Vec<Command>) {
         match action {
-            Action::Toggle(path) => {
-                self.selected = Some(path.clone());
-                if self.expanded.remove(&path) {
-                    self.dirty = true;
-                } else {
-                    self.expand(&path);
-                    self.opened = Some((path, ui.input(|i| i.time)));
-                }
-            }
+            Action::Toggle(path) => self.toggle_folders(Some(path), ui.input(|i| i.time)),
             Action::Open(path) => {
                 self.selected = Some(path.clone());
                 self.last_active = Some(path.clone());
@@ -340,10 +393,7 @@ impl Explorer {
             Action::Copy(text) => ui.ctx().copy_text(text),
             Action::Reveal(path) => reveal(&path),
             Action::Refresh => cmds.push(Command::RefreshExplorer),
-            Action::CollapseAll => {
-                self.expanded.clear();
-                self.dirty = true;
-            }
+            Action::CollapseAll => self.toggle_folders(None, ui.input(|i| i.time)),
         }
     }
 
@@ -454,11 +504,10 @@ impl Explorer {
 
         let mut action = None;
         self.header(ui, theme, &root, &mut action);
-        if !self.collapsed {
-            self.tree(ui, theme, git, active, &mut action, cmds);
-        }
+        self.tree(ui, theme, git, active, &mut action, cmds);
         if let Some(action) = action {
             self.apply(action, ui, cmds);
+            ui.ctx().request_repaint();
         }
         self.overlays(ui, theme, cmds);
     }
@@ -470,7 +519,7 @@ impl Explorer {
         let open = ui::anim(ui, resp.id.with("open"), !self.collapsed);
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(rect, 0, ui::mix(theme.panel, theme.bar, 0.5 + 0.5 * h));
-        caret(&painter, pos2(rect.left() + 12.0, rect.center().y), open, theme.text);
+        ui::caret(&painter, pos2(rect.left() + 12.0, rect.center().y), open, theme.text);
         let name = root.file_name().unwrap_or(root.as_os_str()).to_string_lossy().to_uppercase();
         painter.text(pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, name, FontId::proportional(11.5), theme.text);
         if resp.clicked() {
@@ -510,13 +559,28 @@ impl Explorer {
             area.max.y -= 30.0;
         }
         let tree_id = Id::new("explorer_tree");
-        let bg = ui.interact(area, tree_id, Sense::click());
-        self.focused = bg.has_focus();
+        let now = ui.input(|i| i.time);
+        if self.animation.as_ref().is_some_and(|a| now - a.start >= FOLDER_TIME) {
+            self.animation = None;
+        }
+        let reveal = ui::reveal(ui, tree_id.with("reveal"), !self.collapsed);
+        if reveal < 1.0 {
+            let count = self.animation.as_ref().map_or(0, |a| a.outgoing.len()).max(self.rows.len());
+            area.set_height(area.height().min(count as f32 * ROW) * reveal);
+        }
+        if area.height() <= 0.0 {
+            self.focused = false;
+            return;
+        }
+        let bg = ui.interact(area, tree_id, if self.collapsed { Sense::hover() } else { Sense::click() });
+        self.focused = !self.collapsed && bg.has_focus();
         if bg.clicked() {
             bg.request_focus();
             self.selected = None;
         }
-        bg.context_menu(|ui| self.menu(ui, None, action));
+        if !self.collapsed {
+            bg.context_menu(|ui| self.menu(ui, None, action));
+        }
         if self.focused && self.edit.is_none() {
             ui.memory_mut(|m| {
                 m.set_focus_lock_filter(tree_id, egui::EventFilter { vertical_arrows: true, horizontal_arrows: true, ..Default::default() });
@@ -524,101 +588,117 @@ impl Explorer {
             self.keyboard(ui, action);
         }
 
-        let now = ui.input(|i| i.time);
-        let opened = self.opened.clone().map(|(dir, start)| (dir, ((now - start) as f32 / (ui::ANIM * 1.4)).min(1.0)));
-        if opened.as_ref().is_some_and(|(_, t)| *t < 1.0) {
-            ui.ctx().request_repaint();
-        } else {
-            self.opened = None;
-        }
-
-        let rows = std::mem::take(&mut self.rows);
-        let scroll_to = self.scroll_to.take().and_then(|p| rows.iter().position(|r| r.path == p));
+        let animation = self.animation.take();
+        let closing = animation.as_ref().is_some_and(|a| !a.outgoing.is_empty());
+        let live = std::mem::take(&mut self.rows);
+        let rows = if let Some(a) = &animation && closing { &a.outgoing } else { &live };
+        let full = [(0..rows.len(), false)];
+        let spans = animation.as_ref().map_or(full.as_slice(), |a| a.spans.as_slice());
+        let progress = animation.as_ref().map_or(1.0, |a| a.progress(now));
+        let scroll_to = if self.collapsed { None } else { self.scroll_to.take().and_then(|p| rows.iter().position(|r| r.path == p)) };
         let mut commit = false;
         let mut cancel = false;
         ui.scope_builder(UiBuilder::new().max_rect(area), |ui| {
-            ScrollArea::vertical().auto_shrink(false).show_rows(ui, ROW, rows.len(), |ui, range| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                if let Some(index) = scroll_to {
-                    let top = ui.max_rect().top() + (index as f32 - range.start as f32) * ROW;
-                    let target = Rect::from_min_size(pos2(ui.max_rect().left(), top), vec2(10.0, ROW));
-                    ui.scroll_to_rect(target, None);
-                }
-                for row in &rows[range] {
-                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
-                    let id = Id::new(("explorer_row", &row.path));
-                    let selected = self.selected.as_deref() == Some(&row.path);
-                    let is_active = active == Some(row.path.as_path());
-                    ui::row_bg(ui, theme, rect, id, resp.hovered(), selected || is_active);
-
-                    let fade = match &opened {
-                        Some((dir, t)) if row.path.parent() == Some(dir.as_path()) => *t,
-                        _ => 1.0,
-                    };
-                    let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
-                    for level in 0..row.depth {
-                        let x = rect.left() + 13.0 + level as f32 * INDENT;
-                        painter.vline(x, rect.y_range(), Stroke::new(1.0, ui::with_alpha(theme.border, 0.7)));
+            ui.shrink_clip_rect(area);
+            ScrollArea::vertical().min_scrolled_height(0.0).auto_shrink(false).show_viewport(ui, |ui, viewport| {
+                let origin = ui.max_rect().min;
+                let width = ui.available_width();
+                let mut bottom = 0.0;
+                for (span, moving) in spans {
+                    let fade = if *moving { progress } else { 1.0 };
+                    let top = bottom;
+                    bottom += span.len() as f32 * ROW * fade;
+                    if *moving && top <= viewport.max.y && ui.is_rect_visible(area) {
+                        ui.ctx().request_repaint();
                     }
-                    let x = rect.left() + 12.0 + row.depth as f32 * INDENT - (1.0 - fade) * 6.0;
-                    let y = rect.center().y;
-                    let state = git.state(&row.path);
-                    let color = ui::with_alpha(state_color(theme, state), fade);
-                    let dim = ui::with_alpha(theme.text_dim, fade);
-                    let open = self.expanded.contains(&row.path);
-                    if row.is_dir {
-                        caret(&painter, pos2(x, y), ui::anim(ui, id.with("caret"), open), dim);
+                    if let Some(i) = scroll_to.filter(|i| span.contains(i)) {
+                        let y = (top + (i - span.start) as f32 * ROW).min((bottom - ROW).max(top));
+                        ui.scroll_to_rect(Rect::from_min_size(origin + vec2(0.0, y), vec2(10.0, ROW)), None);
                     }
-                    let icon = match (row.is_dir, open) {
-                        (true, true) => icons::FOLDER_OPEN,
-                        (true, false) => icons::FOLDER,
-                        _ => file_icon(&row.name),
-                    };
-                    let icon_color = if row.is_dir { ui::with_alpha(theme.accent, fade * 0.85) } else { dim };
-                    painter.text(pos2(x + 10.0, y), Align2::LEFT_CENTER, icon, FontId::proportional(15.0), icon_color);
-
-                    if row.editing {
-                        if let Some(edit) = &mut self.edit {
-                            let field = Rect::from_min_max(pos2(x + 30.0, rect.top() + 1.0), pos2(rect.right() - 6.0, rect.bottom() - 1.0));
-                            let out = ui.put(
-                                field,
-                                egui::TextEdit::singleline(&mut edit.text)
-                                    .font(FontId::proportional(13.0))
-                                    .margin(egui::Margin::symmetric(4, 1)),
-                            );
-                            if edit.focus {
-                                out.request_focus();
-                                edit.focus = false;
-                            } else if out.lost_focus() {
-                                if ui.input(|i| i.key_pressed(Key::Enter)) { commit = true } else { cancel = true }
-                            }
-                        }
+                    if top >= viewport.max.y || bottom <= viewport.min.y || fade <= 0.0 {
                         continue;
                     }
+                    let first = ((viewport.min.y - top) / ROW).floor().max(0.0) as usize;
+                    let end = ((viewport.max.y.min(bottom) - top) / ROW).ceil() as usize;
+                    for offset in first..end.min(span.len()) {
+                        let row = &rows[span.start + offset];
+                        let y = top + offset as f32 * ROW;
+                        let rect = Rect::from_min_size(origin + vec2(0.0, y), vec2(width, ROW.min(bottom - y)));
+                        let id = Id::new(("explorer_row", &row.path));
+                        let interactive = !(self.collapsed || closing && *moving);
+                        let resp = ui.interact(rect, id, if interactive { Sense::click() } else { Sense::hover() });
+                        let selected = self.selected.as_deref() == Some(&row.path);
+                        let is_active = active == Some(row.path.as_path());
+                        ui::row_bg(ui, theme, rect, id, resp.hovered(), selected || is_active);
 
-                    painter.text(pos2(x + 31.0, y), Align2::LEFT_CENTER, &row.name, FontId::proportional(13.0), color);
-                    let badge = state_badge(state);
-                    if row.is_dir && !badge.is_empty() {
-                        painter.circle_filled(pos2(rect.right() - 14.0, y), 3.0, ui::with_alpha(color, 0.8));
-                    } else if !badge.is_empty() {
-                        painter.text(pos2(rect.right() - 14.0, y), Align2::CENTER_CENTER, badge, FontId::proportional(11.5), color);
-                    }
+                        let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
+                        for level in 0..row.depth {
+                            let x = rect.left() + 13.0 + level as f32 * INDENT;
+                            painter.vline(x, rect.y_range(), Stroke::new(1.0, ui::with_alpha(theme.border, 0.7 * fade)));
+                        }
+                        let x = rect.left() + 12.0 + row.depth as f32 * INDENT - (1.0 - fade) * 6.0;
+                        let y = rect.center().y;
+                        let state = git.state(&row.path);
+                        let color = ui::with_alpha(state_color(theme, state), fade);
+                        let dim = ui::with_alpha(theme.text_dim, fade);
+                        let open = self.expanded.contains(&row.path);
+                        if row.is_dir {
+                            ui::caret(&painter, pos2(x, y), ui::anim(ui, id.with("caret"), open), dim);
+                        }
+                        let icon = match (row.is_dir, open) {
+                            (true, true) => icons::FOLDER_OPEN,
+                            (true, false) => icons::FOLDER,
+                            _ => file_icon(&row.name),
+                        };
+                        let icon_color = if row.is_dir { ui::with_alpha(theme.accent, fade * 0.85) } else { dim };
+                        painter.text(pos2(x + 10.0, y), Align2::LEFT_CENTER, icon, FontId::proportional(15.0), icon_color);
 
-                    if resp.double_clicked() && !row.is_dir {
-                        cmds.push(Command::KeepEditor);
+                        if row.editing && interactive {
+                            if let Some(edit) = &mut self.edit {
+                                let field = Rect::from_min_max(pos2(x + 30.0, rect.top() + 1.0), pos2(rect.right() - 6.0, rect.bottom() - 1.0));
+                                let out = ui.put(
+                                    field,
+                                    egui::TextEdit::singleline(&mut edit.text)
+                                        .font(FontId::proportional(13.0))
+                                        .margin(egui::Margin::symmetric(4, 1)),
+                                );
+                                if edit.focus {
+                                    out.request_focus();
+                                    edit.focus = false;
+                                } else if out.lost_focus() {
+                                    if ui.input(|i| i.key_pressed(Key::Enter)) { commit = true } else { cancel = true }
+                                }
+                            }
+                            continue;
+                        }
+
+                        painter.text(pos2(x + 31.0, y), Align2::LEFT_CENTER, &row.name, FontId::proportional(13.0), color);
+                        let badge = state_badge(state);
+                        if row.is_dir && !badge.is_empty() {
+                            painter.circle_filled(pos2(rect.right() - 14.0, y), 3.0, ui::with_alpha(color, 0.8));
+                        } else if !badge.is_empty() {
+                            painter.text(pos2(rect.right() - 14.0, y), Align2::CENTER_CENTER, badge, FontId::proportional(11.5), color);
+                        }
+
+                        if !interactive { continue; }
+                        if resp.double_clicked() && !row.is_dir {
+                            cmds.push(Command::KeepEditor);
+                        }
+                        if resp.clicked() {
+                            bg.request_focus();
+                            *action = Some(if row.is_dir { Action::Toggle(row.path.clone()) } else { Action::Open(row.path.clone()) });
+                        }
+                        if resp.secondary_clicked() {
+                            self.selected = Some(row.path.clone());
+                        }
+                        resp.context_menu(|ui| self.menu(ui, Some(&row.path), action));
                     }
-                    if resp.clicked() {
-                        bg.request_focus();
-                        *action = Some(if row.is_dir { Action::Toggle(row.path.clone()) } else { Action::Open(row.path.clone()) });
-                    }
-                    if resp.secondary_clicked() {
-                        self.selected = Some(row.path.clone());
-                    }
-                    resp.context_menu(|ui| self.menu(ui, Some(&row.path), action));
                 }
+                ui.set_min_height(bottom);
             });
         });
-        self.rows = rows;
+        self.rows = live;
+        self.animation = animation;
         if commit {
             self.commit_edit(cmds);
         } else if cancel {
@@ -677,15 +757,39 @@ impl Explorer {
     }
 }
 
-fn caret(painter: &egui::Painter, center: egui::Pos2, open: f32, color: Color32) {
-    let galley = painter.layout_no_wrap(icons::CARET_RIGHT.to_owned(), FontId::proportional(11.0), color);
-    let pos = center - galley.size() / 2.0;
-    painter.add(TextShape::new(pos, galley, color).with_angle_and_anchor(open * std::f32::consts::FRAC_PI_2, Align2::CENTER_CENTER));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_rows_are_visual_only_and_reverse_in_place() {
+        let mut explorer = Explorer::new();
+        let root = PathBuf::from("root");
+        let dir = root.join("src");
+        let entry = |parent: &Path, name: &str, is_dir| Entry { path: parent.join(name), name: name.into(), is_dir };
+        explorer.root = Some(root.clone());
+        explorer.children.insert(root.clone(), vec![entry(&root, "src", true), entry(&root, "README", false)]);
+        explorer.children.insert(dir.clone(), vec![entry(&dir, "main.rs", false)]);
+        explorer.expand(&dir);
+        explorer.build();
+
+        explorer.toggle_folders(Some(dir.clone()), 0.0);
+        assert_eq!(explorer.rows.len(), 2);
+        let closing = explorer.animation.as_ref().unwrap();
+        assert_eq!(closing.outgoing[1].path, dir.join("main.rs"));
+        assert_eq!(closing.spans, [(0..1, false), (1..2, true), (2..3, false)]);
+        assert_eq!(closing.progress(FOLDER_TIME), 0.0);
+
+        let halfway = FOLDER_TIME / 2.0;
+        explorer.toggle_folders(Some(dir.clone()), halfway);
+        assert_eq!(explorer.rows.len(), 3);
+        assert_eq!(explorer.animation.as_ref().unwrap().progress(halfway), 0.5);
+        explorer.selected = Some(dir.join("main.rs"));
+        explorer.toggle_folders(None, 2.0 * FOLDER_TIME);
+        assert_eq!(explorer.selected, Some(dir));
+        assert_eq!(explorer.rows.len(), 2);
+        assert!(explorer.expanded.is_empty());
+    }
 
     #[test]
     fn sorts_loads_lazily_and_keeps_expansion_on_refresh() {
