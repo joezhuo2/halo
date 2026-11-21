@@ -36,7 +36,7 @@ pub enum LineChange {
     Deleted,
 }
 
-pub type LineChanges = Arc<Vec<(usize, LineChange)>>;
+pub type LineChanges = Arc<Vec<(usize, LineChange, bool)>>;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Change {
@@ -95,7 +95,7 @@ struct Status {
 #[allow(clippy::large_enum_variant)]
 enum Msg {
     Status(PathBuf, Option<Status>),
-    Diff(PathBuf, Vec<(usize, LineChange)>),
+    Diff(PathBuf, Vec<(usize, LineChange, bool)>),
     Done(Option<PathBuf>, Result<Option<PathBuf>, String>),
     Repos(PathBuf, Vec<PathBuf>, bool),
     Files(String, Vec<Change>),
@@ -125,7 +125,7 @@ pub struct Git {
     cloned: Option<PathBuf>,
     busy: bool,
     error: Option<String>,
-    diffs: RefCell<HashMap<PathBuf, Option<LineChanges>>>,
+    diffs: RefCell<HashMap<PathBuf, (Option<LineChanges>, bool)>>,
 }
 
 pub fn run(dir: &Path, args: &[&str]) -> Option<String> {
@@ -245,6 +245,10 @@ fn parse_status(text: &str) -> (Option<String>, Option<(usize, usize)>, Vec<Entr
         files.push(Entry { path, state, staged, unstaged });
     }
     (branch, tracking, files)
+}
+
+fn mark_staged(all: Vec<(usize, LineChange)>, unstaged: &[(usize, LineChange)]) -> Vec<(usize, LineChange, bool)> {
+    all.into_iter().map(|(line, kind)| (line, kind, !unstaged.iter().any(|u| u.0 == line))).collect()
 }
 
 fn parse_diff(text: &str) -> Vec<(usize, LineChange)> {
@@ -606,7 +610,8 @@ impl Git {
                             .and_then(|s| s.top.file_name())
                             .map(|n| n.to_string_lossy().into_owned());
                         self.status = status;
-                        self.diffs.borrow_mut().clear();
+                        // keep the old marks on screen until the new diff arrives so the gutter does not flash
+                        self.diffs.borrow_mut().values_mut().for_each(|d| d.1 = false);
                     }
                     if (self.pending || !current)
                         && let Some(ctx) = self.ctx.clone()
@@ -616,7 +621,7 @@ impl Git {
                     }
                 }
                 Msg::Diff(path, changes) => {
-                    self.diffs.borrow_mut().insert(path, Some(Arc::new(changes)));
+                    self.diffs.borrow_mut().insert(path, (Some(Arc::new(changes)), true));
                 }
                 Msg::Repos(folder, repos, own) => {
                     if self.folder.as_ref() == Some(&folder) {
@@ -826,19 +831,21 @@ impl Git {
 
     pub fn line_changes(&self, path: &Path) -> Option<LineChanges> {
         let mut diffs = self.diffs.borrow_mut();
-        if let Some(cached) = diffs.get(path) {
-            return cached.clone();
+        let (shown, fresh) = diffs.entry(path.to_path_buf()).or_insert((None, false));
+        if std::mem::replace(fresh, true) {
+            return shown.clone();
         }
-        diffs.insert(path.to_path_buf(), None);
-        let (Some(status), Some(ctx)) = (&self.status, &self.ctx) else { return None };
+        let shown = shown.clone();
+        let (Some(status), Some(ctx)) = (&self.status, &self.ctx) else { return shown };
         let (top, tx, ctx, path) = (status.top.clone(), self.tx.clone(), ctx.clone(), path.to_path_buf());
         std::thread::spawn(move || {
             let file = crate::wsl::shell_path(&path);
-            let text = run(&top, &["diff", "--no-color", "-U0", "HEAD", "--", &file]).unwrap_or_default();
-            let _ = tx.send(Msg::Diff(path, parse_diff(&text)));
+            let all = run(&top, &["diff", "--no-color", "-U0", "HEAD", "--", &file]).unwrap_or_default();
+            let unstaged = run(&top, &["diff", "--no-color", "-U0", "--", &file]).unwrap_or_default();
+            let _ = tx.send(Msg::Diff(path, mark_staged(parse_diff(&all), &parse_diff(&unstaged))));
             ctx.request_repaint();
         });
-        None
+        shown
     }
 }
 
@@ -926,6 +933,8 @@ mod tests {
 
         let diff = git(&["diff", "--no-color", "-U0", "HEAD", "--", "sub/a.txt"]);
         assert_eq!(parse_diff(&diff), vec![(1, LineChange::Modified), (2, LineChange::Modified)]);
+        let marked = mark_staged(parse_diff(&diff), &[(2, LineChange::Modified)]);
+        assert_eq!(marked, vec![(1, LineChange::Modified, true), (2, LineChange::Modified, false)]);
         assert!(load_status(&std::env::temp_dir(), false).is_none() || std::env::temp_dir().join(".git").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -2558,7 +2558,7 @@ impl Editors {
                     }
                     if let Some(changes) = &changes {
                         let from = changes.partition_point(|c| c.0 < first);
-                        for (line, kind) in changes[from..].iter().take_while(|c| c.0 <= last) {
+                        for (line, kind, staged) in changes[from..].iter().take_while(|c| c.0 <= last) {
                             let (top, end) = if *line < total { (top_of(*line), starts[line + 1] as usize) } else { (rows, rows) };
                             let (y, below) = (origin.y + top as f32 * line_h, origin.y + end as f32 * line_h);
                             let x = gutter.right() - 6.0;
@@ -2570,7 +2570,7 @@ impl Editors {
                                 LineChange::Modified => (Rect::from_min_max(pos2(x, y), pos2(x + 3.0, below)), theme.modified),
                                 LineChange::Deleted => (Rect::from_min_max(pos2(x, y - 2.0), pos2(x + 6.0, y + 2.0)), theme.deleted),
                             };
-                            painter.rect_filled(r, CornerRadius::ZERO, color);
+                            painter.rect_filled(r, CornerRadius::ZERO, if *staged { ui::with_alpha(color, 0.4) } else { color });
                         }
                     }
 

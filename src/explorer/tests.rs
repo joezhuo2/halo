@@ -331,8 +331,8 @@ mod headless {
         assert_eq!(explorer.confirm_delete, [dir.join("a.txt"), dir.join("c.txt")]);
         assert_eq!(count_text(&explorer.confirm_delete), "2 items");
 
-        let mut cmds = vec![];
-        explorer.delete(&mut cmds);
+        explorer.delete(&ctx);
+        let cmds: Vec<Command> = wait(&ctx, &mut explorer).into_iter().filter(|c| matches!(c, Command::PathChanged(..))).collect();
         assert_eq!(cmds.len(), 2);
         assert!(cmds.contains(&Command::PathChanged(dir.join("a.txt"), None)));
         assert!(!dir.join("a.txt").exists() && !dir.join("c.txt").exists());
