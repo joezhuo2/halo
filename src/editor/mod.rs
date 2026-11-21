@@ -58,6 +58,10 @@ struct Tab {
     drag_anchor: Option<usize>,
     pinned: bool,
     rows: (u64, Vec<u32>),
+    box_anchor: Option<usize>,
+    grown: Vec<(Vec<Sel>, Vec<Sel>)>,
+    trail: Vec<Vec<Sel>>,
+    seen: (u64, Vec<Sel>),
 }
 
 #[derive(Default)]
@@ -668,7 +672,7 @@ impl Editors {
                 });
             }
             Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence | MoveLineUp
-            | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
+            | SelectAllOccurrences | ExpandSelection | ShrinkSelection | CursorUndo | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
                 self.with_active(|buf, tab| {
@@ -695,6 +699,25 @@ impl Editors {
                         }
                         AddCursorBelow => {
                             buf.add_cursor(sels, true);
+                        }
+                        SelectAllOccurrences => buf.select_all_occurrences(sels),
+                        ExpandSelection => {
+                            if tab.grown.last().is_some_and(|step| !buffer::same(&step.1, sels)) {
+                                tab.grown.clear();
+                            }
+                            let mut wider: Vec<Sel> = sels.iter().map(|s| buf.grow(*s)).collect();
+                            merge_sels(&mut wider);
+                            tab.grown.push((std::mem::replace(sels, wider.clone()), wider));
+                        }
+                        ShrinkSelection => match tab.grown.pop() {
+                            Some((before, after)) if buffer::same(&after, sels) => *sels = before,
+                            _ => tab.grown.clear(),
+                        },
+                        CursorUndo => {
+                            if let Some(before) = tab.trail.pop() {
+                                tab.seen.1 = before.clone();
+                                *sels = before;
+                            }
                         }
                         ToggleBlockComment => {
                             let line = comment_tokens(buf.path.as_deref());
@@ -1374,7 +1397,12 @@ impl Editors {
                             touched = true;
                             pressed_text = true;
                             let p = hit(&painter, pos);
-                            if on_lens {
+                            let boxed = (mods.alt && mods.shift && !on_lens).then(|| tab.sels.last().map_or(p, |s| s.anchor));
+                            tab.box_anchor = boxed;
+                            if let Some(anchor) = boxed {
+                                tab.sels = buf_ref.box_sels(anchor, p);
+                                tab.drag_anchor = None;
+                            } else if on_lens {
                                 lens_press = true;
                                 tab.drag_anchor = None;
                             } else if pos.x >= fold_x && pos.x < clip.left() + gutter_w && can_fold(buf_ref.line_of(p)) {
@@ -1397,7 +1425,9 @@ impl Editors {
                             }
                         } else if resp.dragged_by(PointerButton::Primary) {
                             let p = hit(&painter, pos);
-                            if let Some(anchor) = tab.drag_anchor
+                            if let Some(anchor) = tab.box_anchor {
+                                tab.sels = buf_ref.box_sels(anchor, p);
+                            } else if let Some(anchor) = tab.drag_anchor
                                 && let Some(s) = tab.sels.iter_mut().find(|s| s.anchor == anchor)
                             {
                                 s.head = p;
@@ -1677,6 +1707,15 @@ impl Editors {
             }
         }
         tab.rows.1 = starts;
+        if tab.seen.0 != buf.version {
+            tab.trail.clear();
+            tab.seen = (buf.version, tab.sels.clone());
+        } else if !ctx.input(|i| i.pointer.any_down()) && !buffer::same(&tab.seen.1, &tab.sels) {
+            let before = std::mem::replace(&mut tab.seen.1, tab.sels.clone());
+            tab.trail.push(before);
+            let extra = tab.trail.len().saturating_sub(100);
+            tab.trail.drain(..extra);
+        }
         if let Some(line) = toggle_fold {
             match folds.iter().position(|f| f.0 == line) {
                 Some(at) => drop(folds.remove(at)),

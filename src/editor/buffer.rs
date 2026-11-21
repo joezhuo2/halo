@@ -38,7 +38,7 @@ impl Sel {
     }
 }
 
-fn same(a: &[Sel], b: &[Sel]) -> bool {
+pub fn same(a: &[Sel], b: &[Sel]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.anchor == y.anchor && x.head == y.head)
 }
 
@@ -1095,6 +1095,62 @@ impl Document {
         Some(next.1)
     }
 
+    // shortcut: box columns count characters, upgrade to visual columns if tabs or wide glyphs skew the box
+    pub fn box_sels(&self, anchor: usize, head: usize) -> Vec<Sel> {
+        let (first, last) = (self.line_of(anchor), self.line_of(head));
+        let (from, to) = (anchor - self.line_start(first), head - self.line_start(last));
+        let on = |line: usize| Sel::new(self.line_start(line) + from.min(self.line_len(line)), self.line_start(line) + to.min(self.line_len(line)));
+        (first.min(last)..=first.max(last)).map(on).collect()
+    }
+
+    pub fn select_all_occurrences(&self, sels: &mut Vec<Sel>) {
+        let Some(first) = sels.first().copied() else { return };
+        let (from, to) = if first.is_empty() { self.word_at(first.head) } else { (first.start(), first.end()) };
+        let text = self.text_of(from, to);
+        let word = first.is_empty() && text.chars().all(is_word);
+        let found = Pattern::new(&text, true, word, false).map(|pattern| self.find_all(&pattern, None)).unwrap_or_default();
+        if !found.is_empty() {
+            *sels = found.into_iter().map(|m| Sel::new(m.0, m.1)).collect();
+        }
+    }
+
+    pub fn enclosing(&self, from: usize, to: usize) -> Option<(usize, usize)> {
+        let (mut at, mut depth) = (from.min(self.len()), 0);
+        while at > 0 && from - at < 20_000 {
+            at -= 1;
+            match self.rope.char(at) {
+                ')' | ']' | '}' => depth += 1,
+                '(' | '[' | '{' if depth > 0 => depth -= 1,
+                '(' | '[' | '{' => {
+                    if let Some(pair) = self.matching_bracket(at).filter(|pair| pair.0 == at && pair.1 >= to) {
+                        return Some(pair);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    pub fn grow(&self, s: Sel) -> Sel {
+        let (from, to) = (s.start(), s.end());
+        let (first, last) = (self.line_of(from), self.line_of(to));
+        let mut options = vec![
+            (self.line_start(first) + self.indent_of(first), self.line_end(last)),
+            (self.line_start(first), self.line_start(last + 1)),
+            (0, self.len()),
+        ];
+        let word = self.word_at(s.head);
+        if self.rope.get_char(word.0).is_some_and(is_word) {
+            options.push(word);
+        }
+        if let Some((open, close)) = self.enclosing(from, to) {
+            options.extend([(open + 1, close), (open, close + 1)]);
+        }
+        let wider = options.into_iter().filter(|o| o.0 <= from && o.1 >= to && o.1 - o.0 > to - from);
+        wider.min_by_key(|o| o.1 - o.0).map_or(s, |o| Sel::new(o.0, o.1))
+    }
+
     pub fn conflicts(&self) -> Vec<[usize; 4]> {
         let mut out = vec![];
         let mut open: Option<[usize; 3]> = None;
@@ -1368,6 +1424,28 @@ mod tests {
         d.toggle_block_comment(&mut sels, "/*", "*/");
         assert_eq!(d.rope.to_string(), "a = b + c;\n  next();");
         assert_eq!((sels[0].start(), sels[0].end()), (4, 9));
+    }
+
+    #[test]
+    fn selects_boxes_occurrences_and_growing_ranges() {
+        let d = doc("let a = f(x, [yy, z]);\nlet yy = 1;\nyyy");
+        let spans = |sels: &[Sel]| sels.iter().map(|s| (s.start(), s.end())).collect::<Vec<_>>();
+        assert_eq!(spans(&d.box_sels(4, 37)), vec![(2, 4), (25, 27), (37, 38)]);
+        let mut sels = vec![Sel::caret(15)];
+        d.select_all_occurrences(&mut sels);
+        assert_eq!(spans(&sels), vec![(14, 16), (27, 29)]);
+        let mut sels = vec![Sel::new(14, 16)];
+        d.select_all_occurrences(&mut sels);
+        assert_eq!(sels.len(), 3);
+
+        assert_eq!(d.enclosing(15, 15), Some((13, 19)));
+        let mut s = Sel::caret(15);
+        let mut seen = vec![];
+        for _ in 0..8 {
+            s = d.grow(s);
+            seen.push((s.start(), s.end()));
+        }
+        assert_eq!(seen, vec![(14, 16), (14, 19), (13, 20), (10, 20), (9, 21), (0, 22), (0, 23), (0, 34)]);
     }
 
     #[test]
