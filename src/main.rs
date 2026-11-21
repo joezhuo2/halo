@@ -46,6 +46,15 @@ mod wsl;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    let _args = match cli::parse(std::env::args().skip(1), &|p| p.exists()) {
+        Ok(cli::Parsed::Run(args)) => args,
+        Ok(cli::Parsed::Help) => exit(cli::HELP, 0),
+        Ok(cli::Parsed::Version) => exit(&cli::version(), 0),
+        Err(error) => {
+            eprintln!("halo: {error}\n");
+            exit(cli::HELP, 2)
+        }
+    };
     let test = std::env::var_os("HALO_COMMANDS").is_some();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Halo")
@@ -67,4 +76,13 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| Ok(Box::new(app::Halo::new(cc)))),
     )
+}
+
+fn exit(text: &str, code: i32) -> ! {
+    if code == 0 {
+        print!("{text}");
+    } else {
+        eprint!("{text}");
+    }
+    std::process::exit(code)
 }
