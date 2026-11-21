@@ -63,6 +63,7 @@ pub struct Completion {
     pub text: String,
     pub range: Option<(Pos, Pos)>,
     pub extra: Vec<Edit>,
+    pub snippet: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -283,38 +284,6 @@ pub fn workspace_edit(value: &Value) -> Vec<(PathBuf, Vec<Edit>)> {
     out
 }
 
-pub fn plain_snippet(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = String::new();
-    let mut i = 0;
-    while i < chars.len() {
-        match chars[i] {
-            '\\' if i + 1 < chars.len() => {
-                out.push(chars[i + 1]);
-                i += 2;
-            }
-            '$' if chars.get(i + 1).is_some_and(|c| c.is_ascii_digit()) => {
-                i += 1;
-                while chars.get(i).is_some_and(|c| c.is_ascii_digit()) {
-                    i += 1;
-                }
-            }
-            '$' if chars.get(i + 1) == Some(&'{') => {
-                let Some(end) = (i + 2..chars.len()).find(|j| chars[*j] == '}') else { break };
-                let body: String = chars[i + 2..end].iter().collect();
-                let choice = body.split_once('|').map(|p| p.1.split(['|', ',']).next().unwrap_or_default());
-                out.push_str(body.split_once(':').map(|p| p.1).or(choice).unwrap_or_default());
-                i = end + 1;
-            }
-            c => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    out
-}
-
 pub fn completions(value: &Value) -> (Vec<Completion>, bool) {
     let (items, incomplete) = match value {
         Value::Array(items) => (items.as_slice(), false),
@@ -334,7 +303,8 @@ pub fn completions(value: &Value) -> (Vec<Completion>, bool) {
                 kind: item["kind"].as_u64().unwrap_or(1) as u8,
                 filter: item["filterText"].as_str().unwrap_or(&label).to_owned(),
                 sort: item["sortText"].as_str().unwrap_or(&label).to_owned(),
-                text: if item["insertTextFormat"] == 2 { plain_snippet(text) } else { text.to_owned() },
+                text: text.to_owned(),
+                snippet: item["insertTextFormat"] == 2,
                 range: edit.is_object().then(|| range(span)),
                 extra: edits(&item["additionalTextEdits"]),
                 label,
@@ -539,7 +509,7 @@ fn initialize(id: u64, root: &Path) -> Value {
     let link = json!({"linkSupport": true});
     let completion = json!({
         "contextSupport": true,
-        "completionItem": {"snippetSupport": false, "documentationFormat": ["plaintext", "markdown"], "labelDetailsSupport": true},
+        "completionItem": {"snippetSupport": true, "documentationFormat": ["plaintext", "markdown"], "labelDetailsSupport": true},
     });
     let signature = json!({
         "documentationFormat": ["plaintext", "markdown"],
@@ -1046,13 +1016,13 @@ mod tests {
         let edit = workspace_edit(&json!({"documentChanges": [{"textDocument": {"uri": target}, "edits": [{"range": span, "newText": "z"}]}]}));
         assert_eq!(edit[0].1[0].text, "z");
 
-        assert_eq!(plain_snippet("foo(${1:a}, ${2|x,y|})$0 \\$"), "foo(a, x) $");
         let (items, incomplete) = completions(&json!({"isIncomplete": true, "items": [
             {"label": "push", "kind": 2, "detail": "fn(T)", "insertText": "push($1)", "insertTextFormat": 2},
             {"label": "len", "textEdit": {"range": span, "newText": "len()"}, "additionalTextEdits": [{"range": span, "newText": "use x;"}]},
         ]}));
         assert!(incomplete);
-        assert_eq!((items[0].text.as_str(), items[0].detail.as_str(), items[0].range), ("push()", "fn(T)", None));
+        assert_eq!((items[0].text.as_str(), items[0].detail.as_str(), items[0].range), ("push($1)", "fn(T)", None));
+        assert!(items[0].snippet && !items[1].snippet);
         assert_eq!((items[1].text.as_str(), items[1].range, items[1].extra.len()), ("len()", Some(((2, 4), (2, 7))), 1));
 
         let text = hover(&json!({"contents": {"kind": "markdown", "value": "```rust\nfn a()\n```\n# Title\nSome **bold** `code`"}}));

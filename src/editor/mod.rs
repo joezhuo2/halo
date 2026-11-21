@@ -1,6 +1,8 @@
 mod buffer;
+mod emmet;
 mod highlight;
 mod intel;
+mod snippet;
 
 use crate::command::{self, Command, Scope};
 use crate::git::{Git, LineChange};
@@ -27,6 +29,7 @@ pub fn configure(settings: &Settings) {
 }
 
 pub use buffer::Pattern;
+pub use snippet::{path as snippets_path, reload as reload_snippets, write_sample as write_sample_snippets};
 pub use highlight::languages;
 
 const TAB_H: f32 = 34.0;
@@ -59,6 +62,7 @@ struct Tab {
     pinned: bool,
     rows: (u64, Vec<u32>),
     box_anchor: Option<usize>,
+    snippet: Option<snippet::Session>,
     grown: Vec<(Vec<Sel>, Vec<Sel>)>,
     trail: Vec<Vec<Sel>>,
     seen: (u64, Vec<Sel>),
@@ -158,6 +162,20 @@ fn search_target(buf: &Document, line: usize) -> Option<(String, usize)> {
     let number = text.strip_prefix("  ").filter(|_| buf.read_only && buf.title.starts_with("Search: "))?.split(':').next()?.parse().ok()?;
     let file = (0..line).rev().map(|above| buf.line_text(above)).find(|above| !above.is_empty() && !above.starts_with(' '))?;
     Some((file, number))
+}
+
+fn emmet_expand(buf: &mut Document, tab: &mut Tab, unit: &str, strict: bool) -> bool {
+    let [s] = tab.sels[..] else { return false };
+    let ext = buf.path.as_deref().and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    // shortcut: Tab expands only in markup files and only known tags, so code is not hijacked, the command expands anywhere
+    if !s.is_empty() || (strict && !matches!(ext.as_str(), "html" | "htm" | "vue" | "svelte" | "php")) {
+        return false;
+    }
+    let before = buf.text_of(buf.line_start(buf.line_of(s.head)), s.head);
+    let abbr = emmet::abbreviation(&before);
+    let Some(body) = emmet::expand(abbr, matches!(ext.as_str(), "jsx" | "tsx"), strict) else { return false };
+    tab.snippet = snippet::insert(buf, &mut tab.sels, s.head - abbr.chars().count(), s.head, &body, unit);
+    true
 }
 
 fn visible_text(buf: &Document, line: usize) -> String {
@@ -672,12 +690,17 @@ impl Editors {
                 });
             }
             Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence | MoveLineUp
-            | SelectAllOccurrences | ExpandSelection | ShrinkSelection | CursorUndo | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
+            | EmmetExpand | SelectAllOccurrences | ExpandSelection | ShrinkSelection | CursorUndo | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
+                let unit = if settings.insert_spaces { " ".repeat(settings.tab_size) } else { "\t".to_owned() };
                 self.with_active(|buf, tab| {
+                    if cmd == EmmetExpand {
+                        emmet_expand(buf, tab, &unit, false);
+                    }
                     let sels = &mut tab.sels;
                     match cmd {
+                        EmmetExpand => {}
                         Undo => {
                             buf.undo(sels);
                         }
@@ -1222,11 +1245,21 @@ impl Editors {
             }
             let page = ((text_rect.height() / line_h) as usize).saturating_sub(2).max(1);
             let mut events = ui.input(|i| i.events.clone());
+            let unit = if settings.insert_spaces { " ".repeat(settings.tab_size) } else { "\t".to_owned() };
+            self.intel.unit = unit.clone();
             self.popup_keys(&mut events, doc_id, buf, tab);
             let (mut typed, mut pasted) = (None, None);
             for event in &events {
                 let from = tab.sels.first().map_or(0, |s| s.start());
-                if handle_event(buf, tab, event, settings, page, &ctx, wrap_cols, folds) {
+                let stepped = match event {
+                    Event::Key { key: Key::Tab, pressed: true, modifiers, .. } if !modifiers.command && !modifiers.alt => {
+                        snippet::step(&mut tab.snippet, &mut tab.sels, !modifiers.shift) || (!modifiers.shift && emmet_expand(buf, tab, &unit, true))
+                    }
+                    Event::Key { key: Key::Escape, pressed: true, .. } => tab.snippet.take().is_some() && false,
+                    _ => false,
+                };
+                if stepped || handle_event(buf, tab, event, settings, page, &ctx, wrap_cols, folds) {
+                    snippet::track(&mut tab.snippet, buf.len(), &tab.sels);
                     self.last_input = now;
                     tab.reveal = tab.sels.last().map(|s| s.head);
                     match event {
@@ -1238,7 +1271,8 @@ impl Editors {
             }
             settle(buf, hl, lang, &mut self.lsp, folds);
             if let Some(c) = typed {
-                self.typed(c, doc_id, buf, lang, tab, &ctx);
+                let prose = matches!(hl.language.as_str(), "Plain Text" | "Markdown");
+                self.typed(c, doc_id, buf, lang, tab, prose, &ctx);
             }
             if let Some((from, to)) = pasted.filter(|_| settings.format_on_paste) {
                 self.format_range(doc_id, buf, lang, from, to, settings, &ctx);
@@ -2035,6 +2069,44 @@ end", "word ".repeat(100)))], &settings);
         assert!(tab.sels[0].head > 0 && tab.sels[0].head < 500);
         frame_with(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default()); rows[1] as usize], &settings);
         assert_eq!(editors.status().unwrap().line, 2);
+    }
+
+    #[test]
+    fn completes_snippets_and_expands_emmet_with_tab_stops() {
+        let ctx = egui::Context::default();
+        let settings = Settings { lsp: false, ..Settings::default() };
+        let dir = std::env::temp_dir().join(format!("halo-snippet-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = |e: &Editors| e.docs.values().next().unwrap().buf.rope.to_string();
+        let plain = |k: Key| key(k, Default::default());
+        let typing = |text: &str| text.chars().map(|c| Event::Text(c.to_string())).collect::<Vec<_>>();
+
+        std::fs::write(dir.join("a.sh"), "").unwrap();
+        let mut editors = Editors::new();
+        editors.open(&dir.join("a.sh"));
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        for event in typing("tod") {
+            frame_with(&ctx, &mut editors, vec![event], &settings);
+        }
+        frame_with(&ctx, &mut editors, vec![plain(Key::Enter)], &settings);
+        assert_eq!(text(&editors), "TODO: ");
+
+        std::fs::write(dir.join("b.html"), "").unwrap();
+        let mut editors = Editors::new();
+        editors.open(&dir.join("b.html"));
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![Event::Text("a.x+p".into())], &settings);
+        frame_with(&ctx, &mut editors, vec![plain(Key::Tab)], &settings);
+        assert_eq!(text(&editors), "<a class=\"x\" href=\"\"></a>\n<p></p>");
+        frame_with(&ctx, &mut editors, typing("u"), &settings);
+        frame_with(&ctx, &mut editors, vec![plain(Key::Tab)], &settings);
+        frame_with(&ctx, &mut editors, typing("t"), &settings);
+        frame_with(&ctx, &mut editors, vec![plain(Key::Tab), plain(Key::Tab)], &settings);
+        frame_with(&ctx, &mut editors, typing("!"), &settings);
+        assert_eq!(text(&editors), "<a class=\"x\" href=\"u\">t</a>\n<p></p>!");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

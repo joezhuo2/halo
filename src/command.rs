@@ -19,6 +19,7 @@ pub enum Command {
     OpenSettings,
     OpenSettingsJson,
     OpenKeybindings,
+    OpenSnippets,
     Exit,
 
     Undo,
@@ -30,6 +31,7 @@ pub enum Command {
     Replace,
     ToggleComment,
     ToggleBlockComment,
+    EmmetExpand,
     MoveLineUp,
     MoveLineDown,
     CopyLineUp,
@@ -221,7 +223,7 @@ pub fn all() -> Vec<Command> {
     use Command::*;
     vec![
         NewFile, OpenFile, OpenFolder, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, OpenSettings, OpenSettingsJson,
-        OpenKeybindings, Exit, Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, MoveLineUp, MoveLineDown, CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove,
+        OpenKeybindings, Exit, Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, OpenSnippets, MoveLineUp, MoveLineDown, CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove,
         InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll, SelectAll, AddCursorAbove,
         AddCursorBelow, SelectNextOccurrence, SelectAllOccurrences, ExpandSelection, ShrinkSelection, CursorUndo, ShowExplorer, ShowSourceControl, ToggleSidebar, TogglePanel, ToggleAi,
         SplitEditor, ToggleMinimap, ToggleWordWrap, ToggleTheme, ZoomIn, ZoomOut, ZoomReset, GoToFile, ShowCommands, FindInFiles,
@@ -378,6 +380,8 @@ impl Command {
             Replace => "Replace",
             ToggleComment => "Toggle Line Comment",
             ToggleBlockComment => "Toggle Block Comment",
+            EmmetExpand => "Emmet: Expand Abbreviation",
+            OpenSnippets => "Snippets (snippets.json)",
             MoveLineUp => "Move Line Up",
             MoveLineDown => "Move Line Down",
             CopyLineUp => "Copy Line Up",

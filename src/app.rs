@@ -179,6 +179,10 @@ impl Halo {
             OpenDiff(title, args) => self.git.diff(title, args),
             CloseFolder => self.set_folder(None, ctx),
             OpenSettings => self.page.open = true,
+            OpenSnippets => {
+                crate::editor::write_sample_snippets();
+                self.editors.open(&crate::editor::snippets_path());
+            }
             OpenKeybindings => {
                 if !command::path().exists() {
                     command::write_defaults();
@@ -305,8 +309,11 @@ impl Halo {
         if active.as_ref().is_some_and(|p| *p == Settings::path()) {
             self.reload_settings(ctx);
         }
-        if active.is_some_and(|p| p == command::path()) {
+        if active.as_ref().is_some_and(|p| *p == command::path()) {
             command::reload();
+        }
+        if active.is_some_and(|p| p == crate::editor::snippets_path()) {
+            crate::editor::reload_snippets();
         }
     }
 

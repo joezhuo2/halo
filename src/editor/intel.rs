@@ -1,5 +1,5 @@
 use super::buffer::{After, Document, Kind, Sel, is_word};
-use super::{Editors, Tab};
+use super::{Editors, Tab, snippet};
 use crate::command::Command;
 use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
 use crate::settings::Settings;
@@ -215,6 +215,29 @@ fn list_popup(
     (clicked, area.response.rect)
 }
 
+fn local_items(buf: &Document, words: bool) -> Vec<Completion> {
+    let ext = buf.path.as_deref().and_then(Path::extension).map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let item = |label: &str, text: &str, kind: u8, detail: &str| Completion {
+        label: label.to_owned(),
+        detail: detail.to_owned(),
+        kind,
+        filter: label.to_owned(),
+        sort: label.to_owned(),
+        text: text.to_owned(),
+        range: None,
+        extra: vec![],
+        snippet: kind == 15,
+    };
+    let mut items: Vec<Completion> = snippet::user(&ext).iter().map(|(name, body)| item(name, body, 15, "snippet")).collect();
+    if words && buf.rope.len_bytes() < 2_000_000 {
+        let text = buf.rope.to_string();
+        let starts = |word: &&str| word.len() >= 3 && !word.starts_with(|c: char| c.is_ascii_digit());
+        let found: std::collections::BTreeSet<&str> = text.split(|c: char| !is_word(c)).filter(starts).collect();
+        items.extend(found.into_iter().take(3000).map(|word| item(word, word, 1, "")));
+    }
+    items
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
 }
@@ -320,6 +343,7 @@ pub(super) struct Intel {
     rects: Vec<Rect>,
     last_rects: Vec<Rect>,
     pub queued: Vec<Queued>,
+    pub unit: String,
 }
 
 impl Intel {
@@ -520,8 +544,11 @@ impl Editors {
                 }
             }
             Want::Completion { doc, start, dot } => {
-                let (items, incomplete) = lsp::completions(&value);
-                let single = self.active_tab().is_some_and(|(g, t)| self.groups[g].tabs[t].doc == doc && self.groups[g].tabs[t].sels.len() == 1);
+                let (mut items, incomplete) = lsp::completions(&value);
+                if let Some(d) = self.docs.get(&doc).filter(|_| !dot) {
+                    items.extend(local_items(&d.buf, items.is_empty()));
+                }
+                let single = self.active_tab().map(|(g, t)| &self.groups[g].tabs[t]).is_some_and(|tab| tab.doc == doc && tab.sels.len() == 1 && tab.snippet.is_none());
                 if single && !items.is_empty() {
                     self.intel.suggest = Some(Suggest { doc, start, items, shown: vec![], selected: 0, prefix: None, incomplete, dot, reveal: true });
                 }
@@ -825,10 +852,20 @@ impl Editors {
         true
     }
 
-    pub(super) fn typed(&mut self, c: char, id: u64, buf: &Document, lang: &mut Lang, tab: &Tab, ctx: &egui::Context) {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn typed(&mut self, c: char, id: u64, buf: &Document, lang: &mut Lang, tab: &Tab, prose: bool, ctx: &egui::Context) {
         self.intel.hover = None;
-        let Some(path) = buf.path.clone().filter(|_| lang.attached) else { return };
         let head = tab.sels[0].head;
+        let Some(path) = buf.path.clone().filter(|_| lang.attached) else {
+            let start = buf.word_at(head).0.min(head);
+            if !is_word(c) || prose || tab.snippet.is_some() {
+                self.intel.suggest = None;
+            } else if !self.intel.suggest.as_ref().is_some_and(|p| p.doc == id && p.start == start) {
+                let items = local_items(buf, true);
+                self.intel.suggest = Some(Suggest { doc: id, start, items, shown: vec![], selected: 0, prefix: None, incomplete: false, dot: false, reveal: true });
+            }
+            return;
+        };
         let word = is_word(c);
         if word || self.lsp.triggers(&path, "completionProvider").contains(&c) {
             let start = if word { buf.word_at(head).0.min(head) } else { head };
@@ -920,13 +957,22 @@ impl Editors {
         let Some(item) = popup.shown.get(popup.selected).map(|index| &popup.items[*index]) else { return };
         let head = tab.sels[0].head;
         let from = item.range.map_or(popup.start, |span| from_lsp(buf, span.0)).min(head);
-        let mut edits = vec![(from, head, item.text.clone())];
+        let (text, stops) = match item.snippet {
+            true => snippet::parse(&snippet::indented(buf, from, &item.text, &self.intel.unit)),
+            false => (item.text.clone(), vec![]),
+        };
+        let length = text.chars().count();
+        let mut edits = vec![(from, head, text)];
         edits.extend(item.extra.iter().map(|e| (from_lsp(buf, e.start), from_lsp(buf, e.end), e.text.clone())));
         let before = edits.iter().skip(1).filter(|e| e.0 < from).count();
         let mut sels = tab.sels.clone();
         if buf.apply(&mut sels, edits, Kind::Other, After::Carets) {
             tab.sels = vec![sels.get(before).copied().unwrap_or(sels[0])];
             buf.fix_after(&tab.sels);
+            if item.snippet {
+                let start = tab.sels[0].head - length;
+                tab.snippet = snippet::Session::begin(buf, &mut tab.sels, start, stops);
+            }
             tab.reveal = Some(tab.sels[0].head);
         }
     }
