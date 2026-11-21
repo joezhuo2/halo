@@ -475,7 +475,7 @@ impl Halo {
         }
     }
 
-    fn global_shortcuts(&mut self, ctx: &egui::Context) {
+    pub(crate) fn global_shortcuts(&mut self, ctx: &egui::Context) {
         let bindings = command::bindings();
         let editor = self.zone == Zone::Editor && !self.editors.terminal_focused();
         let keys = command::context();
@@ -877,6 +877,7 @@ impl eframe::App for Halo {
         self.ai_panel(ui);
         self.bottom_panel(ui);
         self.central(ui);
+        self.floating(&ctx);
         self.debug_frame(&ctx, window.top() + 44.0);
         self.testing_frame(&ctx);
         self.dialogs(&ctx);

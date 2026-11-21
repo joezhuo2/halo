@@ -1,6 +1,7 @@
 use crate::app::Halo;
 use crate::command::Command;
 use crate::ui;
+use eframe::egui;
 use std::path::{Path, PathBuf};
 
 pub const FLAG: &str = "--new-window";
@@ -35,5 +36,17 @@ impl Halo {
             }
             _ => spawn(self.session.folder.as_deref()),
         }
+    }
+
+    pub(crate) fn floating(&mut self, ctx: &egui::Context) {
+        for (id, viewport, builder) in self.editors.floating() {
+            ctx.show_viewport_immediate(viewport, builder, |ui, _| {
+                if !self.page.keys.recording() {
+                    self.global_shortcuts(ui.ctx());
+                }
+                self.editors.window_ui(ui, id, &self.theme, &self.settings, &self.git, &mut self.cmds);
+            });
+        }
+        self.editors.close_empty_groups();
     }
 }
