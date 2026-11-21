@@ -59,3 +59,19 @@
 - Editor: clickable links in hover text, notices that expire, a shimmer for loading reference counts, and saving keeps a preview tab.
 - Settings: keyboard shortcuts grouped by category.
 - Not built: skeleton rows in the explorer (folders are listed synchronously), resizing the outline and timeline, and timeline diffs for files outside the open repository.
+
+## M8: IDE features (0.1.4, done)
+
+Built by parallel workers on branches merged into `m7-ide`; covered by unit and headless tests, not checked by hand in the running app.
+
+- Diffs and merges: a line diff engine (`editor/diff.rs`), the side-by-side editable diff editor with hunk staging and a gutter change peek (`editor/diff_view.rs`), and a three-way merge editor (`editor/merge.rs`, `editor/merge_view.rs`).
+- Git: blame (`blame.rs`), local history in the Timeline (`history.rs`), compare, and amend, undo, merge, rebase, cherry-pick, tags, remotes, clone, init, worktrees and stashes (`git_ops.rs`, `scm_ops.rs`).
+- Run: a debugger over the Debug Adapter Protocol (`dap.rs`, `debug.rs`), tasks with problem matchers (`tasks.rs`), and a test explorer with debug and coverage (`testing.rs`, `test_parse.rs`).
+- Editor: live tab drag, a grid of editor groups (`editor/layout.rs`, `editor/grid.rs`), floating editor windows and new windows (`windows.rs`), Markdown preview (`editor/markdown.rs`), image tabs (`editor/image_view.rs`), background loading with binary and large file modes (`editor/load.rs`), pinned tabs in the session.
+- Workbench: zen mode, full screen, centered layout, movable side bar, panel and activity bar, a secondary side bar and movable views (`workbench.rs`); output channels (`output.rs`) and notifications (`notifications.rs`).
+- Explorer: multi-select, cut, copy and paste, drag and drop, Open Editors, type to filter, `files_exclude`, compact folders, file nesting (`explorer/nesting.rs`) and multi-root workspaces with `.code-workspace` files (`workspace.rs`).
+- Terminal: links, find, shell integration, rename and colour, terminals in the editor area (`terminal_links.rs`, `terminal_find.rs`, `shell_integration.rs`) and persistent sessions (`terminal_restore.rs`).
+- Settings: layers with workspace, folder and language settings and VS Code key names (`layers.rs`), settings search, about 50 new settings, keybinding `when` clauses (`when.rs`) and a Keyboard Shortcuts page that records chords (`shortcuts.rs`); imported VS Code color and icon themes (`theme_import.rs`, `icon_theme.rs`).
+- Accessibility: AccessKit, high contrast themes, reduced motion, region cycling and announcements (`a11y.rs`).
+- Command line: argument parsing and a single-instance hand-off (`cli.rs`, `ipc.rs`), with a `halo` command installed on PATH on Windows.
+- Not built: font ligatures, letter spacing, format on type, tab sizing, font-glyph icon themes, `.tmTheme` themes, dragging a tab between windows, a combined Testing view across workspace roots, keeping terminal processes alive across restarts, and VS Code extensions.

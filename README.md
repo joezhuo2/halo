@@ -113,7 +113,12 @@ language you want diagnostics and completion in. Each is optional.
   or double-click the tab. `Ctrl+Tab` switches between recent files,
   `Ctrl+Shift+T` reopens a closed one, and `Alt+Left` and `Alt+Right` go back
   and forward.
-- **Split editor** (`Ctrl+\`) shows one file in several groups.
+- **Split editor** right (`Ctrl+\`), down (`Ctrl+K Ctrl+\`), left or up, or
+  pick a layout such as Two Rows or Grid (2x2). Drag the lines between groups
+  to resize them, maximize a group with `Ctrl+K Ctrl+M`, and move between
+  groups with `Ctrl+K Ctrl+Arrow`. Dropping a tab on any edge of a group
+  splits that way; dropping it outside the window opens it in its own
+  window. `Ctrl+Shift+N` opens a new Halo window.
 - **Merge conflicts** get a bar with Accept Current, Accept Incoming, Accept
   Both and Next, and open in the **merge editor**: Incoming, Current, an
   optional Base and an editable Result, with accept per conflict and Complete
@@ -188,6 +193,13 @@ Each of these can be switched off under **Settings > Text Editor**.
 - **Open Editors** lists the open tabs above the tree. Type, or press
   `Ctrl+Alt+F`, to filter the tree. `files_exclude` hides files, and folder
   chains with a single child are shown on one row.
+- **File nesting** (off by default) tucks related files under a parent, such
+  as `Cargo.lock` under `Cargo.toml`, with VS Code's pattern syntax.
+- **Multi-root workspaces:** File > Add Folder to Workspace puts several
+  folders in one window, each as a root in the tree. Save the set as a
+  `.code-workspace` file. Search, source control, tasks, debugging and
+  language servers cover every folder, and each folder can have its own
+  `.vscode/settings.json`.
 
 ### Source control
 
@@ -220,6 +232,8 @@ Each of these can be switched off under **Settings > Text Editor**.
 - **Shell integration** for PowerShell, bash and zsh marks each command with
   its exit status; `Ctrl+Up` and `Ctrl+Down` move between commands.
 - Rename a terminal, give it a colour, or move it into the editor area.
+- Terminals come back after a restart in the same places, with their name,
+  folder and the last 1000 lines of history.
 - **Ports** lists listening ports with their process. **Output**
   (`Ctrl+Shift+U`) has a channel each for Git, language servers, debugging,
   tasks and Halo itself.
@@ -265,6 +279,43 @@ what it searches:
 - **Switch to WSL** in the activity bar reopens the folder in a WSL distro.
   Terminals, Run and the AI panel then run inside it.
 
+### Window layout
+
+- **Zen mode** (`Ctrl+K Z`, `Esc Esc` to leave), **full screen** (`F11`) and
+  a centered editor.
+- The side bar can sit on the left or right, the panel on any side, and the
+  activity bar at the side, at the top of the side bar, or hidden.
+- A **secondary side bar** (`Ctrl+Alt+B`) holds the AI view. "View: Move
+  View..." or a drag moves the Explorer, Source Control, Testing, Outline,
+  Timeline, Terminal and the other views between the side bars and the
+  panel.
+
+### Accessibility
+
+- Screen readers get names, roles and states for the trees, lists, tabs and
+  buttons, and the caret line of the editor and terminal as text.
+- **High Contrast Dark** and **High Contrast Light** themes, which follow
+  Windows high contrast mode.
+- **Reduce motion** stops animations. `F6` and `Shift+F6` move between the
+  editor, side bar, panel and status bar, and `Alt+F1` lists the keys for
+  the part that has focus.
+
+### Command line
+
+```
+halo [options] [paths...]
+```
+
+- `halo file.rs:12:3` opens a file at a line and column, and
+  `halo --diff a b` compares two files.
+- A second `halo` hands its files to the window that is already open;
+  `--new-window` opens another one.
+- `halo --wait file` returns when the file's tab is closed, so
+  `git config core.editor "halo --wait"` works.
+- `halo --help` lists every option. The Windows installer puts `halo` on
+  `PATH`; on macOS and Linux run "Shell Command: Install 'halo' command in
+  PATH".
+
 ### Settings and keybinds
 
 `Ctrl+,` opens Settings, with categories on the left:
@@ -307,12 +358,14 @@ The defaults follow VS Code:
 | `Ctrl+Shift+M` | Problems |
 | `Ctrl+B` | Toggle side bar |
 | `Ctrl+J` | Toggle panel |
-| `Ctrl+Alt+B` | Toggle AI panel |
+| `Ctrl+Alt+B` | Toggle secondary side bar (AI) |
 | `Ctrl+\` | Split editor |
 | `` Ctrl+Shift+` `` | New terminal |
 | `Ctrl+K Ctrl+O` | Open folder |
 | `Ctrl+K Ctrl+T` | Switch light and dark theme |
-| `F5` | Run file |
+| `F5` | Run file, or start debugging |
+| `Ctrl+Shift+B` | Run build task |
+| `F11` | Full screen |
 
 The sun or moon at the right end of the status bar also switches the theme.
 
@@ -330,6 +383,10 @@ The sun or moon at the right end of the status bar also switches the theme.
 - Imported icon themes must use SVG or PNG icons, and imported color themes
   must be JSON.
 - No font ligatures or letter spacing, and no VS Code extensions.
+- Restored terminals show their old output and start a fresh shell; the
+  programs that were running in them are not kept alive.
+- High contrast and reduced motion follow the operating system on Windows
+  only.
 
 ## Screenshots
 

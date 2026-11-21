@@ -95,6 +95,10 @@ Covered by tests; not yet checked by hand in the running app.
   launch configurations and language servers cover every folder. Settings
   gain a Folder layer, and `${workspaceFolder:name}` works in tasks and
   launch configurations.
+- **File nesting** in the Explorer, like VS Code's
+  (`explorer.fileNesting.enabled`, `.expand`, `.patterns`), off by default,
+  with patterns for TypeScript and JavaScript outputs, `tsconfig`, the
+  `package.json` lock files and `Cargo.lock`.
 - **Command line**: `halo [options] [paths...]` with `file:line[:column]`,
   `--goto`, `--diff`, `--new-window`, `--reuse-window`, `--wait`, `--add`,
   `-` for standard input, `--help` and `--version`. A second `halo` hands its
@@ -134,6 +138,8 @@ Covered by tests; not yet checked by hand in the running app.
 
 - Long commit subjects in the Timeline are shortened with an ellipsis, so the
   author and age stay visible.
+- The window no longer flickers while Halo starts: it stays hidden until its
+  first frames are drawn.
 
 ## [0.1.3] - 2026-11-20
 
