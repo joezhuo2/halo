@@ -180,6 +180,12 @@ impl Highlighter {
         Self { syntax, ..Self::new(None, &Rope::new()) }.labelled()
     }
 
+    pub fn fenced(token: &str, rope: &Rope) -> Self {
+        let set = syntaxes();
+        let syntax = set.find_syntax_by_token(token).filter(|s| s.name != "Plain Text" && rope.len_bytes() <= MAX_FILE);
+        Self { syntax, ..Self::new(None, &Rope::new()) }.labelled()
+    }
+
     fn labelled(mut self) -> Self {
         self.language = self.syntax.map_or("Plain Text", |s| s.name.as_str()).to_owned();
         self

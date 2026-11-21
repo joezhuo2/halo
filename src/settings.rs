@@ -58,6 +58,7 @@ pub struct Settings {
     pub guides: bool,
     pub diff_side_by_side: bool,
     pub hot_exit: bool,
+    pub large_mb: u64,
     pub auto_update: bool,
     pub files_exclude: Vec<String>,
     pub compact_folders: bool,
@@ -156,6 +157,7 @@ impl Default for Settings {
             guides: true,
             diff_side_by_side: true,
             hot_exit: true,
+            large_mb: 20,
             auto_update: true,
             files_exclude: ["**/.git", "**/.svn", "**/.hg", "**/.DS_Store", "**/Thumbs.db"].map(str::to_owned).into(),
             compact_folders: true,
@@ -278,6 +280,7 @@ pub struct Backup {
 pub struct Session {
     pub folder: Option<PathBuf>,
     pub files: Vec<PathBuf>,
+    pub pinned: Vec<(usize, PathBuf)>,
     pub backups: Vec<Backup>,
     pub recent: Vec<PathBuf>,
     pub sidebar: bool,
@@ -297,6 +300,7 @@ impl Default for Session {
         Self {
             folder: None,
             files: vec![],
+            pinned: vec![],
             backups: vec![],
             recent: vec![],
             sidebar: true,
@@ -346,5 +350,14 @@ mod tests {
         assert_eq!(settings.servers.get("rs").map(String::as_str), Some("rust-analyzer"));
         assert_eq!(settings.run_command(Path::new("a/b.PY"), "x y.py").as_deref(), Some("python \"x y.py\""));
         assert_eq!(settings.run_command(Path::new("notes.txt"), "notes.txt"), None);
+    }
+
+    #[test]
+    fn sessions_keep_pinned_tabs_and_old_files_still_load() {
+        let session = Session { pinned: vec![(1, PathBuf::from("a.rs"))], ..Session::default() };
+        let back: Session = serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+        assert_eq!(back.pinned, vec![(1, PathBuf::from("a.rs"))]);
+        let old: Session = serde_json::from_str(r#"{"folder":null,"files":["x.rs"],"sidebar":false}"#).unwrap();
+        assert!(old.pinned.is_empty() && old.files.len() == 1 && !old.sidebar);
     }
 }

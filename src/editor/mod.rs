@@ -3,7 +3,10 @@ pub mod diff;
 mod diff_view;
 mod emmet;
 mod highlight;
+mod image_view;
 mod intel;
+mod load;
+mod markdown;
 mod merge;
 mod merge_view;
 mod open_tabs;
@@ -25,6 +28,7 @@ use eframe::egui::{
 };
 use highlight::{Highlighter, Spans};
 use intel::{Intel, Lang, Piece, Queued, Row, from_lsp};
+use load::{Content, Place};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -71,6 +75,8 @@ struct Doc {
     backed: u64,
     stale: bool,
     blame: crate::blame::Blame,
+    content: Content,
+    top: usize,
 }
 
 #[derive(Default)]
@@ -92,6 +98,7 @@ struct Tab {
     seen: (u64, Vec<Sel>),
     diff: Option<Box<diff_view::DiffTab>>,
     merge: Option<Box<merge_view::MergeTab>>,
+    md: Option<Box<markdown::MdTab>>,
 }
 
 #[derive(Default)]
@@ -126,6 +133,7 @@ enum TabAction {
     CloseAll,
     CopyPath(usize),
     Pin(usize),
+    ReopenText(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -236,6 +244,8 @@ pub struct Editors {
     disk_jobs: Vec<(u64, bool)>,
     diffs: diff_view::Diffs,
     merges: merge_view::Merges,
+    large_bytes: u64,
+    previews: Vec<(usize, u64, markdown::Out)>,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -554,6 +564,8 @@ impl Editors {
             disk_jobs: vec![],
             diffs: Default::default(),
             merges: Default::default(),
+            large_bytes: 20 << 20,
+            previews: vec![],
         }
     }
 
@@ -566,21 +578,22 @@ impl Editors {
     fn with_active<R>(&mut self, f: impl FnOnce(&mut Document, &mut Tab) -> R) -> Option<R> {
         let (g, t) = self.active_tab()?;
         let tab = &mut self.groups[g].tabs[t];
-        let doc = self.docs.get_mut(&tab.doc)?;
+        let doc = self.docs.get_mut(&tab.doc).filter(|_| tab.md.is_none())?;
         doc.buf.clamp(&mut tab.sels);
         let result = f(&mut doc.buf, tab);
         tab.reveal = tab.sels.last().map(|s| s.head);
         Some(result)
     }
 
-    fn insert_doc(&mut self, buf: Document) -> u64 {
+    fn insert_doc(&mut self, mut buf: Document) -> u64 {
+        buf.large = buf.rope.len_bytes() as u64 > self.large_bytes;
         let id = self.next_id;
         self.next_id += 1;
         if let Some(note) = &buf.note {
             self.banner = Some((note.clone(), None));
         }
-        let hl = Highlighter::new(buf.path.as_deref(), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0, stale: false, blame: Default::default() });
+        let hl = Highlighter::new(buf.path.as_deref().filter(|_| !buf.large), &buf.rope);
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0, stale: false, blame: Default::default(), content: Content::Text, top: 0 });
         id
     }
 
@@ -608,13 +621,8 @@ impl Editors {
         if let Some(id) = self.find_doc(path) {
             return self.show_doc(id);
         }
-        match Document::load(path) {
-            Ok(buf) => {
-                let id = self.insert_doc(buf);
-                self.place(id, preview);
-            }
-            Err(error) => self.banner = Some((error, None)),
-        }
+        let id = self.insert_pending(path);
+        self.place(id, preview);
     }
 
     fn place(&mut self, id: u64, preview: bool) {
@@ -655,7 +663,7 @@ impl Editors {
 
     fn show_doc(&mut self, id: u64) {
         let group = &mut self.groups[self.active];
-        match group.tabs.iter().position(|t| t.doc == id && t.diff.is_none()) {
+        match group.tabs.iter().position(|t| t.doc == id && t.diff.is_none() && t.md.is_none()) {
             Some(t) => {
                 group.active = t;
                 self.want_focus = true;
@@ -731,7 +739,7 @@ impl Editors {
             source.active -= 1;
         }
         let group = &mut self.groups[tg];
-        group.tabs.retain(|t| t.doc != tab.doc || t.diff.is_some() != tab.diff.is_some());
+        group.tabs.retain(|t| t.doc != tab.doc || t.diff.is_some() != tab.diff.is_some() || t.md.is_some() != tab.md.is_some());
         let pinned = group.tabs.iter().filter(|t| t.pinned).count();
         let at = tab_slot(at, tab.pinned, pinned, group.tabs.len());
         group.tabs.insert(at, tab);
@@ -765,7 +773,7 @@ impl Editors {
     }
 
     fn save_doc(&mut self, id: u64, ask: bool) -> bool {
-        let Some(doc) = self.docs.get_mut(&id) else { return false };
+        let Some(doc) = self.docs.get_mut(&id).filter(|d| d.content.is_text()) else { return false };
         if doc.buf.path.is_none() || ask {
             let mut dialog = rfd::FileDialog::new().set_file_name(&doc.buf.title);
             if let Some(dir) = doc.buf.path.as_ref().and_then(|p| p.parent()) {
@@ -791,7 +799,9 @@ impl Editors {
         match doc.buf.save() {
             Ok(bytes) => {
                 doc.blame.refresh();
-                self.history.save(doc.buf.path.as_deref().unwrap(), bytes, doc.buf.encoding);
+                if !doc.buf.large {
+                    self.history.save(doc.buf.path.as_deref().unwrap(), bytes, doc.buf.encoding);
+                }
                 self.lsp.save(doc.buf.path.as_deref().unwrap_or(Path::new("")));
                 self.groups.iter_mut().flat_map(|group| &mut group.tabs).filter(|tab| tab.doc == id).for_each(|tab| tab.preview = false);
                 true
@@ -855,10 +865,16 @@ impl Editors {
             self.want_focus |= *cmd != RenameSymbol;
             return true;
         }
+        if let GoTo(line, column) = cmd
+            && self.pend_place(Place::Goto(line.max(&1) - 1, column.max(&1) - 1))
+        {
+            return true;
+        }
         let Some((g, t)) = self.active_tab() else { return false };
         let doc_id = self.groups[g].tabs[t].doc;
         let mut refocus = true;
         match cmd {
+            Save if !self.docs.get(&doc_id).is_some_and(|d| d.content.is_text()) => {}
             Save => {
                 self.groups[g].tabs[t].preview = false;
                 if !self.save_formatted(doc_id, settings, ctx) {
@@ -870,6 +886,7 @@ impl Editors {
             }
             CloseEditor if self.groups[g].tabs[t].pinned => {}
             CloseEditor => self.request_close(g, t),
+            MarkdownPreview | MarkdownPreviewSide => self.open_preview(*cmd == MarkdownPreviewSide),
             SplitEditor => {
                 let sels = self.groups[g].tabs[t].sels.clone();
                 self.groups.insert(g + 1, Group::default());
@@ -1010,7 +1027,7 @@ impl Editors {
 
     pub fn open_paths(&self) -> Vec<PathBuf> {
         let mut out: Vec<PathBuf> = vec![];
-        for tab in self.groups.iter().flat_map(|g| &g.tabs) {
+        for tab in self.groups.iter().flat_map(|g| &g.tabs).filter(|t| !t.preview) {
             if let Some(path) = self.docs.get(&tab.doc).and_then(|d| d.buf.path.clone())
                 && !out.contains(&path)
             {
@@ -1018,6 +1035,38 @@ impl Editors {
             }
         }
         out
+    }
+
+    pub fn pinned_paths(&self) -> Vec<(usize, PathBuf)> {
+        let mut out = vec![];
+        for (g, group) in self.groups.iter().enumerate() {
+            for tab in group.tabs.iter().filter(|t| t.pinned && t.diff.is_none() && t.md.is_none()) {
+                out.extend(self.docs.get(&tab.doc).and_then(|d| d.buf.path.clone()).map(|path| (g, path)));
+            }
+        }
+        out
+    }
+
+    pub fn restore_pins(&mut self, pins: &[(usize, PathBuf)]) {
+        for (g, path) in pins {
+            while self.groups.len() <= *g {
+                self.groups.push(Group::default());
+            }
+            let id = match self.find_doc(path) {
+                Some(id) => id,
+                None => match Document::load(path) {
+                    Ok(buf) => self.insert_doc(buf),
+                    Err(error) => {
+                        self.banner = Some((error, None));
+                        continue;
+                    }
+                },
+            };
+            self.active = *g;
+            self.add_tab(id, vec![Sel::caret(0)]);
+            self.groups[*g].tabs.last_mut().into_iter().for_each(|tab| tab.pinned = true);
+        }
+        self.active = 0;
     }
 
     pub fn active_path(&self) -> Option<PathBuf> {
@@ -1048,7 +1097,7 @@ impl Editors {
     pub fn blame_item(&mut self, ctx: &egui::Context) -> Option<(String, String, Option<Command>)> {
         let (doc, tab) = self.active_doc()?;
         let buf = &doc.buf;
-        let path = buf.path.as_deref()?;
+        let path = buf.path.as_deref().filter(|_| !buf.large)?;
         doc.blame.update(path, &buf.rope, buf.version, buf.is_dirty(), ctx);
         match doc.blame.line(buf.line_of(tab.sels.first()?.head.min(buf.len()))) {
             Some(Some(c)) => Some((c.label(), c.tip(), Some(c.diff(path)))),
@@ -1064,7 +1113,7 @@ impl Editors {
     pub fn status(&self) -> Option<EditorStatus> {
         let (g, t) = self.active_tab()?;
         let tab = &self.groups[g].tabs[t];
-        let doc = self.docs.get(&tab.doc)?;
+        let doc = self.docs.get(&tab.doc).filter(|d| d.content.is_text())?;
         let head = tab.sels.first()?.head.min(doc.buf.len());
         let line = doc.buf.line_of(head);
         Some(EditorStatus {
@@ -1082,7 +1131,7 @@ impl Editors {
     fn active_doc(&mut self) -> Option<(&mut Doc, &mut Tab)> {
         let (g, t) = self.active_tab()?;
         let tab = &mut self.groups[g].tabs[t];
-        Some((self.docs.get_mut(&tab.doc).filter(|doc| !doc.buf.read_only)?, tab))
+        Some((self.docs.get_mut(&tab.doc).filter(|doc| !doc.buf.read_only && tab.md.is_none())?, tab))
     }
 
     pub fn set_eol(&mut self, crlf: bool) {
@@ -1189,7 +1238,9 @@ impl Editors {
             let on_disk = backup.path.as_deref().filter(|path| path.is_file());
             let id = on_disk.and_then(|path| {
                 self.open_kept(path);
-                self.find_doc(path)
+                let id = self.find_doc(path)?;
+                self.load_now(id);
+                Some(id)
             });
             match id.and_then(|id| self.docs.get_mut(&id)) {
                 Some(doc) if doc.buf.rope == text.as_str() => {}
@@ -1237,7 +1288,7 @@ impl Editors {
     }
 
     pub fn reload_clean(&mut self) {
-        for doc in self.docs.values_mut().filter(|d| !d.buf.is_dirty()) {
+        for doc in self.docs.values_mut().filter(|d| !d.buf.is_dirty() && d.content.is_text() && !d.buf.large) {
             let Some(path) = doc.buf.path.clone() else { continue };
             match Document::load(&path) {
                 Ok(buf) if buf.rope != doc.buf.rope => {
@@ -1299,6 +1350,8 @@ impl Editors {
         self.active = self.active.min(self.groups.len().saturating_sub(1));
         self.tidy = (settings.trim_trailing_whitespace, settings.insert_final_newline);
         self.history.context = settings.local_history.then(|| ui.ctx().clone());
+        self.large_bytes = settings.large_mb << 20;
+        self.poll_loads(ui.ctx());
         self.poll_diffs(ui.ctx());
         self.poll_merges();
         self.process(settings, ui.ctx());
@@ -1321,6 +1374,7 @@ impl Editors {
             }
         }
         ui.allocate_rect(rect, Sense::hover());
+        self.after_previews();
         let mut outer = false;
         for cmd in pending {
             outer |= matches!(cmd, Command::ToggleAi | Command::OpenPath(_));
@@ -1439,11 +1493,14 @@ impl Editors {
                 recent.insert(0, doc_id);
             }
             if let Some(mut doc) = self.docs.remove(&doc_id) {
-                let area = self.diff_frame(ui, body, theme, &doc, &mut tab, pending);
-                let area = self.merge_frame(ui, area, theme, &doc, &mut tab, pending);
-                self.view(ui, g, area, theme, settings, git, pending, &mut doc, &mut tab);
-                self.diff_after(ui, body, theme, settings, &mut tab, pending);
-                self.merge_after(ui, body, theme, settings, &mut doc, &mut tab);
+                let mut body = body;
+                if !self.special(ui, g, &mut body, theme, settings, &mut doc, &mut tab) {
+                    let area = self.diff_frame(ui, body, theme, &doc, &mut tab, pending);
+                    let area = self.merge_frame(ui, area, theme, &doc, &mut tab, pending);
+                    self.view(ui, g, area, theme, settings, git, pending, &mut doc, &mut tab);
+                    self.diff_after(ui, body, theme, settings, &mut tab, pending);
+                    self.merge_after(ui, body, theme, settings, &mut doc, &mut tab);
+                }
                 self.docs.insert(doc_id, doc);
             }
             self.groups[g].tabs[t] = tab;
@@ -1469,13 +1526,19 @@ impl Editors {
         let active_group = g == self.active;
         let mut action = None;
         let last = g + 1 == self.groups.len();
-        let tabs_rect = Rect::from_min_max(strip.min, pos2(strip.right() - if last { 60.0 } else { 34.0 }, strip.bottom()));
+        let md = group.tabs.get(active).is_some_and(|t| t.md.is_none() && self.docs.get(&t.doc).is_some_and(|d| d.buf.path.as_deref().is_some_and(markdown::is_markdown)));
+        let tabs_rect = Rect::from_min_max(strip.min, pos2(strip.right() - if last { 60.0 } else { 34.0 } - if md { 26.0 } else { 0.0 }, strip.bottom()));
         ui.scope_builder(UiBuilder::new().max_rect(tabs_rect), |ui| {
             ScrollArea::horizontal().id_salt(("editor_tabs", g)).scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                 let faces: Vec<_> = group.tabs.iter().map(|tab| {
                     let buf = &self.docs[&tab.doc].buf;
-                    let dirty = buf.is_dirty();
-                    let title = tab.diff.as_ref().map(|d| &d.title).or(tab.merge.as_ref().map(|m| &m.title)).unwrap_or(&buf.title).clone();
+                    let dirty = buf.is_dirty() && tab.md.is_none();
+                    let title = match (&tab.diff, &tab.merge) {
+                        (Some(d), _) => d.title.clone(),
+                        (_, Some(m)) => m.title.clone(),
+                        _ if tab.md.is_some() => format!("Preview {}", buf.title),
+                        _ => buf.title.clone(),
+                    };
                     let mut name = LayoutJob::simple_singleline(title, FontId::proportional(13.0), Color32::PLACEHOLDER);
                     name.sections[0].format.italics = tab.preview && !dirty;
                     TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned }
@@ -1538,6 +1601,7 @@ impl Editors {
                         action = Some(TabAction::Close(t));
                     }
                     let buf = &self.docs[&tab.doc].buf;
+                    let svg = matches!(self.docs[&tab.doc].content, Content::Image(_)) && buf.path.as_deref().and_then(Path::extension).is_some_and(|e| e.eq_ignore_ascii_case("svg"));
                     let tip = buf.path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| buf.title.clone());
                     resp.on_hover_text(tip).context_menu(|ui| {
                         ui.set_min_width(160.0);
@@ -1554,6 +1618,10 @@ impl Editors {
                                 ui.close();
                             }
                         }
+                        if svg && ui.button("Reopen as Text").clicked() {
+                            action = Some(TabAction::ReopenText(t));
+                            ui.close();
+                        }
                     });
                 }
             });
@@ -1563,6 +1631,15 @@ impl Editors {
             ui.scope_builder(UiBuilder::new().max_rect(ai), |ui| {
                 if ui::icon_button(ui, theme, icons::ROBOT, 24.0, self.ai_open, "Toggle AI Panel (Ctrl+Alt+B)").clicked() {
                     pending.push(Command::ToggleAi);
+                }
+            });
+        }
+        if md {
+            let eye = Rect::from_center_size(pos2(strip.right() - if last { 69.0 } else { 43.0 }, strip.center().y), vec2(24.0, 24.0));
+            ui.scope_builder(UiBuilder::new().max_rect(eye), |ui| {
+                if ui::icon_button(ui, theme, icons::EYE, 24.0, false, "Open Markdown Preview (Ctrl+Shift+V)").clicked() {
+                    self.active = g;
+                    pending.push(Command::MarkdownPreview);
                 }
             });
         }
@@ -1615,6 +1692,7 @@ impl Editors {
                 let at = if tab.pinned { usize::MAX } else { 0 };
                 self.place_tab((g, t), g, at);
             }
+            Some(TabAction::ReopenText(t)) => self.reopen_text(self.groups[g].tabs[t].doc),
             Some(TabAction::CopyPath(t)) => {
                 if let Some(path) = &self.docs[&self.groups[g].tabs[t].doc].buf.path {
                     ui.ctx().copy_text(path.to_string_lossy().into_owned());
@@ -1693,10 +1771,10 @@ impl Editors {
         let diffed = shown.is_some() || merging.is_some();
 
         ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
-        let minimap_w = if shown.is_some() { diff_view::RULER } else if settings.minimap && !diffed && body.width() > 420.0 { 78.0 } else { 0.0 };
+        let minimap_w = if shown.is_some() { diff_view::RULER } else if settings.minimap && !diffed && !buf.large && body.width() > 420.0 { 78.0 } else { 0.0 };
         let text_rect = Rect::from_min_max(body.min, pos2(body.right() - minimap_w, body.bottom()));
         let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 5.0) * char_w + 6.0;
-        let wrap_cols = (settings.word_wrap && !diffed).then(|| (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20));
+        let wrap_cols = (settings.word_wrap && !diffed && !buf.large).then(|| (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20));
 
         if self.want_focus && is_active && self.goto.is_none() {
             ui.memory_mut(|m| m.request_focus(id));
@@ -1875,7 +1953,7 @@ impl Editors {
         let (mut caret_at, mut hover_at, mut peek_y, mut over_word, mut lens_open) = (None, None, None, None, None);
         let mut toggle_fold = None;
         let folded: &[(usize, usize)] = if diffed { &[] } else { folds };
-        let changes = path.as_deref().and_then(|p| git.line_changes(p)).filter(|_| !diffed);
+        let changes = path.as_deref().and_then(|p| git.line_changes(p)).filter(|_| !diffed && !buf.large);
         let (mut change_y, mut change_click) = (None, None);
         let mut visible = (0, 0);
         let mut area = ScrollArea::both().id_salt(id.with("scroll")).auto_shrink(false);
@@ -2206,7 +2284,7 @@ impl Editors {
                             let top = y + index as f32 * line_h + (line_h - piece.galley.size().y) / 2.0;
                             painter.galley(pos2(text_x, top), piece.galley.clone(), theme.text);
                         }
-                        if is_active && settings.inline_blame && buf_ref.line_of(tab.sels[0].head) == line
+                        if is_active && settings.inline_blame && !buf_ref.large && buf_ref.line_of(tab.sels[0].head) == line
                             && let Some(label) = doc.blame.inline(line)
                         {
                             let last = row.pieces.last().unwrap();
@@ -2351,6 +2429,7 @@ impl Editors {
             })
             .inner;
         let scroll_y = out.state.offset.y;
+        doc.top = visible.0;
         if let Some(d) = shown.as_mut() {
             (d.scroll, d.text_top, d.line_h) = (scroll_y, text_rect.top(), line_h);
         }
@@ -2841,6 +2920,20 @@ end", "word ".repeat(100)))], &settings);
     }
 
     #[test]
+    fn pinned_tabs_restore_in_order_and_group() {
+        let dir = std::env::temp_dir().join(format!("halo-pins-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let files: Vec<PathBuf> = ["a.txt", "b.txt", "c.txt"].iter().map(|n| dir.join(n)).collect();
+        files.iter().for_each(|f| std::fs::write(f, "x").unwrap());
+        let mut editors = Editors::new();
+        editors.restore_pins(&[(0, files[1].clone()), (1, files[2].clone()), (0, files[0].clone())]);
+        assert_eq!(editors.groups.len(), 2);
+        assert_eq!(editors.pinned_paths(), vec![(0, files[1].clone()), (0, files[0].clone()), (1, files[2].clone())]);
+        assert!(editors.groups.iter().flat_map(|g| &g.tabs).all(|t| t.pinned && !t.preview));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn banner_expires_on_its_own() {
         let ctx = egui::Context::default();
         let mut editors = Editors::new();
@@ -2872,6 +2965,7 @@ end", "word ".repeat(100)))], &settings);
         std::fs::write(&path, "one\n").unwrap();
         let mut editors = Editors::new();
         editors.open(&path);
+        editors.finish_loads();
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![Event::Text("mine ".into())], &settings);
@@ -2910,7 +3004,9 @@ end", "word ".repeat(100)))], &settings);
         std::fs::write(dir.join("clean.txt"), "same\n").unwrap();
         let mut editors = Editors::new();
         editors.open_kept(&dir.join("clean.txt"));
+        editors.finish_loads();
         editors.open_kept(&dir.join("a.txt"));
+        editors.finish_loads();
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![Event::Text("mine ".into())], &settings);
@@ -2924,6 +3020,7 @@ end", "word ".repeat(100)))], &settings);
 
         let mut again = Editors::new();
         again.open_kept(&dir.join("clean.txt"));
+        again.finish_loads();
         again.restore(&backups);
         let texts = |e: &Editors| {
             let mut all: Vec<(String, String, bool)> = e.docs.values().map(|d| (d.buf.title.clone(), d.buf.rope.to_string(), d.buf.is_dirty())).collect();
@@ -2978,15 +3075,19 @@ end", "word ".repeat(100)))], &settings);
         let mut editors = Editors::new();
         let titles = |e: &Editors| e.groups[0].tabs.iter().map(|t| (e.docs[&t.doc].buf.title.clone(), t.preview)).collect::<Vec<_>>();
         editors.open(&file("a.txt"));
+        editors.finish_loads();
         frame_with(&ctx, &mut editors, vec![], &settings);
         editors.open(&file("b.txt"));
+        editors.finish_loads();
         assert_eq!(titles(&editors), vec![("b.txt".to_owned(), true)]);
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![Event::Text("x".into())], &settings);
         editors.open(&file("c.txt"));
+        editors.finish_loads();
         assert_eq!(titles(&editors), vec![("b.txt".to_owned(), false), ("c.txt".to_owned(), true)]);
         editors.exec(&Command::KeepEditor, &settings, &ctx);
         editors.open(&file("a.txt"));
+        editors.finish_loads();
         assert_eq!(titles(&editors).len(), 3);
 
         editors.exec(&Command::GoBack, &settings, &ctx);
@@ -3025,12 +3126,15 @@ end", "word ".repeat(100)))], &settings);
         let mut editors = Editors::new();
         let previews = |e: &Editors| e.groups[0].tabs.iter().map(|t| t.preview).collect::<Vec<_>>();
         editors.open(&dir.join("a.txt"));
+        editors.finish_loads();
         editors.exec(&Command::Save, &settings, &ctx);
         editors.open(&dir.join("b.txt"));
+        editors.finish_loads();
         assert_eq!(previews(&editors), vec![false, true]);
         editors.active_doc().unwrap().0.buf.mark_dirty();
         editors.exec(&Command::SaveAll, &settings, &ctx);
         editors.open(&dir.join("c.txt"));
+        editors.finish_loads();
         assert_eq!(previews(&editors), vec![false, false, true]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3048,6 +3152,7 @@ end", "word ".repeat(100)))], &settings);
         std::fs::write(dir.join("a.sh"), "").unwrap();
         let mut editors = Editors::new();
         editors.open(&dir.join("a.sh"));
+        editors.finish_loads();
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![], &settings);
         for event in typing("tod") {
@@ -3059,6 +3164,7 @@ end", "word ".repeat(100)))], &settings);
         std::fs::write(dir.join("b.html"), "").unwrap();
         let mut editors = Editors::new();
         editors.open(&dir.join("b.html"));
+        editors.finish_loads();
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![Event::Text("a.x+p".into())], &settings);
@@ -3371,6 +3477,7 @@ fn xb() {}
         let settings = Settings::default();
         let mut editors = Editors::new();
         editors.open(&path);
+        editors.finish_loads();
         frame(&ctx, &mut editors, vec![]);
         frame(&ctx, &mut editors, vec![]);
         let row_h = ctx.fonts_mut(|f| f.row_height(&FontId::monospace(settings.font_size)));
@@ -3430,6 +3537,7 @@ three
         let ctx = egui::Context::default();
         let mut editors = Editors::new();
         editors.open(&path);
+        editors.finish_loads();
         let end = Event::Key { key: Key::End, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
         frame(&ctx, &mut editors, vec![]);
         frame(&ctx, &mut editors, vec![]);

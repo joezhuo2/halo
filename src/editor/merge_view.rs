@@ -264,7 +264,14 @@ impl Editors {
     pub(super) fn poll_merges(&mut self) {
         while let Ok(msg) = self.merges.rx.try_recv() {
             match msg {
-                Msg::Loaded(path, Ok(stages)) => self.place_merge(&path, stages),
+                Msg::Loaded(path, Ok(stages)) => {
+                    let loading = self.find_doc(&path).and_then(|id| self.docs.get(&id)).is_some_and(|d| matches!(d.content, super::load::Content::Loading { .. }));
+                    if loading {
+                        let _ = self.merges.tx.send(Msg::Loaded(path, Ok(stages)));
+                        break;
+                    }
+                    self.place_merge(&path, stages);
+                }
                 Msg::Staged(path, Ok(rel)) => {
                     while let Some((g, t)) = self.merge_tab_of(&path) {
                         self.close_tab(g, t);
@@ -645,6 +652,19 @@ mod tests {
         let mut editors = Editors::new();
         let file = dir.join("a.txt");
         editors.open(&file);
+        editors.open_merge(&file, &ctx);
+        let wait = |editors: &mut Editors| {
+            for _ in 0..500 {
+                editors.poll_loads(&ctx);
+                editors.poll_merges();
+                if editors.groups[0].tabs[0].merge.is_some() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("timed out: {:?}", editors.banner);
+        };
+        wait(&mut editors);
         let marked = std::fs::read_to_string(&file).unwrap();
         assert!(marked.contains("<<<<<<<"));
         editors.open_merge(&file, &ctx);

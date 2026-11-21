@@ -127,7 +127,7 @@ impl Halo {
         self.menu(ui, "View", &[
             Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), Some(ShowTesting), None,
             Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), Some(ShowProblems), None,
-            Some(SplitEditor), Some(ToggleMinimap), None,
+            Some(SplitEditor), Some(ToggleMinimap), Some(MarkdownPreview), Some(MarkdownPreviewSide), None,
             Some(ToggleTheme), Some(ZoomIn), Some(ZoomOut), Some(ZoomReset),
         ]);
         self.menu(ui, "Go", &[
