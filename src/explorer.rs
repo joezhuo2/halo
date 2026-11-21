@@ -126,6 +126,7 @@ pub struct Explorer {
     dirty: bool,
     sel: Selection,
     pub compare: Option<PathBuf>,
+    pub problems: std::collections::BTreeMap<String, u8>,
     last_active: Option<PathBuf>,
     scroll_to: Option<PathBuf>,
     edit: Option<Edit>,
@@ -207,6 +208,14 @@ pub fn state_color(theme: &Theme, state: Option<FileState>) -> Color32 {
     }
 }
 
+pub fn name_color(theme: &Theme, severity: Option<u8>, state: Option<FileState>) -> Color32 {
+    match severity {
+        Some(1) => theme.error,
+        Some(_) => theme.warning,
+        None => state_color(theme, state),
+    }
+}
+
 pub fn state_badge(state: Option<FileState>) -> &'static str {
     match state {
         Some(FileState::Added) => "U",
@@ -249,6 +258,7 @@ impl Explorer {
             dirty: true,
             sel: Selection::default(),
             compare: None,
+            problems: Default::default(),
             last_active: None,
             scroll_to: None,
             edit: None,
@@ -1296,6 +1306,8 @@ impl Explorer {
                         };
                         let dimmed = if cut.iter().any(|c| row.path.starts_with(c)) { 0.45 } else { 1.0 };
                         let color = ui::with_alpha(state_color(theme, state), fade * dimmed);
+                        let severity = row.kids.iter().filter(|_| !open).chain([&row.path]).filter_map(|p| crate::lsp::worst(&self.problems, p)).min();
+                        let tint = ui::with_alpha(name_color(theme, severity, state), fade * dimmed);
                         let dim = ui::with_alpha(theme.text_dim, fade * dimmed);
                         if row.is_dir || !row.kids.is_empty() {
                             ui::caret(&painter, pos2(x, y), ui::anim(ui, id.with("caret"), open), dim);
@@ -1338,7 +1350,7 @@ impl Explorer {
                             continue;
                         }
 
-                        let galley = painter.layout_no_wrap(row.name.clone(), FontId::proportional(13.0), color);
+                        let galley = painter.layout_no_wrap(row.name.clone(), FontId::proportional(13.0), tint);
                         let left = x + 31.0;
                         let at = |index: usize| left + galley.pos_from_cursor(CCursor::new(index)).min.x;
                         let mut spans_x: Vec<(f32, f32)> = vec![];
@@ -1357,7 +1369,7 @@ impl Explorer {
                             let mark = Rect::from_min_max(pos2(at(index), y - 8.0), pos2(at(index + 1), y + 8.0));
                             painter.rect_filled(mark, 2, ui::with_alpha(theme.accent, 0.35 * fade));
                         }
-                        painter.galley(pos2(left, y - galley.size().y / 2.0), galley, color);
+                        painter.galley(pos2(left, y - galley.size().y / 2.0), galley, tint);
                         let badge = state_badge(state);
                         if row.is_dir && !badge.is_empty() {
                             painter.circle_filled(pos2(rect.right() - 14.0, y), 3.0, ui::with_alpha(color, 0.8));

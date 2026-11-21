@@ -154,11 +154,12 @@ struct TabFace {
     icon: &'static str,
     tint: Option<Color32>,
     close: u8,
+    severity: Option<u8>,
 }
 
 impl TabFace {
     fn width(&self) -> f32 {
-        self.name.size().x + 66.0
+        self.name.size().x + 66.0 + if self.severity.is_some() { 12.0 } else { 0.0 }
     }
 
     fn close_rect(r: Rect) -> Rect {
@@ -180,7 +181,11 @@ impl TabFace {
                 self.tint.unwrap_or(ui::mix(theme.text_dim, theme.accent, active * 0.8)));
         }
         let text_pos = pos2(r.left() + 34.0 + shift, r.center().y - self.name.size().y / 2.0);
-        p.galley(text_pos, self.name.clone(), ui::mix(theme.text_dim, theme.text, active.max(hover)));
+        let color = self.severity.map_or(ui::mix(theme.text_dim, theme.text, active.max(hover)), |s| intel::severity_color(theme, s));
+        p.galley(text_pos, self.name.clone(), color);
+        if let Some(severity) = self.severity {
+            p.circle_filled(pos2(text_pos.x + self.name.size().x + 8.0, r.center().y), 3.0, intel::severity_color(theme, severity));
+        }
         let close = self.close_at(r).unwrap_or_else(|| Self::close_rect(r));
         if self.close == 2 && !self.pinned {
             if self.dirty {
@@ -1574,6 +1579,7 @@ impl Editors {
     fn tab_strip(&mut self, ui: &mut Ui, g: usize, strip: Rect, theme: &Theme, pending: &mut Vec<Command>) {
         ui.painter().rect_filled(strip, CornerRadius::ZERO, theme.panel);
         ui.painter().hline(strip.x_range(), strip.bottom() - 0.5, Stroke::new(1.0, theme.border));
+        let severities = self.severities();
         let group = &self.groups[g];
         let active = group.active;
         let active_group = g == self.active;
@@ -1611,7 +1617,8 @@ impl Editors {
                         "off" => 2,
                         _ => 0,
                     };
-                    TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned, icon, tint, close }
+                    let severity = self.docs.get(&tab.doc).and_then(|d| d.buf.path.as_deref()).and_then(|p| lsp::worst(&severities, p));
+                    TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned, icon, tint, close, severity }
                 }).collect();
                 let widths: Vec<_> = faces.iter().map(|f| (f.width(), f.pinned)).collect();
                 let pos = ui.ctx().pointer_latest_pos().filter(|p| strip.contains(*p));
@@ -1643,7 +1650,12 @@ impl Editors {
                     let x = ui.ctx().animate_value_with_time(id.with("left"), left, duration);
                     let r = Rect::from_min_size(row.min + vec2(x, 0.0), vec2(face.width(), TAB_H));
                     let resp = ui.interact(r, id, Sense::click_and_drag());
-                    ui::item(ui, &resp, ui::Role::Tab, &format!("{}{}", face.name.text(), if face.dirty { ", modified" } else { "" }), t == active);
+                    let problems = match face.severity {
+                        Some(1) => ", contains errors",
+                        Some(_) => ", contains warnings",
+                        None => "",
+                    };
+                    ui::item(ui, &resp, ui::Role::Tab, &format!("{}{}{problems}", face.name.text(), if face.dirty { ", modified" } else { "" }), t == active);
                     if resp.drag_started_by(PointerButton::Primary)
                         && let Some(press) = ui.input(|i| i.pointer.press_origin())
                     {

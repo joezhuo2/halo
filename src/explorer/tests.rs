@@ -311,6 +311,31 @@ mod headless {
     }
 
     #[test]
+    fn folder_with_an_error_is_tinted_until_cleared() {
+        let (dir, ctx, mut explorer) = setup("problems", &["ok.txt"]);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/bad.rs"), "").unwrap();
+        explorer.refresh();
+        wait(&ctx, &mut explorer);
+        let theme = Theme::dark();
+        let color = |explorer: &mut Explorer, name: &str| {
+            let input = RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 600.0))), ..Default::default() };
+            let (settings, git) = (Settings { files_exclude: vec![], compact_folders: false, ..Settings::default() }, Git::new());
+            let out = ctx.run_ui(input, |ui| explorer.ui(ui, &theme, &git, None, &settings, &[], &mut vec![]));
+            out.shapes.into_iter().find_map(|s| match s.shape {
+                egui::Shape::Text(t) if t.galley.text() == name => Some(t.fallback_color),
+                _ => None,
+            })
+        };
+        assert_eq!(color(&mut explorer, "src"), Some(theme.text));
+        explorer.problems = [(crate::lsp::key(&dir.join("src").join("bad.rs")), 1)].into();
+        assert_eq!((color(&mut explorer, "src"), color(&mut explorer, "ok.txt")), (Some(theme.error), Some(theme.text)));
+        explorer.problems.clear();
+        assert_eq!(color(&mut explorer, "src"), Some(theme.text));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn multi_select_then_delete_confirms_once_with_the_count() {
         let (dir, ctx, mut explorer) = setup("select", &["a.txt", "b.txt", "c.txt", "d.txt"]);
         click(&ctx, &mut explorer, &dir.join("a.txt"), Modifiers::NONE);

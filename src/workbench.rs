@@ -781,6 +781,7 @@ impl Halo {
         ui.scope_builder(UiBuilder::new().max_rect(full.with_max_y(split)), |ui| {
             ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
             let tabs = self.editors.open_tabs();
+            self.explorer.problems = self.editors.severities();
             self.explorer.ui(ui, &self.theme, &self.git, active, &self.settings, &tabs, &mut self.cmds);
         });
         let sections = [(Outline, has_outline, full.with_min_y(split).with_max_y(lower)), (Timeline, has_timeline, full.with_min_y(lower))];

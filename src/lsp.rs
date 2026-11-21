@@ -85,6 +85,14 @@ pub fn key(path: &Path) -> String {
     if cfg!(windows) { text.replace('/', "\\").to_lowercase() } else { text.into_owned() }
 }
 
+pub fn worst(severities: &BTreeMap<String, u8>, path: &Path) -> Option<u8> {
+    let file = key(path);
+    let sep = std::path::MAIN_SEPARATOR;
+    let dir = if file.ends_with(sep) { file.clone() } else { format!("{file}{sep}") };
+    let inside = severities.range(dir.clone()..).take_while(|(k, _)| k.starts_with(&dir)).map(|(_, s)| *s);
+    severities.get(&file).copied().into_iter().chain(inside).min()
+}
+
 pub fn uri(path: &Path) -> String {
     let text = path.to_string_lossy().replace('\\', "/");
     let mut out = String::from("file://");
@@ -954,6 +962,11 @@ impl Lsp {
         self.problems.values()
     }
 
+    pub fn severities(&self) -> BTreeMap<String, u8> {
+        let worst = |p: &FileProblems| p.items.iter().map(|d| d.severity).filter(|s| *s <= 2).min();
+        self.problems.iter().filter_map(|(k, p)| Some((k.clone(), worst(p)?))).collect()
+    }
+
     pub fn counts(&self) -> (usize, usize) {
         let count = |severity| self.problems.values().flat_map(|p| &p.items).filter(|d| d.severity == severity).count();
         (count(1), count(2))
@@ -1084,6 +1097,26 @@ mod tests {
         let key = uri(&file);
         assert_eq!(path_of(back["changes"][&key][0]["uri"].as_str().unwrap()), Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\usr\include\vector")));
         assert!(back["changes"].get(&key).is_some());
+    }
+
+    #[test]
+    fn worst_severity_for_files_and_folders() {
+        let root = PathBuf::from(if cfg!(windows) { r"\\wsl.localhost\Ubuntu-24.04\home\joe\proj" } else { "/home/joe/proj" });
+        let (main, util) = (root.join("src").join("main.cpp"), root.join("src-old").join("util.h"));
+        let mut map = BTreeMap::from([(key(&main), 1), (key(&util), 2)]);
+        if cfg!(windows) {
+            let published = path_of(&from_wsl("Ubuntu-24.04", "file:///home/joe/proj/src/main.cpp").unwrap()).unwrap();
+            assert_eq!(worst(&map, &published), Some(1));
+            assert_eq!(worst(&map, Path::new(r"\\WSL.localhost\ubuntu-24.04/home/joe/proj/src/main.cpp")), Some(1));
+        }
+        assert_eq!(worst(&map, &main), Some(1));
+        assert_eq!(worst(&map, &root.join("src")), Some(1));
+        assert_eq!(worst(&map, &root.join("src-old")), Some(2));
+        assert_eq!(worst(&map, &root), Some(1));
+        assert_eq!(worst(&map, &root.join("sr")), None);
+        assert_eq!(worst(&map, &root.join("src").join("other.cpp")), None);
+        map.remove(&key(&main));
+        assert_eq!((worst(&map, &root.join("src")), worst(&map, &root)), (None, Some(2)));
     }
 
     #[test]

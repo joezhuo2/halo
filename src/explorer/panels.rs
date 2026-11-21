@@ -91,9 +91,10 @@ impl Explorer {
                         let x = ui.interact(close, resp.id.with("close"), Sense::click());
                         let painter = ui.painter().with_clip_rect(r.with_max_x(close.left() - 2.0));
                         painter.text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, file_icon(&tab.title), FontId::proportional(15.0), theme.text_dim);
-                        let title = painter.layout_no_wrap(tab.title.clone(), FontId::proportional(13.0), theme.text);
+                        let tint = name_color(theme, tab.severity, None);
+                        let title = painter.layout_no_wrap(tab.title.clone(), FontId::proportional(13.0), tint);
                         let after = r.left() + 34.0 + title.size().x + 8.0;
-                        painter.galley(pos2(r.left() + 34.0, r.center().y - title.size().y / 2.0), title, theme.text);
+                        painter.galley(pos2(r.left() + 34.0, r.center().y - title.size().y / 2.0), title, tint);
                         let dir = tab.path.as_deref().and_then(Path::parent).map(|p| p.strip_prefix(root).unwrap_or(p));
                         if let Some(dir) = dir.filter(|d| !d.as_os_str().is_empty()) {
                             let text = dir.to_string_lossy().replace('\\', "/");

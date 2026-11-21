@@ -1,4 +1,5 @@
 use super::Editors;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub struct OpenTab {
@@ -8,11 +9,17 @@ pub struct OpenTab {
     pub path: Option<PathBuf>,
     pub dirty: bool,
     pub active: bool,
+    pub severity: Option<u8>,
 }
 
 impl Editors {
+    pub fn severities(&self) -> BTreeMap<String, u8> {
+        if self.config.diagnostics { self.lsp.severities() } else { BTreeMap::new() }
+    }
+
     pub fn open_tabs(&self) -> Vec<Vec<OpenTab>> {
         let focused = self.active.min(self.groups.len().saturating_sub(1));
+        let severities = self.severities();
         self.groups
             .iter()
             .enumerate()
@@ -24,7 +31,8 @@ impl Editors {
                     .filter_map(|(t, tab)| {
                         let doc = self.docs.get(&tab.doc)?;
                         let active = g == focused && t == group.active;
-                        Some(OpenTab { group: g, index: t, title: doc.buf.title.clone(), path: doc.buf.path.clone(), dirty: doc.buf.is_dirty(), active })
+                        let severity = doc.buf.path.as_deref().and_then(|p| crate::lsp::worst(&severities, p));
+                        Some(OpenTab { group: g, index: t, title: doc.buf.title.clone(), path: doc.buf.path.clone(), dirty: doc.buf.is_dirty(), active, severity })
                     })
                     .collect()
             })
