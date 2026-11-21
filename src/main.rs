@@ -3,11 +3,13 @@
 mod accounts;
 mod ai;
 mod app;
+mod blame;
 mod command;
 mod editor;
 mod explorer;
 mod find;
 mod git;
+mod history;
 mod lsp;
 mod scm;
 mod search;

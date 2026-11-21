@@ -67,6 +67,7 @@ enum Action {
     Delete(PathBuf),
     Copy(String),
     Reveal(PathBuf),
+    Compare(Command),
     Refresh,
     CollapseAll,
 }
@@ -78,6 +79,7 @@ pub struct Explorer {
     rows: Vec<Row>,
     dirty: bool,
     selected: Option<PathBuf>,
+    pub compare: Option<PathBuf>,
     last_active: Option<PathBuf>,
     scroll_to: Option<PathBuf>,
     edit: Option<Edit>,
@@ -172,6 +174,7 @@ impl Explorer {
             rows: vec![],
             dirty: true,
             selected: None,
+            compare: None,
             last_active: None,
             scroll_to: None,
             edit: None,
@@ -392,6 +395,7 @@ impl Explorer {
             Action::Delete(path) => self.confirm_delete = Some(path),
             Action::Copy(text) => ui.ctx().copy_text(text),
             Action::Reveal(path) => reveal(&path),
+            Action::Compare(cmd) => cmds.push(cmd),
             Action::Refresh => cmds.push(Command::RefreshExplorer),
             Action::CollapseAll => self.toggle_folders(None, ui.input(|i| i.time)),
         }
@@ -421,6 +425,17 @@ impl Explorer {
         let target = path.map(Path::to_path_buf).unwrap_or(dir);
         if let Some(path) = path {
             ui.separator();
+            if self.rows.iter().any(|row| row.path == path && !row.is_dir) {
+                if ui.button("Select for Compare").clicked() {
+                    *action = Some(Action::Compare(Command::SelectComparePath(path.to_owned())));
+                    ui.close();
+                }
+                if self.compare.as_deref().is_some_and(|p| p != path) && ui.button("Compare with Selected").clicked() {
+                    *action = Some(Action::Compare(Command::ComparePath(path.to_owned())));
+                    ui.close();
+                }
+                ui.separator();
+            }
             if ui.button("Rename...").clicked() {
                 *action = Some(Action::Rename(path.to_path_buf()));
                 ui.close();

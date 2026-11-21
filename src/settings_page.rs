@@ -215,6 +215,8 @@ fn editor_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsP
     toggle(ui, theme, "Editor", "Code Lens", "Show reference counts above declarations. Click one to list the places.", &mut s.code_lens);
     toggle(ui, theme, "Editor", "Inlay Hints", "Show inferred types and parameter names inside the line.", &mut s.inlay_hints);
     toggle(ui, theme, "Editor", "Semantic Highlighting", "Color types, functions and constants as the language server reports them.", &mut s.semantic_highlighting);
+    toggle(ui, theme, "Editor", "Inline blame", "Show the commit beside the caret line.", &mut s.inline_blame);
+    toggle(ui, theme, "Editor", "Local history", "Keep up to 50 saved versions of each file in the Timeline.", &mut s.local_history);
     toggle(ui, theme, "Editor", "Format On Save", "Format the file with its language server when it is saved by hand.", &mut s.format_on_save);
     toggle(ui, theme, "Editor", "Format On Paste", "Format pasted text with the language server.", &mut s.format_on_paste);
     toggle(ui, theme, "Problems", "Diagnostics", "Underline errors and warnings, and list them in the Problems panel.", &mut s.diagnostics);

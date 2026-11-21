@@ -64,6 +64,7 @@ struct Doc {
     depths: (u64, Vec<u32>),
     backed: u64,
     stale: bool,
+    blame: crate::blame::Blame,
 }
 
 #[derive(Default)]
@@ -219,6 +220,7 @@ pub struct Editors {
     closed: Vec<PathBuf>,
     switcher: Option<(usize, usize)>,
     tidy: (bool, bool),
+    pub history: crate::history::Recorder,
     disk_jobs: Vec<(u64, bool)>,
 }
 
@@ -528,6 +530,7 @@ impl Editors {
             closed: vec![],
             switcher: None,
             tidy: (false, false),
+            history: Default::default(),
             disk_jobs: vec![],
         }
     }
@@ -555,7 +558,7 @@ impl Editors {
             self.banner = Some((note.clone(), None));
         }
         let hl = Highlighter::new(buf.path.as_deref(), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0, stale: false });
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0, stale: false, blame: Default::default() });
         id
     }
 
@@ -649,7 +652,11 @@ impl Editors {
         let Some(id) = self.find_doc(path) else {
             let mut buf = Document::load(path)?;
             let count = replace(&mut buf, &mut vec![Sel::caret(0)]);
-            return if count > 0 { buf.save().map(|_| count) } else { Ok(0) };
+            if count > 0 {
+                let bytes = buf.save()?;
+                self.history.save(path, bytes, buf.encoding);
+            }
+            return Ok(count);
         };
         let Some(doc) = self.docs.get_mut(&id) else { return Ok(0) };
         let clean = !doc.buf.is_dirty();
@@ -760,7 +767,9 @@ impl Editors {
         let sels = self.groups.iter_mut().flat_map(|group| &mut group.tabs).find(|tab| tab.doc == id).map_or(&mut none, |tab| &mut tab.sels);
         doc.buf.tidy(sels, trim, newline);
         match doc.buf.save() {
-            Ok(()) => {
+            Ok(bytes) => {
+                doc.blame.refresh();
+                self.history.save(doc.buf.path.as_deref().unwrap(), bytes, doc.buf.encoding);
                 self.lsp.save(doc.buf.path.as_deref().unwrap_or(Path::new("")));
                 self.groups.iter_mut().flat_map(|group| &mut group.tabs).filter(|tab| tab.doc == id).for_each(|tab| tab.preview = false);
                 true
@@ -978,6 +987,42 @@ impl Editors {
     pub fn active_path(&self) -> Option<PathBuf> {
         let (g, t) = self.active_tab()?;
         self.docs.get(&self.groups[g].tabs[t].doc)?.buf.path.clone()
+    }
+
+    pub fn buffer(&mut self) -> Option<(PathBuf, ropey::Rope, Encoding, u64)> {
+        let (doc, _) = self.active_doc()?;
+        Some((doc.buf.path.clone()?, doc.buf.rope.clone(), doc.buf.encoding, doc.buf.version))
+    }
+
+    pub fn restore_snapshot(&mut self, path: &Path, version: u64, text: String) {
+        if let Some((doc, tab)) = self.active_doc()
+            && doc.buf.path.as_deref() == Some(path) && doc.buf.version == version
+        {
+            doc.buf.apply(&mut tab.sels, vec![(0, doc.buf.len(), text)], Kind::Other, After::Map);
+            tab.preview = false;
+        } else {
+            ui::notify("The editor changed before the saved version could be restored.");
+        }
+    }
+
+    pub fn refresh_blame(&mut self) {
+        self.docs.values_mut().for_each(|doc| doc.blame.refresh());
+    }
+
+    pub fn blame_item(&mut self, ctx: &egui::Context) -> Option<(String, String, Option<Command>)> {
+        let (doc, tab) = self.active_doc()?;
+        let buf = &doc.buf;
+        let path = buf.path.as_deref()?;
+        doc.blame.update(path, &buf.rope, buf.version, buf.is_dirty(), ctx);
+        match doc.blame.line(buf.line_of(tab.sels.first()?.head.min(buf.len()))) {
+            Some(Some(c)) => Some((c.label(), c.tip(), Some(c.diff(path)))),
+            Some(None) => Some(("Not committed yet".into(), "This line has no commit.".into(), None)),
+            _ => None,
+        }
+    }
+
+    pub fn blame_loading(&mut self) -> bool {
+        self.active_doc().is_some_and(|(doc, _)| doc.blame.loading())
     }
 
     pub fn status(&self) -> Option<EditorStatus> {
@@ -1217,6 +1262,7 @@ impl Editors {
         }
         self.active = self.active.min(self.groups.len().saturating_sub(1));
         self.tidy = (settings.trim_trailing_whitespace, settings.insert_final_newline);
+        self.history.context = settings.local_history.then(|| ui.ctx().clone());
         self.process(settings, ui.ctx());
         let rect = ui.available_rect_before_wrap();
         let count = self.groups.len();
@@ -2058,6 +2104,13 @@ impl Editors {
                         for (index, piece) in row.pieces.iter().enumerate() {
                             let top = y + index as f32 * line_h + (line_h - piece.galley.size().y) / 2.0;
                             painter.galley(pos2(text_x, top), piece.galley.clone(), theme.text);
+                        }
+                        if is_active && settings.inline_blame && buf_ref.line_of(tab.sels[0].head) == line
+                            && let Some(label) = doc.blame.inline(line)
+                        {
+                            let last = row.pieces.last().unwrap();
+                            let pos = pos2(text_x + last.galley.size().x + char_w * 3.0, bottom - line_h / 2.0);
+                            painter.text(pos, Align2::LEFT_CENTER, label, FontId::proportional(settings.font_size), ui::with_alpha(theme.text_dim, 0.75));
                         }
                         let linked = if len >= 10 { buf_ref.line_text(line) } else { String::new() };
                         for (x0, x1, y) in links(&linked).into_iter().flat_map(|link| spans(link.0, link.1)) {

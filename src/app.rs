@@ -36,6 +36,7 @@ pub struct Halo {
     pub explorer: Explorer,
     pub scm: Scm,
     timeline: Timeline,
+    pub compare: crate::history::Compare,
     pub accounts: Accounts,
     pub editors: Editors,
     pub bottom: BottomPanel,
@@ -79,6 +80,7 @@ impl Halo {
             explorer: Explorer::new(),
             scm: Scm::new(),
             timeline: Timeline::default(),
+            compare: Default::default(),
             accounts: Accounts::default(),
             editors: Editors::new(),
             bottom: BottomPanel::new(),
@@ -311,6 +313,7 @@ impl Halo {
                 self.editors.exec(&cmd, &self.settings, ctx);
                 self.after_save(ctx);
             }
+            other if self.exec_compare(&other, ctx) => {}
             other => {
                 let _ = match self.zone {
                     Zone::Ai => {
@@ -642,8 +645,14 @@ impl eframe::App for Halo {
         if self.git.poll() {
             self.explorer.refresh();
             self.editors.reload_clean();
+            self.editors.refresh_blame();
+            self.timeline.reload();
         }
         self.tasks.poll(&mut self.bottom, &ctx);
+        if self.editors.history.changed() {
+            self.timeline.reload();
+        }
+        self.poll_compare(&ctx);
         if self.accounts.poll() {
             self.git.refresh_prs();
         }

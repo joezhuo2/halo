@@ -71,6 +71,15 @@ impl Halo {
                         }
                     }
 
+                    if let Some((label, tip, diff)) = self.editors.blame_item(ui.ctx()) {
+                        if item(ui, &theme, &label, false, &tip).clicked() && let Some(cmd) = diff {
+                            self.cmds.push(cmd);
+                        }
+                    } else if self.editors.blame_loading() {
+                        let (r, _) = ui.allocate_exact_size(vec2(20.0, HEIGHT), Sense::hover());
+                        ui::spinner(ui, r.center(), 5.0, theme.text_dim);
+                    }
+
                     if let Some(version) = &self.updated {
                         let tip = "This version is installed and is used the next time Halo opens";
                         item(ui, &theme, &format!("{} {version}", icons::ARROW_CIRCLE_UP), true, tip);

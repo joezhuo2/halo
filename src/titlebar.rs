@@ -107,6 +107,7 @@ impl Halo {
         self.menu(ui, "File", &[
             Some(NewFile), Some(OpenFile), Some(OpenFolder), None,
             Some(Save), Some(SaveAs), Some(SaveAll), None,
+            Some(CompareFile), Some(CompareClipboard), Some(CompareSaved), None,
             Some(CloseEditor), Some(CloseFolder), None,
             Some(OpenSettings), Some(OpenSettingsJson), Some(OpenKeybindings), None,
             Some(Exit),

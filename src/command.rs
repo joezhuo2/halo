@@ -11,6 +11,16 @@ pub enum Command {
     OpenFolderIn(PathBuf),
     OpenPath(PathBuf),
     OpenDiff(String, Vec<String>),
+    CompareFile,
+    CompareClipboard,
+    CompareSaved,
+    SelectForCompare,
+    CompareWithSelected,
+    SelectComparePath(PathBuf),
+    ComparePath(PathBuf),
+    ToggleInlineBlame,
+    OpenLineChanges,
+    RestoreSnapshot(PathBuf, PathBuf),
     Save,
     SaveAs,
     SaveAll,
@@ -334,7 +344,7 @@ pub fn all() -> Vec<Command> {
     use Command::*;
     let mut commands = vec![
         NewFile, OpenFile, OpenFolder, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, OpenSettings, OpenSettingsJson,
-        OpenKeybindings, OpenSnippets, Exit,
+        OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
@@ -346,7 +356,7 @@ pub fn all() -> Vec<Command> {
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
         ShowHover, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
         RunFile, RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
-        OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, GitSync,
+        OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, GitSync, ToggleInlineBlame, OpenLineChanges,
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.push(About);
@@ -494,7 +504,8 @@ impl Command {
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_) => "Run",
             NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal => "Terminal",
-            OpenDiff(..) | GitSync | Git(_) | GitAt(..) => "Source Control",
+            CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
+            OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) => "Source Control",
             About => "Help",
         }
     }
@@ -507,6 +518,14 @@ impl Command {
             OpenFolder | OpenFolderIn(_) => "Open Folder...",
             OpenPath(_) => "Open",
             OpenDiff(..) => "Open Changes",
+            CompareFile => "Compare Active File With…",
+            CompareClipboard => "Compare Active File with Clipboard",
+            CompareSaved => "Compare Active File with Saved",
+            SelectForCompare | SelectComparePath(_) => "Select for Compare",
+            CompareWithSelected | ComparePath(_) => "Compare with Selected",
+            ToggleInlineBlame => "Git: Toggle Inline Blame",
+            OpenLineChanges => "Git: Open Changes of Current Line's Commit",
+            RestoreSnapshot(..) => "Restore Contents",
             Save => "Save",
             SaveAs => "Save As...",
             SaveAll => "Save All",

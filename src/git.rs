@@ -482,11 +482,15 @@ impl Git {
     }
 
     pub fn diff(&mut self, title: String, args: Vec<String>) {
-        let (Some(status), Some(ctx)) = (&self.status, &self.ctx) else { return };
-        let (top, tx, ctx) = (status.top.clone(), self.tx.clone(), ctx.clone());
+        let Some(ctx) = &self.ctx else { return };
+        let top = self.status.as_ref().map_or_else(std::env::temp_dir, |status| status.top.clone());
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let text = exec(&top, &args).unwrap_or_else(|error| error);
+            let text = match exec(&top, &args) {
+                Err(error) if error.starts_with("Could not run") => return crate::ui::notify(error),
+                result => result.unwrap_or_else(|error| error),
+            };
             let _ = tx.send(Msg::Text(title, text));
             ctx.request_repaint();
         });

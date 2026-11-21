@@ -148,7 +148,7 @@ impl Encoding {
         }
     }
 
-    fn detect(bytes: &[u8]) -> Self {
+    pub(crate) fn detect(bytes: &[u8]) -> Self {
         match bytes {
             [0xEF, 0xBB, 0xBF, ..] => Self::Utf8Bom,
             [0xFF, 0xFE, ..] => Self::Utf16Le,
@@ -157,7 +157,7 @@ impl Encoding {
         }
     }
 
-    fn decode(self, bytes: &[u8]) -> (String, bool) {
+    pub(crate) fn decode(self, bytes: &[u8]) -> (String, bool) {
         let little = self == Self::Utf16Le;
         match self {
             Self::Utf8 | Self::Utf8Bom => {
@@ -349,17 +349,18 @@ impl Document {
         Ok(doc)
     }
 
-    pub fn save(&mut self) -> Result<(), String> {
+    pub fn save(&mut self) -> Result<Vec<u8>, String> {
         let Some(path) = self.path.clone() else { return Err("No file name.".into()) };
         let mut text = self.rope.to_string();
         if self.crlf {
             text = text.replace('\n', "\r\n");
         }
-        std::fs::write(&path, self.encoding.encode(&text)).map_err(|e| format!("Cannot save {}: {e}", title_of(&path)))?;
+        let bytes = self.encoding.encode(&text);
+        std::fs::write(&path, &bytes).map_err(|e| format!("Cannot save {}: {e}", title_of(&path)))?;
         self.saved = self.version;
         self.disk = disk_time(&path);
         self.title = title_of(&path);
-        Ok(())
+        Ok(bytes)
     }
 
     pub fn is_dirty(&self) -> bool {
