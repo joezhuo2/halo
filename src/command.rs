@@ -117,7 +117,9 @@ pub enum Command {
     StepInto,
     StepOut,
     ToggleBreakpoint,
+    EditBreakpoint,
     RemoveAllBreakpoints,
+    AddWatch,
     AddConfiguration,
 
     GitSync,
@@ -262,7 +264,7 @@ pub fn all() -> Vec<Command> {
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
         ShowHover, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut,
-        ToggleBreakpoint, RemoveAllBreakpoints, AddConfiguration, NewTerminal, SplitTerminal, KillTerminal, GitSync, About,
+        ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration, NewTerminal, SplitTerminal, KillTerminal, GitSync, About,
     ]
 }
 
@@ -402,7 +404,7 @@ impl Command {
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
             ShowHover | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
             RunFile | RunTask(_) | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
-            | StepInto | StepOut | ToggleBreakpoint | RemoveAllBreakpoints | AddConfiguration => "Run",
+            | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration => "Run",
             NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal => "Terminal",
             OpenDiff(..) | GitSync => "Source Control",
             About => "Help",
@@ -516,7 +518,9 @@ impl Command {
             StepInto => "Step Into",
             StepOut => "Step Out",
             ToggleBreakpoint => "Toggle Breakpoint",
+            EditBreakpoint => "Edit Breakpoint Condition...",
             RemoveAllBreakpoints => "Remove All Breakpoints",
+            AddWatch => "Debug: Add Watch Expression",
             AddConfiguration => "Debug: Add Configuration...",
             GitSync => "Synchronize Changes",
             RefreshExplorer => "Refresh Explorer",

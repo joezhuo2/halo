@@ -145,7 +145,7 @@ impl Halo {
                 self.menu_item(ui, cmd);
             }
             ui.separator();
-            for cmd in [ToggleBreakpoint, RemoveAllBreakpoints, AddConfiguration] {
+            for cmd in [ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration] {
                 self.menu_item(ui, cmd);
             }
             ui.separator();

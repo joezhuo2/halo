@@ -565,7 +565,7 @@ impl Live {
         self.frame = index;
         (self.scopes, self.children, self.asked) = (vec![], HashMap::new(), HashSet::new());
         let Some(frame) = self.frames.get(index).cloned() else { return };
-        if let Some(path) = frame.path {
+        if let Some(path) = frame.path.filter(|p| p.is_file()) {
             marks.stopped = Some((path.clone(), frame.line.saturating_sub(1)));
             cmds.extend([Command::OpenPath(path), Command::GoTo(frame.line.max(1), frame.column.max(1))]);
         }
@@ -872,6 +872,10 @@ impl Debug {
                 None => ui::notify("Open a folder to add a launch configuration."),
             },
             RemoveAllBreakpoints => self.confirm_clear = !env.marks.files.is_empty(),
+            AddWatch => {
+                self.open[1] = true;
+                self.editing = Some(Editing::Watch(None, String::new()));
+            }
             _ => return false,
         }
         true
@@ -1089,13 +1093,13 @@ fn hover_button(ui: &mut Ui, theme: &Theme, r: Rect, slot: usize, icon: &str, ti
 
 fn inline_edit(ui: &mut Ui, text: &mut String, hint: &str) -> Option<bool> {
     let resp = ui.add(TextEdit::singleline(text).hint_text(hint).desired_width(f32::INFINITY));
-    if !resp.has_focus() && !resp.lost_focus() {
+    if resp.lost_focus() {
+        return Some(!ui.input(|i| i.key_pressed(Key::Escape)));
+    }
+    if !resp.has_focus() {
         resp.request_focus();
     }
-    if ui.input(|i| i.key_pressed(Key::Escape)) {
-        return Some(false);
-    }
-    (resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))).then_some(true)
+    None
 }
 
 enum TreeAction {

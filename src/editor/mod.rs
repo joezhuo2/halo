@@ -801,6 +801,11 @@ impl Editors {
                     self.marks.toggle(&path, line);
                 }
             }
+            EditBreakpoint => {
+                if let Some((Some(path), line)) = self.with_active(|buf, tab| (buf.path.clone(), buf.line_of(tab.sels[0].head))) {
+                    self.marks.apply(&path, crate::debug::Gutter::Ask(line, crate::debug::Ask::Condition));
+                }
+            }
             GoTo(line, column) => {
                 if self.groups[g].tabs[t].sels.first().is_some_and(|s| s.head > 0) {
                     self.remember();

@@ -265,7 +265,10 @@ impl Halo {
                 (self.session.debug_view, self.session.search, self.session.source_control) = (true, false, false);
             }
             StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver | StepInto | StepOut
-            | RemoveAllBreakpoints | AddConfiguration => {
+            | RemoveAllBreakpoints | AddWatch | AddConfiguration => {
+                if cmd == AddWatch {
+                    (self.session.sidebar, self.session.debug_view, self.session.search, self.session.source_control) = (true, true, false, false);
+                }
                 if !self.debug.active() && matches!(cmd, StartDebugging | RunWithoutDebugging) {
                     self.editors.exec(&SaveAll, &self.settings, ctx);
                 }
