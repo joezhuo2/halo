@@ -2676,6 +2676,18 @@ impl Editors {
                 let bar = Rect::from_min_max(pos2(mm.left() + 6.0 + indent as f32 * 0.75, y), pos2(mm.left() + 6.0 + len as f32 * 0.75, y + (step - 0.5).max(1.0)));
                 p.rect_filled(bar, CornerRadius::ZERO, color);
             }
+            for (line, kind, staged) in changes.iter().flat_map(|c| c.iter()) {
+                let color = match kind {
+                    LineChange::Added => theme.added,
+                    LineChange::Modified => theme.modified,
+                    LineChange::Deleted => theme.deleted,
+                };
+                let color = if *staged { ui::with_alpha(color, 0.4) } else { color };
+                let y = mm.top() + *line as f32 * scale;
+                let (top, bottom) = if *kind == LineChange::Deleted { (y - 1.0, y + 1.0) } else { (y, y + scale.max(2.0)) };
+                p.rect_filled(Rect::from_min_max(pos2(mm.left() + 1.0, top), pos2(mm.left() + 4.0, bottom)), CornerRadius::ZERO, color);
+                p.rect_filled(Rect::from_min_max(pos2(mm.right() - 10.0, top), pos2(mm.right() - 6.0, bottom)), CornerRadius::ZERO, color);
+            }
             for problem in problems.iter().filter(|d| d.severity <= 2) {
                 let y = mm.top() + problem.start.0 as f32 * scale;
                 let mark = Rect::from_min_max(pos2(mm.right() - 5.0, y), pos2(mm.right() - 1.0, y + 2.0));
