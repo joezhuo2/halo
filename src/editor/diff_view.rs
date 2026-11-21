@@ -387,10 +387,10 @@ pub(super) fn tint(painter: &Painter, theme: &Theme, d: &DiffTab, line: usize, b
     if hunk_in(&d.model.hunks, line, false).is_none() {
         return;
     }
-    painter.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(theme.added, 0.13));
+    painter.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(theme.added, 0.2));
     ui::contrast_border(painter, theme, band, theme.added);
     for r in d.model.right.get(&line).into_iter().flatten() {
-        painter.rect_filled(Rect::from_x_y_ranges(x(r.start)..=x(r.end), band.y_range()), CornerRadius::ZERO, ui::with_alpha(theme.added, 0.3));
+        painter.rect_filled(Rect::from_x_y_ranges(x(r.start)..=x(r.end), band.y_range()), CornerRadius::ZERO, ui::with_alpha(theme.added, 0.45));
     }
 }
 
@@ -421,11 +421,11 @@ pub(super) fn paint_pads(
         }
         for (k, l) in hunk.left.clone().enumerate() {
             let row = Rect::from_min_size(pos2(clip.left(), y + k as f32 * line_h), vec2(clip.width(), line_h));
-            painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.13));
+            painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.2));
             ui::contrast_border(painter, theme, row, theme.deleted);
             let text = line_text(&d.rope, l);
             let galley = painter.layout_job(job(&text, 0..text.len(), d.hl.get(l), font, theme.text, &[], &[], &TextFormat::default()));
-            marks(painter, &galley, text_x, row, d.model.left.get(&l), ui::with_alpha(theme.deleted, 0.3));
+            marks(painter, &galley, text_x, row, d.model.left.get(&l), ui::with_alpha(theme.deleted, 0.45));
             painter.text(pos2(number_x, row.center().y), Align2::RIGHT_CENTER, l + 1, number_font.clone(), ui::with_alpha(theme.deleted, 0.9));
             painter.galley(pos2(text_x, row.top() + (line_h - galley.size().y) / 2.0), galley, theme.text);
         }
@@ -459,9 +459,9 @@ fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, right_len: us
         let text = line_text(&d.rope, line);
         let galley = painter.layout_job(job(&text, 0..text.len(), d.hl.get(line), font, theme.text, &[], &[], &TextFormat::default()));
         if found.changed {
-            painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.13));
+            painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.2));
             ui::contrast_border(&painter, theme, row, theme.deleted);
-            marks(&painter, &galley, rect.left() + gutter, row, d.model.left.get(&line), ui::with_alpha(theme.deleted, 0.3));
+            marks(&painter, &galley, rect.left() + gutter, row, d.model.left.get(&line), ui::with_alpha(theme.deleted, 0.45));
         }
         let number = if found.changed { theme.text } else { ui::with_alpha(theme.text_dim, 0.75) };
         painter.text(pos2(rect.left() + gutter - 10.0 - char_w, row.center().y), Align2::RIGHT_CENTER, line + 1, number_font.clone(), number);
@@ -673,11 +673,17 @@ impl Editors {
         painter.rect_filled(strip, CornerRadius::ZERO, theme.bg);
         painter.vline(strip.left(), strip.y_range(), Stroke::new(1.0, ui::with_alpha(theme.border, 0.6)));
         let scale = strip.height() / rows.max(1) as f32;
+        let mid = strip.center().x;
         for h in &d.model.hunks {
             let y = strip.top() + row_of(h.right.start) as f32 * scale;
-            let color = if h.left.is_empty() { theme.added } else if h.right.is_empty() { theme.deleted } else { theme.modified };
-            let mark = Rect::from_min_max(pos2(strip.left() + 3.0, y), pos2(strip.right() - 3.0, y + (span(h) as f32 * scale).max(3.0)));
-            painter.rect_filled(mark, CornerRadius::ZERO, color);
+            let height = |lines: usize| (lines.max(1) as f32 * scale).max(3.0);
+            // removed lines on the left lane, added lines on the right, like VS Code's overview ruler
+            if !h.left.is_empty() {
+                painter.rect_filled(Rect::from_min_max(pos2(strip.left() + 2.0, y), pos2(mid, y + height(h.left.len()))), CornerRadius::ZERO, theme.deleted);
+            }
+            if !h.right.is_empty() {
+                painter.rect_filled(Rect::from_min_max(pos2(mid, y), pos2(strip.right() - 2.0, y + height(h.right.len()))), CornerRadius::ZERO, theme.added);
+            }
         }
         let shown = area.height() / line_h;
         let slider = Rect::from_min_size(pos2(strip.left() + 1.0, strip.top() + d.scroll / line_h * scale), vec2(RULER - 1.0, (shown * scale).max(8.0)));
