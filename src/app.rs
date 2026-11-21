@@ -71,19 +71,19 @@ pub struct Halo {
     fullscreen: Option<bool>,
     pub inbox: Option<std::sync::mpsc::Receiver<crate::ipc::Request>>,
     pub waits: Vec<crate::ipc::Wait>,
-    reveal: u8,
+    reveal_at: Option<u64>,
 }
 
 impl Halo {
     pub fn new(cc: &eframe::CreationContext<'_>, mut args: crate::cli::Args, server: Option<crate::ipc::Server>) -> Self {
         let ctx = &cc.egui_ctx;
         let mut app = Self::build(ctx, Settings::load(), Session::load());
-        // eframe shows the window before its first painted frame; stay cloaked until the layout has settled
-        crate::windows::cloak(true);
-        app.reveal = 4;
+        // eframe shows the window before its first painted frame; stay transparent until the layout has settled
+        crate::windows::conceal(true);
+        app.reveal_at = Some(ctx.cumulative_frame_nr() + 3);
         std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-            crate::windows::cloak(false);
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            crate::windows::conceal(false);
         });
         if app.session.layout.zen.is_some() && !app.settings.zen_restore {
             app.toggle_zen();
@@ -181,7 +181,7 @@ impl Halo {
             fullscreen: None,
             inbox: None,
             waits: vec![],
-            reveal: 0,
+            reveal_at: None,
         };
         app.editors.config = app.settings.clone();
         app
@@ -844,10 +844,10 @@ impl eframe::App for Halo {
 impl Halo {
     pub(crate) fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
-        if self.reveal > 0 {
-            self.reveal -= 1;
-            if self.reveal == 0 {
-                crate::windows::cloak(false);
+        if let Some(at) = self.reveal_at {
+            if ctx.cumulative_frame_nr() >= at {
+                crate::windows::conceal(false);
+                self.reveal_at = None;
             }
             ctx.request_repaint();
         }

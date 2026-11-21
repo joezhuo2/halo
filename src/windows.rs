@@ -17,37 +17,44 @@ pub fn set_secondary(on: bool) {
 }
 
 #[cfg(windows)]
-pub fn cloak(on: bool) {
-    use std::sync::atomic::{AtomicU32, Ordering};
+pub fn conceal(on: bool) {
     #[link(name = "user32")]
     unsafe extern "system" {
         fn EnumThreadWindows(thread: u32, each: unsafe extern "system" fn(isize, isize) -> i32, param: isize) -> i32;
+        fn GetWindowLongW(hwnd: isize, index: i32) -> i32;
+        fn SetWindowLongW(hwnd: isize, index: i32, value: i32) -> i32;
+        fn SetLayeredWindowAttributes(hwnd: isize, key: u32, alpha: u8, flags: u32) -> i32;
     }
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentThreadId() -> u32;
     }
-    #[link(name = "dwmapi")]
-    unsafe extern "system" {
-        fn DwmSetWindowAttribute(hwnd: isize, attribute: u32, value: *const i32, size: u32) -> i32;
-    }
-    unsafe extern "system" fn each(hwnd: isize, on: isize) -> i32 {
-        let on = on as i32;
-        unsafe { DwmSetWindowAttribute(hwnd, 13, &on, 4) };
+    const EXSTYLE: i32 = -20;
+    const LAYERED: i32 = 0x80000;
+    const ALPHA: u32 = 2;
+    static HIDDEN: std::sync::Mutex<Vec<isize>> = std::sync::Mutex::new(vec![]);
+    unsafe extern "system" fn each(hwnd: isize, _: isize) -> i32 {
+        unsafe {
+            let style = GetWindowLongW(hwnd, EXSTYLE);
+            if style & LAYERED == 0 {
+                SetWindowLongW(hwnd, EXSTYLE, style | LAYERED);
+                SetLayeredWindowAttributes(hwnd, 0, 0, ALPHA);
+                HIDDEN.lock().unwrap().push(hwnd);
+            }
+        }
         1
     }
-    static THREAD: AtomicU32 = AtomicU32::new(0);
     if on {
-        THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
-    }
-    let thread = THREAD.load(Ordering::Relaxed);
-    if thread != 0 {
-        unsafe { EnumThreadWindows(thread, each, on as isize) };
+        unsafe { EnumThreadWindows(GetCurrentThreadId(), each, 0) };
+    } else {
+        for hwnd in HIDDEN.lock().unwrap().drain(..) {
+            unsafe { SetLayeredWindowAttributes(hwnd, 0, 255, ALPHA) };
+        }
     }
 }
 
 #[cfg(not(windows))]
-pub fn cloak(_on: bool) {}
+pub fn conceal(_on: bool) {}
 
 fn spawn(folder: Option<&Path>) {
     let started = std::env::current_exe().and_then(|exe| {
