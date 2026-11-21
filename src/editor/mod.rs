@@ -1983,6 +1983,7 @@ impl Editors {
                 self.marks.shift(path, line, delta);
             self.tests.edited(path, line, delta);
             }
+            intel::sync(&mut self.lsp, buf, lang, &ctx);
             if let Some(c) = typed {
                 let prose = matches!(hl.language.as_str(), "Plain Text" | "Markdown");
                 self.typed(c, doc_id, buf, lang, tab, prose, &ctx);
