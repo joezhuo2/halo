@@ -9,6 +9,7 @@ repository = "https://github.com/joezhuo2/halo"
 [dependencies]
 alacritty_terminal = "0.26.0"
 dirs = "7.0.0"
+fancy-regex = "0.16"
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "persistence", "x11", "wayland"] }
 egui-phosphor = "0.14.0"
 rfd = "0.18.0"

@@ -1053,6 +1053,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui-phosphor",
+ "fancy-regex",
  "rfd",
  "ropey",
  "serde",

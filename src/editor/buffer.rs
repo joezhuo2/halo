@@ -125,6 +125,49 @@ pub struct Document {
     pub read_only: bool,
 }
 
+pub struct Pattern {
+    re: fancy_regex::Regex,
+    regex: bool,
+}
+
+impl Pattern {
+    pub fn new(text: &str, case: bool, word: bool, regex: bool) -> Result<Self, String> {
+        let mut source = if regex { text.to_owned() } else { fancy_regex::escape(text).into_owned() };
+        if word {
+            source = format!(r"\b(?:{source})\b");
+        }
+        let flags = if case { "(?m)" } else { "(?mi)" };
+        fancy_regex::Regex::new(&format!("{flags}{source}")).map(|re| Self { re, regex }).map_err(|e| e.to_string())
+    }
+
+    pub fn find(&self, hay: &str) -> Vec<(usize, usize)> {
+        let found = self.re.find_iter(hay).map_while(Result::ok).filter(|m| m.end() > m.start());
+        found.map(|m| (m.start(), m.end())).take(20_000).collect()
+    }
+
+    pub fn replacement(&self, found: &str, with: &str, preserve: bool) -> String {
+        let mut text = with.to_owned();
+        // shortcut: groups come from matching the found text alone, upgrade to whole-buffer captures if look-around replaces go wrong
+        if self.regex
+            && let Ok(Some(groups)) = self.re.captures(found)
+        {
+            text.clear();
+            groups.expand(with, &mut text);
+        }
+        let letters = || found.chars().filter(|c| c.is_alphabetic());
+        match letters().next() {
+            Some(_) if !preserve => text,
+            Some(_) if letters().all(char::is_uppercase) => text.to_uppercase(),
+            Some(_) if letters().all(char::is_lowercase) => text.to_lowercase(),
+            Some(first) if first.is_uppercase() => {
+                let mut chars = text.chars();
+                chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+            }
+            _ => text,
+        }
+    }
+}
+
 const PAIRS: [(char, char); 6] = [('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\''), ('`', '`')];
 
 pub fn is_word(c: char) -> bool {
@@ -1018,32 +1061,16 @@ impl Document {
         self.apply(sels, edits, Kind::Other, After::Carets)
     }
 
-    pub fn find_all(&self, needle: &str, case: bool, word: bool) -> Vec<(usize, usize)> {
-        if needle.is_empty() {
-            return vec![];
-        }
-        let mut hay = self.rope.to_string();
-        let mut needle = needle.to_owned();
-        if !case {
-            hay.make_ascii_lowercase();
-            needle.make_ascii_lowercase();
-        }
-        let count = needle.chars().count();
+    pub fn find_all(&self, pattern: &Pattern, within: Option<(usize, usize)>) -> Vec<(usize, usize)> {
+        let hay = self.rope.to_string();
         let mut out = vec![];
         let (mut byte, mut chars) = (0, 0);
-        for (at, _) in hay.match_indices(&needle) {
-            chars += hay[byte..at].chars().count();
-            byte = at;
-            if word {
-                let before = hay[..at].chars().next_back().is_some_and(is_word);
-                let after = hay[at + needle.len()..].chars().next().is_some_and(is_word);
-                if before || after {
-                    continue;
-                }
-            }
-            out.push((chars, chars + count));
-            if out.len() >= 20_000 {
-                break;
+        for (from, to) in pattern.find(&hay) {
+            chars += hay[byte..from].chars().count();
+            byte = from;
+            let end = chars + hay[from..to].chars().count();
+            if within.is_none_or(|(a, b)| chars >= a && end <= b) {
+                out.push((chars, end));
             }
         }
         out
@@ -1060,7 +1087,7 @@ impl Document {
         }
         let last = *sels.last()?;
         let needle = self.text_of(last.start(), last.end());
-        let matches = self.find_all(&needle, true, false);
+        let matches = self.find_all(&Pattern::new(&needle, true, false, false).ok()?, None);
         let taken = |m: &(usize, usize)| sels.iter().any(|s| s.start() == m.0 && s.end() == m.1);
         let next = matches.iter().find(|m| m.0 >= last.end() && !taken(m)).or_else(|| matches.iter().find(|m| !taken(m)))?;
         sels.push(Sel::new(next.0, next.1));
@@ -1230,8 +1257,18 @@ mod tests {
         assert_eq!((sels[0].anchor, sels[0].head), (20, 0));
 
         let f = doc("Foo foo food\nfoo");
-        assert_eq!(f.find_all("foo", false, false).len(), 4);
-        assert_eq!(f.find_all("foo", true, true), vec![(4, 7), (13, 16)]);
+        let find = |text: &str, case, word, regex, within| f.find_all(&Pattern::new(text, case, word, regex).unwrap(), within);
+        assert_eq!(find("foo", false, false, false, None).len(), 4);
+        assert_eq!(find("foo", true, true, false, None), vec![(4, 7), (13, 16)]);
+        assert_eq!(find("fo+d?$", true, false, true, None), vec![(8, 12), (13, 16)]);
+        assert_eq!(find("foo", false, false, false, Some((3, 12))), vec![(4, 7), (8, 11)]);
+        assert_eq!(find("o.o", true, false, false, None), vec![]);
+        assert!(Pattern::new("(", true, false, true).is_err());
+        let swap = Pattern::new(r"(\w+)=(\w+)", true, false, true).unwrap();
+        assert_eq!(swap.replacement("a=b", "$2=$1", false), "b=a");
+        let plain = Pattern::new("foo", false, false, false).unwrap();
+        assert_eq!(["foo", "Foo", "FOO"].map(|found| plain.replacement(found, "bar", true)), ["bar", "Bar", "BAR"]);
+        assert_eq!(plain.replacement("Foo", "$1", false), "$1");
         let mut sels = vec![Sel::caret(5)];
         f.select_next_occurrence(&mut sels);
         f.select_next_occurrence(&mut sels);

@@ -8,7 +8,7 @@ use crate::lsp::{self, Lsp};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use buffer::{After, Document, Kind, Motion, Sel, Take, hidden, is_word, merge_sels};
+use buffer::{After, Document, Kind, Motion, Pattern, Sel, Take, hidden, is_word, merge_sels};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, CursorIcon, Event, EventFilter, FontId, Id, Key, Layout, PointerButton,
@@ -73,9 +73,13 @@ struct Find {
     with: String,
     case: bool,
     word: bool,
+    regex: bool,
+    preserve: bool,
+    scope: Option<(usize, usize)>,
+    error: Option<String>,
     focus: bool,
     matches: Vec<(usize, usize)>,
-    key: (u64, u64, String, bool, bool),
+    key: (u64, u64, String, [bool; 3], Option<(usize, usize)>),
 }
 
 enum TabAction {
@@ -1077,13 +1081,17 @@ impl Editors {
 
     fn refresh_matches(&mut self, doc_id: u64, buf: &Document, tab: &mut Tab) {
         let f = &mut self.find;
-        let key = &f.key;
-        if key.0 == doc_id && key.1 == buf.version && key.2 == f.query && key.3 == f.case && key.4 == f.word {
+        let (key, flags) = (&f.key, [f.case, f.word, f.regex]);
+        f.scope = f.scope.map(|(from, to)| (from.min(buf.len()), to.min(buf.len())));
+        if key.0 == doc_id && key.1 == buf.version && key.2 == f.query && key.3 == flags && key.4 == f.scope {
             return;
         }
-        let typed = key.2 != f.query || key.3 != f.case || key.4 != f.word;
-        f.matches = buf.find_all(&f.query, f.case, f.word);
-        f.key = (doc_id, buf.version, f.query.clone(), f.case, f.word);
+        let typed = key.2 != f.query || key.3 != flags;
+        (f.matches, f.error) = match Pattern::new(&f.query, f.case, f.word, f.regex) {
+            Ok(pattern) => (buf.find_all(&pattern, f.scope), None),
+            Err(error) => (vec![], Some(error)),
+        };
+        f.key = (doc_id, buf.version, f.query.clone(), flags, f.scope);
         if typed && let Some(first) = tab.sels.first() {
             let from = first.start();
             if let Some(m) = f.matches.iter().find(|m| m.0 >= from).or(f.matches.first()) {
@@ -1231,6 +1239,7 @@ impl Editors {
         }
 
         let matches: &[(usize, usize)] = if find_open { &self.find.matches } else { &[] };
+        let scope = self.find.scope.filter(|_| find_open);
         let path = buf.path.clone();
         let problems = match &path {
             Some(path) if settings.diagnostics => self.lsp.diagnostics(path),
@@ -1469,6 +1478,9 @@ impl Editors {
                         if current_line == Some(line) {
                             let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
                             painter.rect_filled(band, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
+                        }
+                        for (x0, x1, y) in scope.into_iter().flat_map(|(a, b)| spans(a.saturating_sub(start), b.saturating_sub(start))) {
+                            painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), CornerRadius::ZERO, ui::with_alpha(theme.accent, 0.09));
                         }
                         let from = matches.partition_point(|m| m.1 <= start);
                         for m in matches[from..].iter().take_while(|m| m.0 <= start + len) {
@@ -1736,7 +1748,7 @@ impl Editors {
 
     fn find_ui(&mut self, ui: &mut Ui, area: Rect, t: f32, theme: &Theme, buf: &mut Document, tab: &mut Tab) {
         let rows = if self.find.replace { 2.0 } else { 1.0 };
-        let size = vec2(430.0f32.min(area.width() - 30.0), 10.0 + rows * 31.0);
+        let size = vec2(500.0f32.min(area.width() - 30.0), 10.0 + rows * 31.0);
         let rect = Rect::from_min_size(pos2(area.right() - size.x - 22.0, area.top() - (1.0 - t) * size.y), size);
         let corners = CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 };
         ui.painter().with_clip_rect(area).rect(rect, corners, theme.raised, Stroke::new(1.0, theme.border), StrokeKind::Inside);
@@ -1773,11 +1785,12 @@ impl Editors {
                 ui.add_space(4.0);
                 let (label, color) = match (self.find.query.is_empty(), self.find.matches.len(), current) {
                     (true, ..) => (String::new(), theme.text_dim),
+                    _ if self.find.error.is_some() => ("Bad pattern".to_owned(), theme.error),
                     (_, 0, _) => ("No results".to_owned(), theme.error),
                     (_, n, Some(i)) => (format!("{} of {n}", i + 1), theme.text_dim),
                     (_, n, None) => (format!("{n} found"), theme.text_dim),
                 };
-                ui.label(RichText::new(label).size(12.0).color(color));
+                ui.label(RichText::new(label).size(12.0).color(color)).on_hover_text(self.find.error.clone().unwrap_or_default());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui::icon_button(ui, theme, icons::X, 22.0, false, "Close (Escape)").clicked() {
                         close = true;
@@ -1787,6 +1800,13 @@ impl Editors {
                     }
                     if ui::icon_button(ui, theme, icons::ARROW_UP, 22.0, false, "Previous Match (Shift+Enter)").clicked() {
                         step = -1;
+                    }
+                    if ui::icon_button(ui, theme, icons::SELECTION, 22.0, self.find.scope.is_some(), "Find in Selection").clicked() {
+                        let selected = tab.sels.first().filter(|s| !s.is_empty()).map(|s| (s.start(), s.end()));
+                        self.find.scope = if self.find.scope.is_some() { None } else { selected };
+                    }
+                    if ui::icon_button(ui, theme, icons::ASTERISK, 22.0, self.find.regex, "Use Regular Expression").clicked() {
+                        self.find.regex ^= true;
                     }
                     if ui::icon_button(ui, theme, icons::TEXT_UNDERLINE, 22.0, self.find.word, "Match Whole Word").clicked() {
                         self.find.word ^= true;
@@ -1816,26 +1836,36 @@ impl Editors {
                     if ui::icon_button(ui, theme, icons::ARROWS_CLOCKWISE, 22.0, false, "Replace All").clicked() {
                         replace_all = true;
                     }
+                    if ui::icon_button(ui, theme, icons::TEXT_T, 22.0, self.find.preserve, "Preserve Case").clicked() {
+                        self.find.preserve ^= true;
+                    }
                 });
             }
         });
-        if replace_all && !self.find.matches.is_empty() {
-            let edits = self.find.matches.iter().map(|m| (m.0, m.1, self.find.with.clone())).collect();
+        let f = &mut self.find;
+        let targets: &[(usize, usize)] = match (replace_all, replace_one, current) {
+            (true, ..) => &f.matches,
+            (_, true, Some(index)) => &f.matches[index..index + 1],
+            _ => &[],
+        };
+        if let Some(pattern) = Pattern::new(&f.query, f.case, f.word, f.regex).ok().filter(|_| !targets.is_empty()) {
+            let before = buf.len();
+            let edits = targets.iter().map(|m| (m.0, m.1, pattern.replacement(&buf.text_of(m.0, m.1), &f.with, f.preserve))).collect();
             buf.apply(&mut tab.sels, edits, Kind::Other, After::Carets);
             tab.sels.truncate(1);
-        } else if replace_one {
-            if let Some(i) = current {
-                let m = self.find.matches[i];
-                buf.apply(&mut tab.sels, vec![(m.0, m.1, self.find.with.clone())], Kind::Other, After::Carets);
-                self.find.matches = buf.find_all(&self.find.query, self.find.case, self.find.word);
-                self.find.key.1 = buf.version;
-            }
+            f.scope = f.scope.map(|(from, to)| (from, (to + buf.len()).saturating_sub(before)));
+            f.matches = buf.find_all(&pattern, f.scope);
+            f.key.1 = buf.version;
+            f.key.4 = f.scope;
+        }
+        if replace_one {
             self.step_match(tab, true);
         } else if step != 0 {
             self.step_match(tab, step > 0);
         }
         if close {
             self.find.open = false;
+            self.find.scope = None;
             self.want_focus = true;
         }
     }
@@ -1928,6 +1958,35 @@ end", "word ".repeat(100)))], &settings);
         assert!(tab.sels[0].head > 0 && tab.sels[0].head < 500);
         frame_with(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default()); rows[1] as usize], &settings);
         assert_eq!(editors.status().unwrap().line, 2);
+    }
+
+    #[test]
+    fn finds_by_pattern_inside_a_selection_and_replaces_with_groups() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Paste("a1 b2\nc3 d4\ne5".into())]);
+        editors.exec(&Command::Replace, &settings, &ctx);
+        editors.find = Find { query: r"([a-z])(\d)".into(), with: "$2$1".into(), regex: true, scope: Some((3, 11)), ..std::mem::take(&mut editors.find) };
+        frame(&ctx, &mut editors, vec![]);
+        assert_eq!(editors.find.matches, vec![(3, 5), (6, 8), (9, 11)]);
+        let click = |editors: &mut Editors, x: f32, y: f32| {
+            let pos = pos2(x, y);
+            let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
+            frame(&ctx, editors, vec![Event::PointerMoved(pos)]);
+            frame(&ctx, editors, vec![button(true)]);
+            frame(&ctx, editors, vec![button(false)]);
+        };
+        let text = |e: &Editors| e.docs.values().next().unwrap().buf.rope.to_string();
+        let replaced = (500..880).step_by(8).any(|x| {
+            click(&mut editors, x as f32, TAB_H + 22.0 + 51.0);
+            text(&editors) != "a1 b2\nc3 d4\ne5"
+        });
+        assert!(replaced, "a replace button in the find bar");
+        assert!(["a1 2b\nc3 d4\ne5", "a1 2b\n3c 4d\ne5"].contains(&text(&editors).as_str()), "{}", text(&editors));
     }
 
     #[test]
