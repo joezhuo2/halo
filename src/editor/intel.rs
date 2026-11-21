@@ -1,5 +1,5 @@
 use super::buffer::{After, Document, Kind, Sel, is_word};
-use super::{Editors, Tab, snippet};
+use super::{Editors, Tab, links, snippet};
 use crate::command::Command;
 use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
 use crate::settings::Settings;
@@ -245,6 +245,63 @@ fn file_name(path: &Path) -> String {
 fn problem_blocks(lsp: &Lsp, path: &Path, start: Pos, end: Pos) -> Vec<(u8, String)> {
     let touching = lsp.diagnostics(path).iter().filter(|d| d.start <= end && d.end >= start && d.severity <= 3);
     touching.map(|d| (d.severity + 1, if d.source.is_empty() { d.message.clone() } else { format!("{}  {}", d.message, d.source) })).collect()
+}
+
+fn hover_links(text: &str) -> (String, Vec<(usize, usize, String)>) {
+    let (mut out, mut found, mut rest) = (String::new(), vec![], text);
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let link = after.find("](").and_then(|mid| Some((mid, mid + 2 + after[mid + 2..].find(')')?)));
+        match link.filter(|&(mid, end)| !after[..mid].contains(['[', ']', '\n']) && links(&after[mid + 2..end]) == [(0, after[mid + 2..end].chars().count())]) {
+            Some((mid, end)) => {
+                let from = out.chars().count();
+                out.push_str(&after[..mid]);
+                found.push((from, out.chars().count(), after[mid + 2..end].to_owned()));
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('[');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    for (from, to) in links(&out) {
+        if !found.iter().any(|link| link.0 < to && from < link.1) {
+            found.push((from, to, out.chars().skip(from).take(to - from).collect()));
+        }
+    }
+    found.sort();
+    (out, found)
+}
+
+fn link_text(ui: &mut Ui, theme: &Theme, text: &str, found: &[(usize, usize, String)]) {
+    let (font, width, painter) = (egui::TextStyle::Body.resolve(ui.style()), ui.available_width(), ui.painter().clone());
+    let byte = |c: usize| text.char_indices().nth(c).map_or(text.len(), |(b, _)| b);
+    let layout = |under: Option<usize>| {
+        let mut job = LayoutJob { wrap: egui::text::TextWrapping::wrap_at_width(width), ..Default::default() };
+        let mut at = 0;
+        for (index, (from, to, _)) in found.iter().enumerate() {
+            job.append(&text[byte(at)..byte(*from)], 0.0, TextFormat::simple(font.clone(), theme.text));
+            let underline = if under == Some(index) { Stroke::new(1.0, theme.accent) } else { Stroke::NONE };
+            job.append(&text[byte(*from)..byte(*to)], 0.0, TextFormat { underline, ..TextFormat::simple(font.clone(), theme.accent) });
+            at = *to;
+        }
+        job.append(&text[byte(at)..], 0.0, TextFormat::simple(font.clone(), theme.text));
+        painter.layout_job(job)
+    };
+    let galley = layout(None);
+    let (rect, resp) = ui.allocate_exact_size(galley.size(), Sense::click());
+    let at = resp.hover_pos().map(|p| usize::from(galley.cursor_from_pos(p - rect.min).index));
+    let over = at.and_then(|c| found.iter().position(|link| link.0 <= c && c < link.1));
+    if let Some(index) = over {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        if resp.clicked() {
+            ui::open_url(&found[index].2);
+        }
+    }
+    painter.galley(rect.min, if over.is_some() { layout(over) } else { galley }, theme.text);
 }
 
 fn hierarchy_title(call: bool, outgoing: bool) -> &'static str {
@@ -1022,7 +1079,13 @@ impl Editors {
                 ui.set_max_width(580.0);
                 ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
                     for (kind, text) in &hover.blocks {
+                        let (shown, found) = if *kind == 0 { hover_links(text) } else { Default::default() };
                         let rich = match kind {
+                            0 if !found.is_empty() => {
+                                link_text(ui, theme, &shown, &found);
+                                ui.add_space(4.0);
+                                continue;
+                            }
                             0 => RichText::new(text).color(theme.text),
                             1 => RichText::new(text).font(font.clone()).color(theme.text),
                             severity => RichText::new(text).color(severity_color(theme, severity - 1)),
@@ -1328,5 +1391,14 @@ mod tests {
 
         let buf = Document::from_text("a😀b\nsecond", "t".into());
         assert_eq!((to_lsp(&buf, 2), from_lsp(&buf, (0, 3)), from_lsp(&buf, (1, 99)), from_lsp(&buf, (9, 0))), ((0, 3), 2, 10, 10));
+    }
+
+    #[test]
+    fn extracts_links_from_hover_text() {
+        let (text, found) = hover_links("See [the dócs](https://a.io/x) or https://b.io. [x] [y](file:///z) [https://c.io](https://c.io)");
+        assert_eq!(text, "See the dócs or https://b.io. [x] [y](file:///z) https://c.io");
+        let spans: Vec<(String, &str)> = found.iter().map(|(from, to, url)| (text.chars().skip(*from).take(to - from).collect(), url.as_str())).collect();
+        assert_eq!(spans, vec![("the dócs".into(), "https://a.io/x"), ("https://b.io".into(), "https://b.io"), ("https://c.io".into(), "https://c.io")]);
+        assert!(hover_links("plain [text]").1.is_empty());
     }
 }
