@@ -357,6 +357,7 @@ impl Halo {
             ZoomOut => ctx.set_zoom_factor((ctx.zoom_factor() - 0.1).max(0.5)),
             ZoomReset => ctx.set_zoom_factor(1.0),
             About => self.about = true,
+            InstallInPath | ConfirmInstallInPath => crate::cli::install(&cmd),
             GoToFile => self.search.open(""),
             ShowCommands => self.search.open(">"),
             GoToSymbol => self.search.open("@"),

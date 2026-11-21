@@ -196,7 +196,7 @@ impl Halo {
                 }
             }
         });
-        self.menu(ui, "Help", &[Some(About)]);
+        self.menu(ui, "Help", &[Some(InstallInPath), None, Some(About)]);
     }
 
     fn menu(&mut self, ui: &mut Ui, title: &str, items: &[Option<Command>]) {

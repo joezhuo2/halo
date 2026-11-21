@@ -112,6 +112,42 @@ pub fn resolve(args: &mut Args) {
     }
 }
 
+pub fn install(cmd: &crate::command::Command) {
+    use crate::ui::{Severity, notify_with};
+    if cfg!(windows) {
+        return crate::ui::notify_info("The Halo installer already puts the 'halo' command in PATH. Open a new terminal to use it.");
+    }
+    let (Some(home), Ok(exe)) = (dirs::home_dir(), std::env::current_exe()) else {
+        return crate::ui::notify_error("Halo could not find your home folder or its own executable.");
+    };
+    let link = home.join(".local").join("bin").join("halo");
+    if *cmd == crate::command::Command::InstallInPath {
+        let text = format!("Create the 'halo' command as a link at {} to {}?", link.display(), exe.display());
+        return notify_with(Severity::Info, text, vec![("Install".into(), crate::command::Command::ConfirmInstallInPath)]);
+    }
+    match link_exe(&exe, &link) {
+        Ok(()) if std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| link.parent() == Some(d.as_path()))) => {
+            crate::ui::notify_info(format!("The 'halo' command is installed at {}.", link.display()))
+        }
+        Ok(()) => crate::ui::notify_warning(format!("The 'halo' command is installed at {}, but that folder is not in PATH yet.", link.display())),
+        Err(error) => crate::ui::notify_error(format!("The 'halo' command could not be installed: {error}")),
+    }
+}
+
+#[cfg(unix)]
+fn link_exe(exe: &Path, link: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(link.parent().unwrap_or(Path::new("/")))?;
+    if link.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+        std::fs::remove_file(link)?;
+    }
+    std::os::unix::fs::symlink(exe, link)
+}
+
+#[cfg(not(unix))]
+fn link_exe(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
 #[cfg(all(windows, not(debug_assertions)))]
 pub fn attach_console() -> bool {
     #[link(name = "kernel32")]
