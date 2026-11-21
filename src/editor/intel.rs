@@ -1,4 +1,5 @@
 use super::buffer::{After, Document, Kind, Sel, is_word};
+use super::load::Place;
 use super::{Editors, Tab, links, notice, snippet};
 use crate::command::Command;
 use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
@@ -126,7 +127,7 @@ pub(super) fn from_lsp(buf: &Document, (line, col): Pos) -> usize {
 }
 
 pub(super) fn sync(lsp: &mut Lsp, buf: &Document, lang: &mut Lang, ctx: &egui::Context) {
-    let Some(path) = buf.path.as_deref().filter(|_| !buf.read_only) else { return };
+    let Some(path) = buf.path.as_deref().filter(|_| !buf.read_only && !buf.large) else { return };
     if lang.synced == 0 {
         lang.attached = buf.rope.len_bytes() < 2_000_000 && lsp.open(path, || buf.rope.to_string(), ctx);
         lang.lines = buf.lines();
@@ -728,7 +729,9 @@ impl Editors {
             self.remember();
         }
         self.show_path(path);
-        self.with_active(|buf, tab| tab.sels = vec![Sel::caret(from_lsp(buf, at))]);
+        if !self.pend_place(Place::Lsp(at)) {
+            self.with_active(|buf, tab| tab.sels = vec![Sel::caret(from_lsp(buf, at))]);
+        }
     }
 
     fn apply_workspace_edit(&mut self, changes: Vec<(PathBuf, Vec<lsp::Edit>)>) {

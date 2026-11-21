@@ -1061,6 +1061,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "one\nthree\nfour\nfive\n").unwrap();
         let mut editors = Editors::new();
         editors.open(&dir.join("a.txt"));
+        editors.finish_loads();
         let plain = editors.find_doc(&dir.join("a.txt")).unwrap();
         assert!(editors.compare("a.txt (changes)", &strings(&["diff", "--", "a.txt"]), &dir, false, &ctx));
         settle(&ctx, &mut editors, "the diff tab", |e| e.groups[0].tabs.len() == 2);

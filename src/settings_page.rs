@@ -197,6 +197,8 @@ fn editor_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsP
     ui.add(egui::DragValue::new(&mut s.font_size).range(8.0..=32.0).speed(0.25));
     item(ui, theme, "Editor", "Tab Size", "The number of spaces a tab is equal to.");
     ui.add(egui::DragValue::new(&mut s.tab_size).range(1..=8).speed(0.1));
+    item(ui, theme, "Editor", "Large File Size (MB)", "Files above this size open without highlighting, language servers, minimap, git gutter, blame, word wrap and local history.");
+    ui.add(egui::DragValue::new(&mut s.large_mb).range(1..=250).speed(0.5));
     toggle(ui, theme, "Editor", "Insert Spaces", "Insert spaces when pressing Tab.", &mut s.insert_spaces);
     toggle(ui, theme, "Editor", "Word Wrap", "Wrap long lines at the width of the editor (Alt+Z).", &mut s.word_wrap);
     toggle(ui, theme, "Editor", "Auto Closing Pairs", "Close brackets and quotes as they are typed, and wrap a selection in them.", &mut s.auto_close);

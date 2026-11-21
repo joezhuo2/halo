@@ -322,6 +322,7 @@ impl Halo {
             }
             ImportTheme | BrowseThemes | SelectTheme | ImportThemeFile(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
             | ImportIconThemeFile(_) | SetIconTheme(_) => self.theme_command(cmd, ctx),
+            ZoomIn | ZoomOut | ZoomReset if self.zone == Zone::Editor && self.editors.image_zoom(match cmd { ZoomIn => Some(1.25), ZoomOut => Some(0.8), _ => None }) => {}
             ZoomIn => ctx.set_zoom_factor((ctx.zoom_factor() + 0.1).min(3.0)),
             ZoomOut => ctx.set_zoom_factor((ctx.zoom_factor() - 0.1).max(0.5)),
             ZoomReset => ctx.set_zoom_factor(1.0),

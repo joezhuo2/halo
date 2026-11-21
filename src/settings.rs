@@ -58,6 +58,7 @@ pub struct Settings {
     pub guides: bool,
     pub diff_side_by_side: bool,
     pub hot_exit: bool,
+    pub large_mb: u64,
     pub auto_update: bool,
 }
 
@@ -153,6 +154,7 @@ impl Default for Settings {
             guides: true,
             diff_side_by_side: true,
             hot_exit: true,
+            large_mb: 20,
             auto_update: true,
         }
     }

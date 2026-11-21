@@ -124,6 +124,7 @@ pub struct Document {
     pub dirty_from: Option<usize>,
     pub note: Option<String>,
     pub read_only: bool,
+    pub large: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -291,6 +292,17 @@ pub fn disk_time(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
 }
 
+pub const HUGE: u64 = 256 * 1024 * 1024;
+
+pub fn looks_binary(bytes: &[u8], text: &str, lossy: bool, encoding: Encoding) -> bool {
+    let wide = matches!(encoding, Encoding::Utf16Le | Encoding::Utf16Be);
+    if !wide && bytes.iter().take(8192).any(|b| *b == 0) {
+        return true;
+    }
+    let bad = text.chars().take(8192).filter(|c| *c == '\u{fffd}').count();
+    lossy && bad > 16 && bad * 10 > text.chars().take(8192).count()
+}
+
 fn title_of(path: &Path) -> String {
     path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
 }
@@ -313,6 +325,7 @@ impl Document {
             dirty_from: None,
             note: None,
             read_only: false,
+            large: false,
         }
     }
 
@@ -323,16 +336,20 @@ impl Document {
     pub fn load_as(path: &Path, encoding: Option<Encoding>) -> Result<Self, String> {
         let name = title_of(path);
         let size = std::fs::metadata(path).map_err(|e| format!("Cannot open {name}: {e}"))?.len();
-        if size > 50 * 1024 * 1024 {
-            return Err(format!("{name} is larger than 50 MB and was not opened."));
+        if size > HUGE {
+            return Err(format!("{name} is larger than 256 MB and was not opened."));
         }
         let bytes = std::fs::read(path).map_err(|e| format!("Cannot open {name}: {e}"))?;
-        let encoding = encoding.unwrap_or_else(|| Encoding::detect(&bytes));
-        let wide = matches!(encoding, Encoding::Utf16Le | Encoding::Utf16Be);
-        if !wide && bytes.iter().take(8192).any(|b| *b == 0) {
-            return Err(format!("{name} looks like a binary file and was not opened."));
+        Self::from_bytes(path, &bytes, encoding, false).ok_or_else(|| format!("{name} looks like a binary file and was not opened."))
+    }
+
+    pub fn from_bytes(path: &Path, bytes: &[u8], encoding: Option<Encoding>, force: bool) -> Option<Self> {
+        let name = title_of(path);
+        let encoding = encoding.unwrap_or_else(|| Encoding::detect(bytes));
+        let (mut text, lossy) = encoding.decode(bytes);
+        if !force && looks_binary(bytes, &text, lossy, encoding) {
+            return None;
         }
-        let (mut text, lossy) = encoding.decode(&bytes);
         let crlf = text.contains("\r\n");
         if crlf {
             text = text.replace("\r\n", "\n");
@@ -346,7 +363,7 @@ impl Document {
         if lossy {
             doc.note = Some(format!("This file is not valid {}; invalid bytes were replaced.", encoding.label()));
         }
-        Ok(doc)
+        Some(doc)
     }
 
     pub fn save(&mut self) -> Result<Vec<u8>, String> {
@@ -1607,6 +1624,22 @@ mod tests {
             assert_eq!(encoding.decode(&encoding.encode("a\u{e9}")), ("a\u{e9}".to_owned(), false));
         }
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn tells_binary_files_from_text_in_every_encoding() {
+        let path = Path::new("x.txt");
+        let load = |bytes: &[u8]| Document::from_bytes(path, bytes, None, false);
+        for encoding in Encoding::ALL {
+            let bytes = encoding.encode("caf\u{e9} text\n");
+            assert!(Document::from_bytes(path, &bytes, Some(encoding), false).is_some(), "{encoding:?}");
+        }
+        assert!(load(b"").is_some_and(|d| d.len() == 0));
+        assert!(load(b"MZ\0\x01\x02").is_none());
+        assert!(load(&[0x80; 200]).is_none());
+        assert!(load(b"h\xe9llo").is_some());
+        assert!(Document::from_bytes(path, b"MZ\0\x01\x02", None, true).is_some());
+        assert!(load(&[0xFF, 0xFE, b'h', 0, b'i', 0]).is_some());
     }
 
     #[test]

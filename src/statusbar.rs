@@ -102,7 +102,9 @@ impl Halo {
                         if item(ui, &theme, icon, false, "Color theme").clicked() {
                             self.cmds.push(Command::SelectTheme);
                         }
-                        if let Some(status) = self.editors.status() {
+                        if let Some(text) = self.editors.image_status() {
+                            item(ui, &theme, &text, false, "Image size, file size and zoom");
+                        } else if let Some(status) = self.editors.status() {
                             let mut pick = None;
                             let language = item(ui, &theme, &status.language, false, "Select language mode");
                             egui::Popup::menu(&language).show(|ui| {
