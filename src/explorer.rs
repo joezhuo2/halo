@@ -814,6 +814,10 @@ impl Explorer {
                 *action = Some(Action::Paste);
                 ui.close();
             }
+            if ui.button("Add Folder to Workspace...").clicked() {
+                *action = Some(Action::Compare(Command::AddFolderToWorkspace));
+                ui.close();
+            }
             if ui.button("Remove Folder from Workspace").clicked() {
                 *action = Some(Action::Compare(Command::RemoveWorkspaceFolder(root.to_path_buf())));
                 ui.close();
