@@ -692,6 +692,7 @@ impl Editors {
         match doc.buf.save() {
             Ok(()) => {
                 self.lsp.save(doc.buf.path.as_deref().unwrap_or(Path::new("")));
+                self.groups.iter_mut().flat_map(|group| &mut group.tabs).filter(|tab| tab.doc == id).for_each(|tab| tab.preview = false);
                 true
             }
             Err(error) => {
@@ -754,6 +755,7 @@ impl Editors {
         let mut refocus = true;
         match cmd {
             Save => {
+                self.groups[g].tabs[t].preview = false;
                 if !self.save_formatted(doc_id, settings, ctx) {
                     self.save_doc(doc_id, false);
                 }
@@ -2722,6 +2724,28 @@ end", "word ".repeat(100)))], &settings);
         assert_eq!(titles(&editors).len(), 2);
         editors.exec(&Command::ReopenClosed, &settings, &ctx);
         assert_eq!((titles(&editors).len(), editors.active_path()), (3, Some(before)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_keeps_a_preview_tab() {
+        let ctx = egui::Context::default();
+        let settings = Settings { lsp: false, ..Settings::default() };
+        let dir = std::env::temp_dir().join(format!("halo-save-preview-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.join(name), "text\n").unwrap();
+        }
+        let mut editors = Editors::new();
+        let previews = |e: &Editors| e.groups[0].tabs.iter().map(|t| t.preview).collect::<Vec<_>>();
+        editors.open(&dir.join("a.txt"));
+        editors.exec(&Command::Save, &settings, &ctx);
+        editors.open(&dir.join("b.txt"));
+        assert_eq!(previews(&editors), vec![false, true]);
+        editors.active_doc().unwrap().0.buf.mark_dirty();
+        editors.exec(&Command::SaveAll, &settings, &ctx);
+        editors.open(&dir.join("c.txt"));
+        assert_eq!(previews(&editors), vec![false, false, true]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
