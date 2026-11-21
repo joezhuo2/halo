@@ -2423,6 +2423,7 @@ impl Editors {
                         if current_line == Some(line) && matches!(settings.render_line_highlight.as_str(), "line" | "all") {
                             let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
                             painter.rect_filled(band, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
+                            ui::contrast_border(&painter, theme, band, theme.border);
                         }
                         if marks.as_ref().is_some_and(|m| m.1 == Some(line)) {
                             let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
@@ -2456,6 +2457,7 @@ impl Editors {
                         for s in tab.sels.iter().filter(|s| !s.is_empty() && s.end() >= start && s.start() <= start + len) {
                             for (x0, x1, y) in spans(s.start().saturating_sub(start), s.end() - start) {
                                 painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), CornerRadius::same(2), theme.selection);
+                                ui::contrast_border(&painter, theme, Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), theme.accent);
                             }
                             if s.end() > start + len {
                                 painter.rect_filled(Rect::from_min_size(at(len), vec2(char_w * 0.6, line_h)), CornerRadius::same(2), theme.selection);

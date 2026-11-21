@@ -119,6 +119,19 @@ pub fn row_bg(ui: &Ui, theme: &Theme, rect: Rect, id: Id, hovered: bool, selecte
     if color.a() > 0 {
         ui.painter().rect_filled(rect, CornerRadius::ZERO, color);
     }
+    state_border(ui.painter(), theme, rect, hovered, selected);
+}
+
+pub fn state_border(painter: &egui::Painter, theme: &Theme, rect: Rect, hovered: bool, selected: bool) {
+    if hovered || selected {
+        contrast_border(painter, theme, rect, if selected { theme.accent } else { theme.border });
+    }
+}
+
+pub fn contrast_border(painter: &egui::Painter, theme: &Theme, rect: Rect, color: Color32) {
+    if theme.contrast {
+        painter.rect_stroke(rect.shrink(0.5), CornerRadius::ZERO, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+    }
 }
 
 pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: &str, size: f32, active: bool, tip: &str) -> Response {
@@ -131,6 +144,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: &str, size: f32, active: bo
             CornerRadius::same(4),
             mix(Color32::TRANSPARENT, theme.hover, h),
         );
+        state_border(ui.painter(), theme, rect.shrink(1.0), resp.hovered() || resp.has_focus(), active);
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
@@ -338,6 +352,23 @@ mod tests {
         assert_eq!(at(54, 32), Color32::from_rgb(191, 224, 240));
         assert_eq!(logo_image(64, false).pixels[42 * 64 + 42], Color32::WHITE);
         assert!((0..64 * 64).all(|i| at(i % 64, i / 64) == at(63 - i % 64, i / 64) && at(i % 64, i / 64) == at(i % 64, 63 - i / 64)));
+    }
+
+    fn shapes(theme: &Theme) -> usize {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(100.0, 20.0));
+            row_bg(ui, theme, rect, Id::new("row"), true, true);
+            icon_button(ui, theme, icons::X, 20.0, true, "");
+        });
+        out.textures_delta.clear();
+        out.shapes.len()
+    }
+
+    #[test]
+    fn high_contrast_themes_draw_borders() {
+        assert_eq!(shapes(&Theme::hc_dark()), shapes(&Theme::dark()) + 2);
+        assert_eq!(shapes(&Theme::hc_light()), shapes(&Theme::light()) + 2);
     }
 
     #[test]

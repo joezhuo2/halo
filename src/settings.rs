@@ -103,6 +103,9 @@ pub struct Settings {
     pub files_exclude: Vec<String>,
     pub compact_folders: bool,
     pub confirm_drag_and_drop: bool,
+    pub auto_detect_high_contrast: bool,
+    pub preferred_high_contrast_theme: String,
+    pub preferred_high_contrast_light_theme: String,
     #[serde(skip)]
     pub langs: BTreeMap<String, Settings>,
 }
@@ -242,6 +245,9 @@ impl Default for Settings {
             files_exclude: ["**/.git", "**/.svn", "**/.hg", "**/.DS_Store", "**/Thumbs.db"].map(str::to_owned).into(),
             compact_folders: true,
             confirm_drag_and_drop: true,
+            auto_detect_high_contrast: true,
+            preferred_high_contrast_theme: "hc-dark".into(),
+            preferred_high_contrast_light_theme: "hc-light".into(),
             langs: BTreeMap::new(),
         }
     }

@@ -374,6 +374,7 @@ pub(super) fn tint(painter: &Painter, theme: &Theme, d: &DiffTab, line: usize, b
         return;
     }
     painter.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(theme.added, 0.13));
+    ui::contrast_border(painter, theme, band, theme.added);
     for r in d.model.right.get(&line).into_iter().flatten() {
         painter.rect_filled(Rect::from_x_y_ranges(x(r.start)..=x(r.end), band.y_range()), CornerRadius::ZERO, ui::with_alpha(theme.added, 0.3));
     }
@@ -407,6 +408,7 @@ pub(super) fn paint_pads(
         for (k, l) in hunk.left.clone().enumerate() {
             let row = Rect::from_min_size(pos2(clip.left(), y + k as f32 * line_h), vec2(clip.width(), line_h));
             painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.13));
+            ui::contrast_border(painter, theme, row, theme.deleted);
             let text = line_text(&d.rope, l);
             let galley = painter.layout_job(job(&text, 0..text.len(), d.hl.get(l), font, theme.text, &[], &[], &TextFormat::default()));
             marks(painter, &galley, text_x, row, d.model.left.get(&l), ui::with_alpha(theme.deleted, 0.3));
@@ -444,6 +446,7 @@ fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, right_len: us
         let galley = painter.layout_job(job(&text, 0..text.len(), d.hl.get(line), font, theme.text, &[], &[], &TextFormat::default()));
         if found.changed {
             painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.13));
+            ui::contrast_border(&painter, theme, row, theme.deleted);
             marks(&painter, &galley, rect.left() + gutter, row, d.model.left.get(&line), ui::with_alpha(theme.deleted, 0.3));
         }
         let number = if found.changed { theme.text } else { ui::with_alpha(theme.text_dim, 0.75) };
