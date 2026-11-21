@@ -18,7 +18,7 @@ pub enum FileState {
 }
 
 impl FileState {
-    fn strength(self) -> u8 {
+    pub fn strength(self) -> u8 {
         match self {
             FileState::Ignored => 0,
             FileState::Added => 1,

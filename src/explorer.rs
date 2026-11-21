@@ -14,6 +14,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
+mod nesting;
 mod panels;
 #[cfg(test)]
 mod tests;
@@ -31,7 +32,7 @@ struct Entry {
     is_dir: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Row {
     path: PathBuf,
     name: String,
@@ -40,6 +41,7 @@ struct Row {
     editing: bool,
     chain: Vec<PathBuf>,
     hits: Vec<usize>,
+    kids: Vec<PathBuf>,
 }
 
 impl Row {
@@ -143,6 +145,10 @@ pub struct Explorer {
     focus_open: bool,
     compact: bool,
     exclude: Vec<String>,
+    nest: bool,
+    nest_expand: bool,
+    patterns: std::collections::BTreeMap<String, String>,
+    flipped: HashSet<PathBuf>,
     confirm_drag: bool,
     confirm: bool,
     sort: String,
@@ -262,6 +268,10 @@ impl Explorer {
             focus_open: false,
             compact: false,
             exclude: vec![],
+            nest: false,
+            nest_expand: true,
+            patterns: Default::default(),
+            flipped: HashSet::new(),
             confirm_drag: true,
             confirm: true,
             sort: String::new(),
@@ -333,6 +343,7 @@ impl Explorer {
                 self.expanded.remove(&dir);
             }
         }
+        self.flipped.retain(|p| p.parent().is_some_and(|d| self.children.contains_key(d)));
         self.dirty = true;
     }
 
@@ -394,7 +405,7 @@ impl Explorer {
             self.apply_filter(&mut rows);
         } else if self.title.is_some() {
             for (root, name) in self.roots.clone() {
-                rows.push(Row { path: root.clone(), name, depth: 0, is_dir: true, editing: false, chain: vec![], hits: vec![] });
+                rows.push(Row { path: root.clone(), name, depth: 0, is_dir: true, ..Row::default() });
                 if self.is_open(&root) {
                     self.push_rows(&root, 1, &mut rows);
                 }
@@ -445,42 +456,79 @@ impl Explorer {
             && edit.kind != EditKind::Rename
             && edit.target == dir
         {
-            rows.push(Row {
-                path: dir.join("\u{0}"),
-                name: String::new(),
-                depth,
-                is_dir: edit.kind == EditKind::NewFolder,
-                editing: true,
-                chain: vec![],
-                hits: vec![],
-            });
+            rows.push(Row { path: dir.join("\u{0}"), depth, is_dir: edit.kind == EditKind::NewFolder, editing: true, ..Row::default() });
         }
         let Some(entries) = self.children.get(dir).cloned() else { return };
-        for entry in entries {
-            let editing = self.edit.as_ref().is_some_and(|e| e.kind == EditKind::Rename && e.target == entry.path);
-            let (mut last, mut name, mut chain) = (entry.path.clone(), entry.name.clone(), vec![]);
-            while self.compact && entry.is_dir {
-                if self.edit.as_ref().is_some_and(|e| e.kind != EditKind::Rename && e.target == last) {
-                    break;
-                }
-                self.load(&last);
-                let only = match self.children[&last].as_slice() {
-                    [only] if only.is_dir => only.clone(),
-                    _ => break,
-                };
-                if self.edit.as_ref().is_some_and(|e| e.kind == EditKind::Rename && e.target == only.path) {
-                    break;
-                }
-                if chain.is_empty() {
-                    chain.push(entry.path.clone());
-                }
-                chain.push(only.path.clone());
-                name = format!("{name}/{}", only.name);
-                last = only.path;
+        let owners = self.owners(dir, &entries);
+        let mut nested = vec![vec![]; entries.len()];
+        for (child, parent) in owners.iter().enumerate() {
+            if let Some(parent) = parent {
+                nested[*parent].push(child);
             }
-            rows.push(Row { path: last.clone(), name, depth, is_dir: entry.is_dir, editing, chain, hits: vec![] });
-            if entry.is_dir && self.is_open(&last) {
-                self.push_rows(&last, depth + 1, rows);
+        }
+        for i in (0..entries.len()).filter(|i| owners[*i].is_none()) {
+            self.push_entry(&entries, &nested, i, depth, rows);
+        }
+    }
+
+    fn owners(&self, dir: &Path, entries: &[Entry]) -> Vec<Option<usize>> {
+        let mut out = vec![None; entries.len()];
+        if !self.nest {
+            return out;
+        }
+        let files: Vec<usize> = (0..entries.len()).filter(|i| !entries[*i].is_dir).collect();
+        let names: Vec<&str> = files.iter().map(|i| entries[*i].name.as_str()).collect();
+        let patterns: Vec<(&str, &str)> = self.patterns.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
+        for (k, parent) in nesting::nest(&names, &name_of(dir), &patterns).into_iter().enumerate() {
+            out[files[k]] = parent.map(|p| files[p]);
+        }
+        out
+    }
+
+    fn group_open(&self, path: &Path) -> bool {
+        self.nest_expand != self.flipped.contains(path)
+    }
+
+    fn opened(&self, row: &Row) -> bool {
+        if row.is_dir { self.expanded.contains(&row.path) } else { !row.kids.is_empty() && self.group_open(&row.path) }
+    }
+
+    fn push_entry(&mut self, entries: &[Entry], nested: &[Vec<usize>], i: usize, depth: usize, rows: &mut Vec<Row>) {
+        let entry = &entries[i];
+        let editing = self.edit.as_ref().is_some_and(|e| e.kind == EditKind::Rename && e.target == entry.path);
+        let (mut last, mut name, mut chain) = (entry.path.clone(), entry.name.clone(), vec![]);
+        while self.compact && entry.is_dir {
+            if self.edit.as_ref().is_some_and(|e| e.kind != EditKind::Rename && e.target == last) {
+                break;
+            }
+            self.load(&last);
+            let only = match self.children[&last].as_slice() {
+                [only] if only.is_dir => only.clone(),
+                _ => break,
+            };
+            if self.edit.as_ref().is_some_and(|e| e.kind == EditKind::Rename && e.target == only.path) {
+                break;
+            }
+            if chain.is_empty() {
+                chain.push(entry.path.clone());
+            }
+            chain.push(only.path.clone());
+            name = format!("{name}/{}", only.name);
+            last = only.path;
+        }
+        let (mut kids, mut stack) = (vec![], nested[i].clone());
+        while let Some(k) = stack.pop() {
+            kids.push(entries[k].path.clone());
+            stack.extend(&nested[k]);
+        }
+        let open = !kids.is_empty() && (self.group_open(&entry.path) || self.filter.active() && self.filter.hide);
+        rows.push(Row { path: last.clone(), name, depth, is_dir: entry.is_dir, editing, chain, kids, ..Row::default() });
+        if entry.is_dir && self.is_open(&last) {
+            self.push_rows(&last, depth + 1, rows);
+        }
+        if open {
+            for &k in &nested[i] {
+                self.push_entry(entries, nested, k, depth + 1, rows);
             }
         }
     }
@@ -499,6 +547,19 @@ impl Explorer {
         dirs.reverse();
         for dir in dirs {
             self.expand(&dir);
+        }
+        if let Some(dir) = active.parent() {
+            self.load(dir);
+            let entries = self.children[dir].clone();
+            let owners = self.owners(dir, &entries);
+            let mut up = entries.iter().position(|e| e.path == active).and_then(|i| owners[i]);
+            while let Some(i) = up {
+                if !self.group_open(&entries[i].path) && !self.flipped.remove(&entries[i].path) {
+                    self.flipped.insert(entries[i].path.clone());
+                }
+                up = owners[i];
+            }
+            self.dirty = true;
         }
         self.sel.set(active.to_path_buf());
         self.scroll_to = Some(active.to_path_buf());
@@ -581,7 +642,8 @@ impl Explorer {
         if self.dirty {
             self.build();
         }
-        let opening = dir.as_ref().is_some_and(|d| !self.expanded.contains(d));
+        let group = dir.as_ref().and_then(|d| self.rows.iter().find(|r| r.path == *d)).is_some_and(|r| !r.is_dir && !r.kids.is_empty());
+        let opening = dir.as_ref().is_some_and(|d| if group { !self.group_open(d) } else { !self.expanded.contains(d) });
         let elapsed = self.animation.as_ref().filter(|a| a.dir == dir).map_or(0.0, |a| {
             let t = a.progress(now);
             f64::from(if opening { t } else { 1.0 - t }) * FOLDER_TIME
@@ -589,7 +651,11 @@ impl Explorer {
         let outgoing = if opening { vec![] } else { std::mem::take(&mut self.rows) };
         if let Some(path) = &dir {
             self.sel.set(path.clone());
-            if opening {
+            if group {
+                if !self.flipped.remove(path) {
+                    self.flipped.insert(path.clone());
+                }
+            } else if opening {
                 self.expand(path);
             } else {
                 self.expanded.remove(path);
@@ -602,12 +668,14 @@ impl Explorer {
             self.edit = None;
         }
         let rows = if opening { &self.rows } else { &outgoing };
-        let moving = |r: &Row| r.depth > 0 && dir.as_ref().is_none_or(|p| r.path != *p && r.path.starts_with(p));
+        let at = dir.as_ref().and_then(|p| rows.iter().position(|r| r.holds(p)));
+        let until = at.map_or(0, |a| rows[a + 1..].iter().position(|r| r.depth <= rows[a].depth).map_or(rows.len(), |n| a + 1 + n));
+        let moving: Vec<bool> = (0..rows.len()).map(|i| if dir.is_none() { rows[i].depth > 0 } else { at.is_some_and(|a| i > a && i < until) }).collect();
         let mut first = 0;
         let mut spans = Vec::new();
-        for group in rows.chunk_by(|a, b| moving(a) == moving(b)) {
+        for group in moving.chunk_by(|a, b| a == b) {
             let end = first + group.len();
-            spans.push((first..end, moving(&group[0])));
+            spans.push((first..end, group[0]));
             first = end;
         }
         if spans.iter().any(|(_, moving)| *moving) {
@@ -976,12 +1044,15 @@ impl Explorer {
             self.scroll_to = moved;
         } else if let (Some(i), Some(cursor)) = (index, self.sel.cursor.clone()) {
             let row = self.rows[i].clone();
-            let open = self.expanded.contains(&row.path);
-            if pressed(Modifiers::NONE, Key::ArrowRight) && row.is_dir {
+            let open = self.opened(&row);
+            let folds = row.is_dir || !row.kids.is_empty();
+            if pressed(Modifiers::NONE, Key::ArrowRight) && folds {
                 *action = if open { at(i + 1).map(Action::Select) } else { Some(Action::Toggle(row.path)) };
             } else if pressed(Modifiers::NONE, Key::ArrowLeft) {
-                *action = if row.is_dir && open && cursor == row.path {
+                *action = if folds && open && cursor == row.path {
                     Some(Action::Toggle(row.path))
+                } else if let Some(owner) = self.rows[..i].iter().rev().find(|r| r.depth < row.depth).filter(|r| !r.is_dir && cursor == row.path) {
+                    Some(Action::Select(owner.path.clone()))
                 } else {
                     cursor.parent().filter(|p| self.row_of(p).is_some()).map(|p| Action::Select(p.to_path_buf()))
                 };
@@ -1028,6 +1099,10 @@ impl Explorer {
             self.compact = settings.compact_folders;
             self.sort = settings.explorer_sort.clone();
             self.refresh();
+        }
+        if (self.nest, self.nest_expand, &self.patterns) != (settings.file_nesting, settings.file_nesting_expand, &settings.file_nesting_patterns) {
+            (self.nest, self.nest_expand, self.patterns) = (settings.file_nesting, settings.file_nesting_expand, settings.file_nesting_patterns.clone());
+            self.dirty = true;
         }
         self.poll(cmds);
         if active != self.last_active.as_deref() {
@@ -1194,7 +1269,10 @@ impl Explorer {
                         let selected = self.sel.contains(&row.path) || row.chain.iter().any(|p| self.sel.contains(p));
                         let is_active = active == Some(row.path.as_path());
                         ui::row_bg(ui, theme, rect, id, resp.hovered(), selected || is_active);
-                        ui::tree_item(ui, &resp, &row.name, selected, row.depth, row.is_dir.then(|| self.is_open(&row.path)));
+                        ui::tree_item(ui, &resp, &row.name, selected, row.depth, match row.is_dir {
+                            true => Some(self.is_open(&row.path)),
+                            false => (!row.kids.is_empty()).then(|| self.opened(row)),
+                        });
                         let under = interactive && pointer.is_some_and(|p| rect.contains(p));
                         over_row |= under;
                         if under && row.is_dir && dragging {
@@ -1210,12 +1288,15 @@ impl Explorer {
                         }
                         let x = rect.left() + 12.0 + row.depth as f32 * INDENT - (1.0 - fade) * 6.0;
                         let y = rect.center().y;
-                        let state = git.state(&row.path);
+                        let open = self.opened(row);
+                        let state = match open || row.kids.is_empty() {
+                            true => git.state(&row.path),
+                            false => row.kids.iter().chain([&row.path]).filter_map(|p| git.state(p)).max_by_key(|s| s.strength()),
+                        };
                         let dimmed = if cut.iter().any(|c| row.path.starts_with(c)) { 0.45 } else { 1.0 };
                         let color = ui::with_alpha(state_color(theme, state), fade * dimmed);
                         let dim = ui::with_alpha(theme.text_dim, fade * dimmed);
-                        let open = self.expanded.contains(&row.path);
-                        if row.is_dir {
+                        if row.is_dir || !row.kids.is_empty() {
                             ui::caret(&painter, pos2(x, y), ui::anim(ui, id.with("caret"), open), dim);
                         }
                         let icon = match (row.is_dir, open) {
@@ -1309,7 +1390,7 @@ impl Explorer {
                                 Action::Extend(hit)
                             } else if hit != row.path {
                                 Action::Select(hit)
-                            } else if row.is_dir {
+                            } else if row.is_dir || !row.kids.is_empty() && resp.interact_pointer_pos().is_some_and(|p| p.x < x + 8.0) {
                                 Action::Toggle(row.path.clone())
                             } else {
                                 Action::Open(row.path.clone())

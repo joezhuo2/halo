@@ -181,6 +181,48 @@ fn filtering_hides_rows_or_highlights_them() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn nested_files_follow_their_parent_and_fold() {
+    let dir = temp("nesting");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    for file in ["a.ts", "a.js", "a.js.map", "b.txt", "package.json", "package-lock.json"] {
+        std::fs::write(dir.join(file), "").unwrap();
+    }
+    let mut explorer = Explorer::new();
+    explorer.set_roots(vec![dir.clone()], vec![String::new()], None);
+    explorer.patterns = Settings::default().file_nesting_patterns;
+    explorer.build();
+    assert_eq!(names(&explorer), ["src", "a.js", "a.js.map", "a.ts", "b.txt", "package-lock.json", "package.json"]);
+
+    explorer.nest = true;
+    explorer.build();
+    assert_eq!(names(&explorer), ["src", "a.ts", "a.js", "a.js.map", "b.txt", "package.json", "package-lock.json"]);
+    assert_eq!(explorer.rows.iter().map(|r| r.depth).collect::<Vec<_>>(), [0, 0, 1, 2, 0, 0, 1]);
+    assert_eq!(explorer.rows[1].kids.len(), 2);
+
+    explorer.toggle_folders(Some(dir.join("a.ts")), 0.0);
+    assert_eq!(names(&explorer), ["src", "a.ts", "b.txt", "package.json", "package-lock.json"]);
+    assert_eq!(explorer.animation.as_ref().unwrap().spans, [(0..2, false), (2..4, true), (4..7, false)]);
+    assert_eq!(explorer.sel.paths, [dir.join("a.ts")]);
+
+    explorer.nest_expand = false;
+    explorer.build();
+    assert_eq!(names(&explorer), ["src", "a.ts", "a.js", "b.txt", "package.json"]);
+    explorer.refresh();
+    assert!(explorer.flipped.contains(&dir.join("a.ts")));
+
+    explorer.filter.open = true;
+    explorer.filter.text = "lock".into();
+    explorer.build();
+    assert_eq!(names(&explorer), ["package.json", "package-lock.json"]);
+    explorer.filter.open = false;
+    explorer.reveal_active(&dir.join("package-lock.json"));
+    explorer.build();
+    assert_eq!(names(&explorer)[4..], ["package.json", "package-lock.json"]);
+    assert_eq!(explorer.sel.paths, [dir.join("package-lock.json")]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 mod headless {
     use super::*;
     use eframe::egui::{Event, PointerButton, RawInput};
@@ -194,7 +236,13 @@ mod headless {
             ..Default::default()
         };
         let mut cmds = vec![];
-        let settings = Settings { files_exclude: vec![], compact_folders: false, ..Settings::default() };
+        let settings = Settings {
+            files_exclude: vec![],
+            compact_folders: false,
+            file_nesting: explorer.nest,
+            file_nesting_patterns: explorer.patterns.clone(),
+            ..Settings::default()
+        };
         let git = Git::new();
         let mut out = ctx.run_ui(input, |ui| explorer.ui(ui, &Theme::dark(), &git, None, &settings, &[], &mut cmds));
         out.textures_delta.clear();
@@ -338,6 +386,27 @@ mod headless {
         assert!(explorer.confirm_drop.is_none());
         explorer.request_move(vec![dir.join("a.txt")], dir.join("f"), &ctx);
         assert_eq!(explorer.confirm_drop, Some((vec![dir.join("a.txt")], dir.join("f"))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nested_parents_fold_with_the_keyboard() {
+        let (dir, ctx, mut explorer) = setup("nest-keys", &["a.ts", "a.js", "b.txt"]);
+        (explorer.nest, explorer.patterns) = (true, Settings::default().file_nesting_patterns);
+        explorer.dirty = true;
+        frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
+        frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
+        assert_eq!(names(&explorer), ["a.ts", "a.js", "b.txt"]);
+        click(&ctx, &mut explorer, &dir.join("a.ts"), Modifiers::NONE);
+        assert_eq!(explorer.sel.paths, [dir.join("a.ts")]);
+        frame(&ctx, &mut explorer, vec![key(Key::ArrowLeft, Modifiers::NONE)], Modifiers::NONE);
+        assert_eq!(names(&explorer), ["a.ts", "b.txt"]);
+        frame(&ctx, &mut explorer, vec![key(Key::ArrowRight, Modifiers::NONE)], Modifiers::NONE);
+        assert_eq!(names(&explorer), ["a.ts", "a.js", "b.txt"]);
+        frame(&ctx, &mut explorer, vec![key(Key::ArrowRight, Modifiers::NONE)], Modifiers::NONE);
+        assert_eq!(explorer.sel.cursor, Some(dir.join("a.js")));
+        frame(&ctx, &mut explorer, vec![key(Key::ArrowLeft, Modifiers::NONE)], Modifiers::NONE);
+        assert_eq!(explorer.sel.cursor, Some(dir.join("a.ts")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
