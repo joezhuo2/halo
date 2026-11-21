@@ -1428,6 +1428,15 @@ mod tests {
     }
 
     #[test]
+    fn word_backspace_deletes_left_of_caret() {
+        let mut d = doc("one two three");
+        let mut sels = vec![Sel::caret(7)];
+        d.backspace(&mut sels, true, true);
+        assert_eq!(d.rope.to_string(), "one  three");
+        assert_eq!(sels[0].head, 4);
+    }
+
+    #[test]
     fn selections_merge_and_replace() {
         let mut sels = vec![Sel::new(0, 4), Sel::new(2, 6), Sel::caret(6), Sel::caret(9)];
         merge_sels(&mut sels);

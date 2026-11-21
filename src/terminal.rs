@@ -130,7 +130,13 @@ fn word_step(line: &[char], col: usize, forward: bool, word: bool) -> usize {
     i
 }
 
-pub fn encode_key(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
+fn windows_word_erase(program: &str) -> bool {
+    let name = Path::new(program).file_name().and_then(|s| s.to_str()).unwrap_or_default();
+    let name = name.to_ascii_lowercase();
+    cfg!(windows) && matches!(name.strip_suffix(".exe").unwrap_or(&name), "cmd" | "powershell" | "pwsh")
+}
+
+fn encode_key(key: Key, m: Modifiers, app_cursor: bool, windows_word_erase: bool) -> Option<Vec<u8>> {
     let mods = 1 + u8::from(m.shift) + 2 * u8::from(m.alt) + 4 * u8::from(m.ctrl);
     let arrow = |c: char| match (mods > 1, app_cursor) {
         (true, _) => format!("\x1b[1;{mods}{c}"),
@@ -168,7 +174,8 @@ pub fn encode_key(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
         Key::Enter => alt("\r"),
         Key::Tab if m.shift => "\x1b[Z".to_owned(),
         Key::Tab => "\t".to_owned(),
-        Key::Backspace => alt(if m.ctrl { "\x08" } else { "\x7f" }),
+        Key::Backspace if m.ctrl => alt(if windows_word_erase { "\x08" } else { "\x17" }),
+        Key::Backspace => alt("\x7f"),
         Key::Escape => "\x1b".to_owned(),
         Key::Space if m.ctrl => "\0".to_owned(),
         other => {
@@ -262,6 +269,7 @@ pub struct Terminal {
     pub profile: Option<ShellProfile>,
     restored: bool,
     key_sel: Option<Point>,
+    windows_word_erase: bool,
 }
 
 impl Drop for Terminal {
@@ -349,6 +357,7 @@ impl Terminal {
             profile: None,
             restored: !prelude.is_empty(),
             key_sel: None,
+            windows_word_erase: windows_word_erase(program),
         })
     }
 
@@ -476,6 +485,12 @@ impl Terminal {
             let program = p.program.to_lowercase();
             program.contains("pwsh") || program.contains("powershell")
         })
+    }
+
+    fn clear_key_selection(&mut self) {
+        if self.key_sel.take().is_some() {
+            self.term.lock().selection = None;
+        }
     }
 
     fn select_by_key(&mut self, forward: bool, word: bool) {
@@ -626,25 +641,39 @@ impl Terminal {
         let mode = *self.term.lock().mode();
         let mut step = 0;
 
+        if ui.input(|i| i.pointer.any_pressed()) {
+            self.clear_key_selection();
+        }
         if self.focused {
             ui.memory_mut(|m| {
                 m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
             });
             let events = ui.input(|i| i.events.clone());
             for event in events {
-                match event {
-                    Event::Text(text) => {
-                        self.key_sel = None;
-                        self.write(text)
+                match &event {
+                    Event::Key { key: key @ (Key::ArrowLeft | Key::ArrowRight), pressed: true, modifiers, .. }
+                        if modifiers.shift && !modifiers.alt && !self.shell_selects() =>
+                    {
+                        self.select_by_key(*key == Key::ArrowRight, modifiers.ctrl);
+                        continue;
                     }
+                    Event::Key { pressed: true, .. } | Event::Text(_) | Event::Paste(_) | Event::Cut => self.clear_key_selection(),
+                    _ => {}
+                }
+                match event {
+                    Event::Text(text) => self.write(text),
                     Event::Paste(text) => self.paste(&text),
-                    Event::Copy => match self.selection() {
-                        Some(text) => {
-                            ctx.copy_text(text);
-                            self.term.lock().selection = None;
+                    Event::Copy => {
+                        let selection = self.selection();
+                        self.clear_key_selection();
+                        match selection {
+                            Some(text) => {
+                                ctx.copy_text(text);
+                                self.term.lock().selection = None;
+                            }
+                            None => self.write([3u8]),
                         }
-                        None => self.write([3u8]),
-                    },
+                    }
                     Event::Cut => self.write([0x18u8]),
                     Event::Key { key: Key::F, pressed: true, modifiers, .. } if modifiers.command && !modifiers.alt => {
                         self.find.show();
@@ -660,15 +689,8 @@ impl Terminal {
                         step = if modifiers.shift { -1 } else { 1 };
                         continue;
                     }
-                    Event::Key { key: key @ (Key::ArrowLeft | Key::ArrowRight), pressed: true, modifiers, .. }
-                        if modifiers.shift && !modifiers.alt && !self.shell_selects() =>
-                    {
-                        self.select_by_key(key == Key::ArrowRight, modifiers.ctrl);
-                        continue;
-                    }
                     Event::Key { key, pressed: true, modifiers, .. } => {
-                        self.key_sel = None;
-                        if let Some(bytes) = encode_key(key, modifiers, mode.contains(TermMode::APP_CURSOR)) {
+                        if let Some(bytes) = encode_key(key, modifiers, mode.contains(TermMode::APP_CURSOR), self.windows_word_erase) {
                             self.write(bytes);
                             self.term.lock().scroll_display(Scroll::Bottom);
                         }
@@ -753,7 +775,7 @@ impl Terminal {
                 if mode.contains(TermMode::ALT_SCREEN) && !mode.intersects(TermMode::MOUSE_MODE) {
                     let key = if lines > 0 { Key::ArrowUp } else { Key::ArrowDown };
                     for _ in 0..lines.unsigned_abs() {
-                        if let Some(bytes) = encode_key(key, Modifiers::NONE, mode.contains(TermMode::APP_CURSOR)) {
+                        if let Some(bytes) = encode_key(key, Modifiers::NONE, mode.contains(TermMode::APP_CURSOR), self.windows_word_erase) {
                             self.write(bytes);
                         }
                     }
@@ -1734,21 +1756,34 @@ mod tests {
     #[test]
     fn encodes_keys() {
         let none = Modifiers::NONE;
-        assert_eq!(encode_key(Key::ArrowUp, none, false).unwrap(), b"\x1b[A");
-        assert_eq!(encode_key(Key::ArrowUp, none, true).unwrap(), b"\x1bOA");
-        assert_eq!(encode_key(Key::ArrowLeft, Modifiers::CTRL, true).unwrap(), b"\x1b[1;5D");
-        assert_eq!(encode_key(Key::Delete, Modifiers::SHIFT, false).unwrap(), b"\x1b[3;2~");
-        assert_eq!(encode_key(Key::Delete, Modifiers::CTRL, false).unwrap(), b"\x1bd");
+        assert_eq!(encode_key(Key::ArrowUp, none, false, false).unwrap(), b"\x1b[A");
+        assert_eq!(encode_key(Key::ArrowUp, none, true, false).unwrap(), b"\x1bOA");
+        assert_eq!(encode_key(Key::ArrowLeft, Modifiers::CTRL, true, false).unwrap(), b"\x1b[1;5D");
+        assert_eq!(encode_key(Key::Delete, Modifiers::SHIFT, false, false).unwrap(), b"\x1b[3;2~");
+        assert_eq!(encode_key(Key::Delete, Modifiers::CTRL, false, false).unwrap(), b"\x1bd");
         let line: Vec<char> = "git  commit -m".chars().collect();
         assert_eq!((word_step(&line, 0, true, true), word_step(&line, 3, true, true), word_step(&line, 14, false, true)), (3, 11, 13));
         assert_eq!((word_step(&line, 11, false, true), word_step(&line, 5, true, false), word_step(&line, 0, false, false)), (5, 6, 0));
-        assert_eq!(encode_key(Key::F1, none, false).unwrap(), b"\x1bOP");
-        assert_eq!(encode_key(Key::F5, none, false).unwrap(), b"\x1b[15~");
-        assert_eq!(encode_key(Key::D, Modifiers::CTRL, false).unwrap(), [4]);
-        assert_eq!(encode_key(Key::B, Modifiers::ALT, false).unwrap(), b"\x1bb");
-        assert_eq!(encode_key(Key::Tab, Modifiers::SHIFT, false).unwrap(), b"\x1b[Z");
-        assert_eq!(encode_key(Key::Backspace, none, false).unwrap(), [0x7f]);
-        assert!(encode_key(Key::A, none, false).is_none());
+        assert_eq!(encode_key(Key::F1, none, false, false).unwrap(), b"\x1bOP");
+        assert_eq!(encode_key(Key::F5, none, false, false).unwrap(), b"\x1b[15~");
+        assert_eq!(encode_key(Key::D, Modifiers::CTRL, false, false).unwrap(), [4]);
+        assert_eq!(encode_key(Key::B, Modifiers::ALT, false, false).unwrap(), b"\x1bb");
+        assert_eq!(encode_key(Key::Tab, Modifiers::SHIFT, false, false).unwrap(), b"\x1b[Z");
+        assert_eq!(encode_key(Key::Backspace, none, false, false).unwrap(), [0x7f]);
+        assert!(encode_key(Key::A, none, false, false).is_none());
+    }
+
+    #[test]
+    fn word_deletion_bytes_follow_the_shell() {
+        let native_byte = if cfg!(windows) { 0x08 } else { 0x17 };
+        for (program, expected) in [
+            ("cmd", native_byte), ("PowerShell.EXE", native_byte), ("C:/Program Files/PowerShell/7/pwsh.exe", native_byte),
+            ("wsl.exe", 0x17), ("bash", 0x17), ("zsh", 0x17), ("fish", 0x17), ("ssh.exe", 0x17),
+        ] {
+            let native = windows_word_erase(program);
+            assert_eq!(encode_key(Key::Backspace, Modifiers::CTRL, false, native).unwrap(), [expected], "{program}");
+            assert_eq!(encode_key(Key::Delete, Modifiers::CTRL, false, native).unwrap(), b"\x1bd", "{program}");
+        }
     }
 
     #[test]
@@ -1814,6 +1849,12 @@ mod tests {
         let out = frame(&mut terminal, vec![Event::Copy]);
         assert!(out.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == "aste-word")));
         assert_eq!(terminal.selection(), None);
+        for event in [key(Key::ArrowRight, Modifiers::NONE), key(Key::ArrowRight, Modifiers::CTRL), Event::Text("x".into())] {
+            frame(&mut terminal, vec![key(Key::ArrowLeft, word_left)]);
+            assert!(terminal.selection().is_some());
+            frame(&mut terminal, vec![event]);
+            assert!(terminal.term.lock().selection.is_none());
+        }
     }
 
     fn integrated(program: &str, base: &[&str], lines: &[&str]) -> (Terminal, Vec<Record>, PathBuf) {
