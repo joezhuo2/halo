@@ -147,11 +147,12 @@ fn tone(name: &str) -> u8 {
 }
 
 pub(super) fn tone_color(theme: &Theme, tone: u8) -> Color32 {
-    match tone {
+    let own = theme.semantic[(tone as usize).clamp(1, 3) - 1];
+    own.unwrap_or(match tone {
         1 => theme.syntax.type_name,
         2 => theme.syntax.function,
         _ => theme.syntax.constant,
-    }
+    })
 }
 
 pub(super) fn severity_color(theme: &Theme, severity: u8) -> Color32 {

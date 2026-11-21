@@ -44,6 +44,7 @@ pub struct Halo {
     pub search: Search,
     pub find: FindPanel,
     pub wsl: Wsl,
+    pub jobs: crate::theme_import::Jobs,
     notices: Vec<String>,
     pub page: crate::settings_page::SettingsPage,
     font: String,
@@ -68,6 +69,7 @@ impl Halo {
         crate::editor::configure(&settings);
         let theme = Theme::of(&settings);
         theme.apply(ctx);
+        crate::icon_theme::select(&settings.icon_theme, &crate::settings::dir());
 
         let session = Session::load();
         let font = settings.font_family.clone();
@@ -87,6 +89,7 @@ impl Halo {
             search: Search::default(),
             find: FindPanel::default(),
             wsl: Wsl::default(),
+            jobs: Default::default(),
             notices: vec![],
             page: Default::default(),
             font,
@@ -162,6 +165,7 @@ impl Halo {
     pub(crate) fn apply_settings(&mut self, ctx: &egui::Context) {
         self.theme = Theme::of(&self.settings);
         self.theme.apply(ctx);
+        crate::icon_theme::select(&self.settings.icon_theme, &crate::settings::dir());
         if self.font != self.settings.font_family {
             self.font = self.settings.font_family.clone();
             ctx.set_fonts(crate::theme::fonts(&self.font));
@@ -275,6 +279,14 @@ impl Halo {
                 self.settings.save();
                 self.apply_settings(ctx);
             }
+            SetTheme(name) => {
+                self.theme_fade = Some((ctx.input(|i| i.time), self.theme.bg));
+                self.settings.theme = name;
+                self.settings.save();
+                self.apply_settings(ctx);
+            }
+            ImportTheme | BrowseThemes | SelectTheme | ImportThemeFile(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
+            | ImportIconThemeFile(_) | SetIconTheme(_) => self.theme_command(cmd, ctx),
             ZoomIn => ctx.set_zoom_factor((ctx.zoom_factor() + 0.1).min(3.0)),
             ZoomOut => ctx.set_zoom_factor((ctx.zoom_factor() - 0.1).max(0.5)),
             ZoomReset => ctx.set_zoom_factor(1.0),
@@ -639,6 +651,7 @@ impl eframe::App for Halo {
             self.editors.reload_clean();
         }
         self.tasks.poll(&mut self.bottom, &ctx);
+        self.poll_imports();
         if self.accounts.poll() {
             self.git.refresh_prs();
         }

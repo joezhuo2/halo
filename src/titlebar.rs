@@ -109,6 +109,7 @@ impl Halo {
             Some(Save), Some(SaveAs), Some(SaveAll), None,
             Some(CloseEditor), Some(CloseFolder), None,
             Some(OpenSettings), Some(OpenSettingsJson), Some(OpenKeybindings), None,
+            Some(SelectTheme), Some(SelectIconTheme), None,
             Some(Exit),
         ]);
         self.menu(ui, "Edit", &[
