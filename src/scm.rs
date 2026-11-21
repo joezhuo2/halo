@@ -252,7 +252,7 @@ impl Scm {
     fn dialogs(&mut self, ui: &mut Ui, git: &mut Git, top: &Path, cmds: &mut Vec<Command>) {
         if let Some(target) = self.discard.clone() {
             let mut choice = None;
-            let modal = ui::modal(ui.ctx(), "scm_discard").show(ui.ctx(), |ui| {
+            let modal = ui::modal(ui.ctx(), "scm_discard", ui::Enter::Primary, |ui, keys| {
                 ui::outline(ui);
                 ui.set_width(360.0);
                 ui.heading("Discard changes");
@@ -263,7 +263,7 @@ impl Scm {
                 ui.label("Tracked files are restored and this cannot be undone. Untracked files move to the recycle bin.");
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Discard").clicked() {
+                    if keys.primary(ui, "Discard", true) {
                         choice = Some(true);
                     }
                     if ui.button("Cancel").clicked() {
@@ -313,12 +313,14 @@ impl Scm {
 
 fn prompt(ui: &Ui, heading: &str, note: &str, fields: &mut [(&str, &mut String, usize)], ok: &str) -> Option<bool> {
     let mut choice = None;
-    let modal = ui::modal(ui.ctx(), ("scm_prompt", heading)).show(ui.ctx(), |ui| {
+    let field_id = |i: usize| Id::new(("scm_field", heading, i));
+    let multiline = fields.iter().enumerate().any(|(i, (_, _, rows))| *rows > 1 && ui.memory(|m| m.has_focus(field_id(i))));
+    let mode = if multiline { ui::Enter::Multiline } else { ui::Enter::Primary };
+    let modal = ui::modal(ui.ctx(), ("scm_prompt", heading), mode, |ui, keys| {
         ui::outline(ui);
         ui.set_width(360.0);
         ui.heading(heading);
         ui.label(note);
-        let mut enter = false;
         for (i, (hint, text, rows)) in fields.iter_mut().enumerate() {
             ui.add_space(6.0);
             let edit = if *rows == 1 {
@@ -326,16 +328,15 @@ fn prompt(ui: &Ui, heading: &str, note: &str, fields: &mut [(&str, &mut String, 
             } else {
                 egui::TextEdit::multiline(&mut **text).desired_rows(*rows)
             };
-            let resp = ui.add(edit.hint_text(*hint).margin(ui::FIELD).desired_width(f32::INFINITY));
-            enter |= *rows == 1 && resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-            if i == 0 && !enter && ui.memory(|m| m.focused().is_none()) {
+            let resp = ui.add(edit.id(field_id(i)).hint_text(*hint).margin(ui::FIELD).desired_width(f32::INFINITY));
+            if i == 0 && ui.memory(|m| m.focused().is_none()) {
                 resp.request_focus();
             }
         }
         let valid = !fields[0].1.trim().is_empty();
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if (ui.add_enabled(valid, egui::Button::new(ok)).clicked() || enter) && valid {
+            if keys.primary(ui, ok, valid) {
                 choice = Some(true);
             }
             if ui.button("Cancel").clicked() {
@@ -763,6 +764,30 @@ mod tests {
     }
 
     #[test]
+    fn prompt_validates_enter_and_keeps_multiline_newlines() {
+        let ctx = egui::Context::default();
+        let (mut title, mut body) = (String::new(), String::new());
+        let mut frame = |events| {
+            let input = RawInput { events, focused: true, ..Default::default() };
+            let mut choice = None;
+            let mut out = ctx.run_ui(input, |ui| {
+                choice = prompt(ui, "Review", "", &mut [("Title", &mut title, 1), ("Body", &mut body, 4)], "Submit");
+            });
+            out.textures_delta.clear();
+            choice
+        };
+        let enter = |modifiers| [true, false].map(|pressed| Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers }).to_vec();
+        frame(vec![]);
+        assert_eq!(frame(enter(Modifiers::NONE)), None);
+        frame(vec![Event::Text("review".into())]);
+        ctx.memory_mut(|m| m.request_focus(Id::new(("scm_field", "Review", 1usize))));
+        assert_eq!(frame(enter(Modifiers::NONE)), None);
+        assert!(!ctx.input(|i| i.key_pressed(Key::Enter)));
+        assert_eq!(frame(enter(Modifiers::CTRL)), Some(true));
+        assert_eq!(body, "\n");
+    }
+
+    #[test]
     fn section_sizes_share_space_and_clamp_dragging() {
         let mut scm = Scm::new();
         scm.resize(360.0, 0, 1, 200.0);
@@ -801,7 +826,11 @@ mod tests {
 
         click(&ctx, &mut scm, &mut git, 242.0, row);
         assert_eq!(scm.discard, Some(Some("a.txt".into())));
-        scm.discard = None;
+        frame(&ctx, &mut scm, &mut git, vec![]);
+        let key = |key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        frame(&ctx, &mut scm, &mut git, vec![key(Key::Escape)]);
+        assert!(scm.discard.is_none() && !ctx.input(|i| i.key_pressed(Key::Escape)));
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "two");
         frame(&ctx, &mut scm, &mut git, vec![]);
 
         click(&ctx, &mut scm, &mut git, 262.0, row);
@@ -812,7 +841,8 @@ mod tests {
         frame(&ctx, &mut scm, &mut git, vec![Event::Text("second".into())]);
         let modifiers = Modifiers { ctrl: true, command: true, ..Default::default() };
         let enter = Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers };
-        frame(&ctx, &mut scm, &mut git, vec![enter]);
+        let release = Event::Key { key: Key::Enter, physical_key: None, pressed: false, repeat: false, modifiers };
+        frame(&ctx, &mut scm, &mut git, vec![enter, release]);
         git.wait(|g| !g.busy() && g.changes(true).is_empty());
         frame(&ctx, &mut scm, &mut git, vec![]);
         assert_eq!(git.error(), None);
@@ -822,8 +852,10 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "three").unwrap();
         git.refresh(&ctx);
         git.wait(|g| g.changes(false).len() == 1);
-        let mut cmds = vec![];
-        discard(&mut git, &dir, Some("a.txt"), &mut cmds);
+        scm.discard = Some(Some("a.txt".into()));
+        frame(&ctx, &mut scm, &mut git, vec![]);
+        frame(&ctx, &mut scm, &mut git, vec![key(Key::Enter)]);
+        assert!(scm.discard.is_none() && !ctx.input(|i| i.key_pressed(Key::Enter)));
         git.wait(|g| !g.busy() && g.changes(false).is_empty());
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "two");
 

@@ -183,14 +183,14 @@ impl Timeline {
             return;
         }
         let mut choice = None;
-        let modal = ui::modal(ui.ctx(), "timeline_delete").show(ui.ctx(), |ui| {
+        let modal = ui::modal(ui.ctx(), "timeline_delete", ui::Enter::Primary, |ui, keys| {
             ui::outline(ui);
             ui.set_width(340.0);
             ui.heading("Delete");
             ui.label("Delete this saved version? This cannot be undone.");
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.button(RichText::new("Delete").color(theme.deleted)).clicked() {
+                if keys.primary(ui, RichText::new("Delete").color(theme.deleted), true) {
                     choice = Some(true);
                 }
                 if ui.button("Cancel").clicked() {

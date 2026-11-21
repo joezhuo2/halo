@@ -2,14 +2,14 @@ use super::*;
 
 fn confirm(ctx: &egui::Context, id: &str, title: &str, text: &str, ok: RichText) -> Option<bool> {
     let mut choice = None;
-    let modal = ui::modal(ctx, id).show(ctx, |ui| {
+    let modal = ui::modal(ctx, id, ui::Enter::Primary, |ui, keys| {
         ui::outline(ui);
         ui.set_width(340.0);
         ui.heading(title);
         ui.label(text);
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if ui.button(ok).clicked() {
+            if keys.primary(ui, ok, true) {
                 choice = Some(true);
             }
             if ui.button("Cancel").clicked() {

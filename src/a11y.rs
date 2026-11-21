@@ -126,7 +126,7 @@ pub fn help_ui(ctx: &Context, theme: &crate::theme::Theme) {
         Some(Region::Status) => ("Status Bar", vec![ShowNotifications, ShowProblems]),
     };
     let common = [FocusNextRegion, FocusPrevRegion, ShowCommands, ToggleScreenReaderMode, ShowAccessibilityHelp];
-    let modal = crate::ui::modal(ctx, "accessibility_help").show(ctx, |ui| {
+    let modal = crate::ui::modal(ctx, "accessibility_help", crate::ui::Enter::Primary, |ui, keys| {
         crate::ui::access(ui, ui.unique_id(), crate::ui::Role::Dialog, "Accessibility Help", |_| {});
         ui.set_width(460.0);
         ui.label(eframe::egui::RichText::new(format!("Accessibility Help: {title}")).size(15.0).color(theme.text));
@@ -144,7 +144,7 @@ pub fn help_ui(ctx: &Context, theme: &crate::theme::Theme) {
             }
         });
         ui.add_space(8.0);
-        ui.button("Close").clicked()
+        keys.primary(ui, "Close", true)
     });
     if modal.inner || modal.should_close() {
         HELP.set(false);

@@ -323,7 +323,7 @@ impl FindPanel {
             self.with
         );
         let mut choice = None;
-        let modal = ui::modal(&ctx, "find_replace").show(&ctx, |ui| {
+        let modal = ui::modal(&ctx, "find_replace", ui::Enter::Primary, |ui, keys| {
             ui::outline(ui);
             ui.set_width(380.0);
             ui.heading("Replace in files");
@@ -331,7 +331,7 @@ impl FindPanel {
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 for (label, value) in [("Replace", true), ("Cancel", false)] {
-                    if ui.button(label).clicked() {
+                    if keys.choice(ui, label, value) {
                         choice = Some(value);
                     }
                 }

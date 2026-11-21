@@ -565,7 +565,7 @@ impl Editors {
             return;
         };
         let mut choice = None;
-        let modal = ui::modal(ctx, "merge_complete").show(ctx, |ui| {
+        let modal = ui::modal(ctx, "merge_complete", ui::Enter::Primary, |ui, keys| {
             ui::outline(ui);
             ui.set_width(360.0);
             ui.heading("Unresolved conflicts");
@@ -574,7 +574,7 @@ impl Editors {
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 for (i, label) in ["Complete Merge", "Cancel"].into_iter().enumerate() {
-                    if ui.button(label).clicked() {
+                    if keys.choice(ui, label, i == 0) {
                         choice = Some(i);
                     }
                 }

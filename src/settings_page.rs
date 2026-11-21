@@ -349,7 +349,7 @@ impl Halo {
         let mut values = to_map(&before);
         let searching = !self.page.query.trim().is_empty();
         let mut resets = vec![];
-        let modal = ui::modal(ctx, "settings_page").show(ctx, |ui| {
+        let modal = ui::modal(ctx, "settings_page", ui::Enter::Widget, |ui, _| {
             ui::outline(ui);
             ui.set_width(size.x);
             ui.set_height(size.y);

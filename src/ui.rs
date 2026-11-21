@@ -65,8 +65,86 @@ fn animate(ui: &Ui, id: Id, on: bool, time: f32) -> f32 {
     ui.ctx().animate_bool_with_time(id, on, time)
 }
 
-pub fn modal(ctx: &egui::Context, id: impl egui::AsId) -> egui::Modal {
-    egui::Modal::new(Id::new(id)).frame(egui::Frame::popup(&ctx.global_style()).inner_margin(18.0))
+pub enum Enter {
+    Primary,
+    Multiline,
+    Widget,
+}
+
+fn modal_key(event: &egui::Event) -> bool {
+    matches!(event, egui::Event::Key { key: egui::Key::Enter | egui::Key::Escape, .. })
+}
+
+#[derive(Default)]
+struct ModalInput;
+
+impl egui::Plugin for ModalInput {
+    fn debug_name(&self) -> &'static str { "Halo modal keyboard" }
+
+    fn on_begin_pass(&mut self, ui: &mut Ui) {
+        let Some(layer) = ui.memory(|m| m.top_modal_layer()) else { return };
+        let keys = ui.input_mut(|i| {
+            let keys: Vec<_> = i.events.iter().enumerate().filter(|(_, e)| modal_key(e)).map(|(at, e)| (at, e.clone())).collect();
+            i.events.retain(|e| !modal_key(e));
+            keys
+        });
+        let id = layer.id.with(ui.ctx().viewport_id());
+        ui.data_mut(|d| d.insert_temp(id, keys));
+    }
+}
+
+pub fn modal<R>(ctx: &egui::Context, id: impl egui::AsId, mode: Enter, show: impl FnOnce(&mut Ui, DialogKeys) -> R) -> egui::ModalResponse<R> {
+    ctx.plugin_or_default::<ModalInput>();
+    let modal = egui::Modal::new(Id::new(id)).frame(egui::Frame::popup(&ctx.global_style()).inner_margin(18.0));
+    let layer = modal.area.layer();
+    let top = ctx.memory(|m| m.top_modal_layer() == Some(layer));
+    let popup = egui::Popup::is_any_open(ctx);
+    let mut enter = false;
+    let mut escape = false;
+    if top {
+        let id = layer.id.with(ctx.viewport_id());
+        let keys = ctx.data_mut(|d| d.remove_temp::<Vec<(usize, egui::Event)>>(id)).unwrap_or_default();
+        ctx.input_mut(|i| {
+            for (at, event) in keys {
+                let egui::Event::Key { key, pressed, repeat, modifiers, .. } = &event else { continue };
+                if *key == egui::Key::Escape && modifiers.is_none() {
+                    escape |= *pressed && !*repeat;
+                } else if !popup && *key == egui::Key::Enter && !matches!(mode, Enter::Widget)
+                    && (!matches!(mode, Enter::Multiline) || modifiers.ctrl || modifiers.command)
+                {
+                    enter |= *pressed && !*repeat && !modifiers.alt && !modifiers.shift;
+                } else {
+                    i.events.insert(at.min(i.events.len()), event);
+                }
+            }
+        });
+    }
+    let response = modal.show(ctx, |ui| {
+        if escape {
+            ui.close();
+        }
+        show(ui, DialogKeys { enter: enter && !escape })
+    });
+    if top {
+        ctx.input_mut(|i| i.events.retain(|e| !modal_key(e)));
+    }
+    response
+}
+
+pub struct DialogKeys {
+    enter: bool,
+}
+
+impl DialogKeys {
+    pub fn primary(&self, ui: &mut Ui, label: impl Into<egui::WidgetText>, enabled: bool) -> bool {
+        let button = egui::Button::new(label.into()).stroke(ui.visuals().selection.stroke);
+        let response = ui.add_enabled(enabled, button);
+        response.clicked() || (response.enabled() && self.enter)
+    }
+
+    pub fn choice(&self, ui: &mut Ui, label: &str, primary: bool) -> bool {
+        if primary { self.primary(ui, label, true) } else { ui.button(label).clicked() }
+    }
 }
 
 pub fn outline(ui: &mut Ui) {

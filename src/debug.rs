@@ -1468,7 +1468,7 @@ impl Debug {
         }
         if let Some(dialog) = &mut self.dialog {
             let mut done = None;
-            let modal = ui::modal(ctx, "breakpoint_dialog").show(ctx, |ui| {
+            let modal = ui::modal(ctx, "breakpoint_dialog", ui::Enter::Primary, |ui, keys| {
                 ui::outline(ui);
                 ui.set_width(380.0);
                 ui.heading(format!("Breakpoint on line {}", dialog.line + 1));
@@ -1491,12 +1491,9 @@ impl Debug {
                 if std::mem::take(&mut dialog.focus) {
                     resp.request_focus();
                 }
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                    done = Some(true);
-                }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("OK").clicked() {
+                    if keys.primary(ui, "OK", true) {
                         done = Some(true);
                     }
                     if ui.button("Cancel").clicked() {
@@ -1518,7 +1515,7 @@ impl Debug {
         }
         if self.confirm_clear {
             let mut choice = None;
-            let modal = ui::modal(ctx, "confirm_clear_breakpoints").show(ctx, |ui| {
+            let modal = ui::modal(ctx, "confirm_clear_breakpoints", ui::Enter::Primary, |ui, keys| {
                 ui::outline(ui);
                 ui.set_width(340.0);
                 ui.heading("Remove all breakpoints?");
@@ -1526,7 +1523,7 @@ impl Debug {
                 ui.label(format!("This removes {count} breakpoints in {} files.", env.marks.files.len()));
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Remove All").clicked() {
+                    if keys.primary(ui, "Remove All", true) {
                         choice = Some(true);
                     }
                     if ui.button("Cancel").clicked() {

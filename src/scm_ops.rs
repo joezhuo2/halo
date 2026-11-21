@@ -283,7 +283,7 @@ impl Scm {
                 }
             }
             Dialog::List(op) => {
-                let modal = ui::modal(ui.ctx(), "scm_list").show(ui.ctx(), |ui| {
+                let modal = ui::modal(ui.ctx(), "scm_list", ui::Enter::Widget, |ui, _| {
                     ui::outline(ui);
                     ui.set_width(440.0);
                     ui.heading(op.label().trim_start_matches("Git: ").trim_end_matches('.'));
@@ -331,13 +331,15 @@ impl Scm {
                 done |= modal.should_close();
             }
             Dialog::Pick(op, choices, revision) => {
-                let modal = ui::modal(ui.ctx(), "scm_picker").show(ui.ctx(), |ui| {
+                let modal = ui::modal(ui.ctx(), "scm_picker", ui::Enter::Primary, |ui, keys| {
                     ui::outline(ui);
                     ui.set_width(400.0);
                     ui.heading(op.label());
-                    if matches!(op, Op::CherryPick | Op::BranchAt) {
+                    let reference = matches!(op, Op::CherryPick | Op::BranchAt);
+                    if reference {
                         ui.add(egui::TextEdit::singleline(revision).hint_text("Commit hash or reference"));
-                        if ui.add_enabled(!revision.trim().is_empty(), egui::Button::new("Use Reference")).clicked() {
+                        let valid = !revision.trim().is_empty();
+                        if keys.primary(ui, "Use Reference", valid) {
                             next = Some((*op, Some(revision.trim().to_owned())));
                         }
                     }
@@ -345,8 +347,8 @@ impl Scm {
                         ui.weak("No entries available.");
                     }
                     ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                        for (value, label) in choices {
-                            if ui.button(label.as_str()).clicked() {
+                        for (i, (value, label)) in choices.iter().enumerate() {
+                            if keys.choice(ui, label.as_str(), i == 0 && !reference) {
                                 next = Some((*op, Some(value.clone())));
                             }
                         }
@@ -357,12 +359,12 @@ impl Scm {
             }
             Dialog::Remote(op, target) => {
                 let mut pick = None;
-                let modal = ui::modal(ui.ctx(), "scm_remote").show(ui.ctx(), |ui| {
+                let modal = ui::modal(ui.ctx(), "scm_remote", ui::Enter::Primary, |ui, keys| {
                     ui::outline(ui);
                     ui.heading("Select a remote");
                     if let Some(Ok(d)) = git.details() {
-                        for r in &d.remotes {
-                            if ui.button(&r.name).clicked() { pick = Some(r.name.clone()); }
+                        for (i, r) in d.remotes.iter().enumerate() {
+                            if keys.choice(ui, &r.name, i == 0) { pick = Some(r.name.clone()); }
                         }
                     }
                     done = ui.button("Cancel").clicked();
@@ -426,13 +428,13 @@ impl Scm {
 
 fn confirm(ui: &Ui, heading: &str, message: &str, accept: &str) -> Option<bool> {
     let mut choice = None;
-    let modal = ui::modal(ui.ctx(), "scm_confirm_op").show(ui.ctx(), |ui| {
+    let modal = ui::modal(ui.ctx(), "scm_confirm_op", ui::Enter::Primary, |ui, keys| {
         ui::outline(ui);
         ui.set_width(360.0);
         ui.heading(heading);
         ui.label(message);
         ui.horizontal(|ui| {
-            if ui.button(accept).clicked() { choice = Some(true); }
+            if keys.primary(ui, accept, true) { choice = Some(true); }
             if ui.button("Cancel").clicked() { choice = Some(false); }
         });
     });

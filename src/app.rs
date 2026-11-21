@@ -770,7 +770,7 @@ impl Halo {
             self.settings_dialog(ctx);
         }
         if self.about {
-            let modal = ui::modal(ctx, "about").show(ctx, |ui| {
+            let modal = ui::modal(ctx, "about", ui::Enter::Primary, |ui, keys| {
                 ui::outline(ui);
                 ui.set_width(280.0);
                 ui.vertical_centered(|ui| {
@@ -779,7 +779,7 @@ impl Halo {
                     ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
                     ui.colored_label(self.theme.text_dim, "An ultra-lightweight native code editor.");
                     ui.add_space(8.0);
-                    ui.button("Close").clicked()
+                    keys.primary(ui, "Close", true)
                 })
                 .inner
             });
@@ -789,14 +789,14 @@ impl Halo {
         }
         if self.confirm_exit {
             let mut choice = None;
-            let modal = ui::modal(ctx, "confirm_exit").show(ctx, |ui| {
+            let modal = ui::modal(ctx, "confirm_exit", ui::Enter::Primary, |ui, keys| {
                 ui::outline(ui);
                 ui.set_width(340.0);
                 ui.heading("Unsaved changes");
                 ui.label("Some files have unsaved changes. Save them before closing?");
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save All").clicked() {
+                    if keys.primary(ui, "Save All", true) {
                         choice = Some(true);
                     }
                     if ui.button("Don't Save").clicked() {

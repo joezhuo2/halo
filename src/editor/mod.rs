@@ -3046,7 +3046,7 @@ impl Editors {
         };
         let title = self.docs.get(&doc_id).map(|d| d.buf.title.clone()).unwrap_or_default();
         let mut choice = None;
-        let modal = ui::modal(ctx, "editor_close").show(ctx, |ui| {
+        let modal = ui::modal(ctx, "editor_close", ui::Enter::Primary, |ui, keys| {
             ui::outline(ui);
             ui.set_width(340.0);
             ui.heading("Unsaved changes");
@@ -3054,7 +3054,7 @@ impl Editors {
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 for (i, label) in ["Save", "Don't Save", "Cancel"].into_iter().enumerate() {
-                    if ui.button(label).clicked() {
+                    if keys.choice(ui, label, i == 0) {
                         choice = Some(i);
                     }
                 }
