@@ -57,10 +57,10 @@ pub fn conceal(on: bool) {
         let mut pending = PENDING.lock().unwrap();
         if message.id == NCCREATE && unsafe { *(message.l as *const isize).add(3) } == 0 {
             pending.push(message.hwnd);
-        } else if let Some(i) = pending.iter().position(|h| *h == message.hwnd) {
-            if cloak(message.hwnd, true) {
-                HIDDEN.lock().unwrap().push(pending.swap_remove(i));
-            }
+        } else if let Some(i) = pending.iter().position(|h| *h == message.hwnd)
+            && cloak(message.hwnd, true)
+        {
+            HIDDEN.lock().unwrap().push(pending.swap_remove(i));
         }
         unsafe { CallNextHookEx(0, code, w, l) }
     }

@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn commits_recent_folders_files_and_the_new_window_task() {
         let dir = std::env::temp_dir();
-        unsafe { super::build(&[dir.clone()], &[dir.join("a.txt")]) }.unwrap();
+        unsafe { super::build(std::slice::from_ref(&dir),&[dir.join("a.txt")]) }.unwrap();
         unsafe { super::build(&[], &[]) }.unwrap();
     }
 }
