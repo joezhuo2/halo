@@ -63,6 +63,7 @@ struct Doc {
     folds: Vec<(usize, usize)>,
     depths: (u64, Vec<u32>),
     backed: u64,
+    stale: bool,
 }
 
 #[derive(Default)]
@@ -147,6 +148,7 @@ pub struct Editors {
     closed: Vec<PathBuf>,
     switcher: Option<(usize, usize)>,
     tidy: (bool, bool),
+    disk_jobs: Vec<(u64, bool)>,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -436,6 +438,7 @@ impl Editors {
             closed: vec![],
             switcher: None,
             tidy: (false, false),
+            disk_jobs: vec![],
         }
     }
 
@@ -462,7 +465,7 @@ impl Editors {
             self.banner = Some(note.clone());
         }
         let hl = Highlighter::new(buf.path.as_deref(), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0 });
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0, stale: false });
         id
     }
 
@@ -657,6 +660,12 @@ impl Editors {
             }
             doc.lang = Lang::default();
         }
+        let moved = |path: &PathBuf| buffer::disk_time(path).is_some_and(|now| doc.buf.disk.is_some_and(|then| then != now));
+        if !ask && doc.buf.path.as_ref().is_some_and(moved) {
+            doc.stale = true;
+            return false;
+        }
+        doc.stale = false;
         let (trim, newline) = self.tidy;
         let mut none = vec![];
         let sels = self.groups.iter_mut().flat_map(|group| &mut group.tabs).find(|tab| tab.doc == id).map_or(&mut none, |tab| &mut tab.sels);
@@ -1026,6 +1035,25 @@ impl Editors {
         }
     }
 
+    // shortcut: the comparison is git's unified diff of the file and the buffer, so it needs git on PATH
+    fn disk_diff(&mut self, id: u64) {
+        let Some(doc) = self.docs.get(&id) else { return };
+        let Some(path) = doc.buf.path.clone() else { return };
+        let dir = std::env::temp_dir();
+        let mine = dir.join(format!("halo-{}-{}", std::process::id(), doc.buf.title));
+        let text = doc.buf.rope.to_string();
+        let title = format!("{} (disk and editor)", doc.buf.title);
+        if std::fs::write(&mine, if doc.buf.crlf { text.replace('\n', "\r\n") } else { text }).is_err() {
+            return;
+        }
+        let (theirs, ours) = (path.to_string_lossy(), mine.to_string_lossy());
+        let out = match crate::git::exec(&dir, &["diff", "--no-index", "--no-color", "--", theirs.as_ref(), ours.as_ref()]) {
+            Ok(out) | Err(out) => out,
+        };
+        let _ = std::fs::remove_file(&mine);
+        self.open_text(&title, &out, Some(Path::new("changes.diff")));
+    }
+
     pub fn any_dirty(&self) -> bool {
         self.docs.values().any(|d| d.buf.is_dirty())
     }
@@ -1039,13 +1067,19 @@ impl Editors {
     pub fn reload_clean(&mut self) {
         for doc in self.docs.values_mut().filter(|d| !d.buf.is_dirty()) {
             let Some(path) = doc.buf.path.clone() else { continue };
-            if let Ok(buf) = Document::load(&path)
-                && buf.rope != doc.buf.rope
-            {
-                doc.hl = Highlighter::new(Some(&path), &buf.rope);
-                doc.max_cols = (0, 0);
-                doc.buf = buf;
+            match Document::load(&path) {
+                Ok(buf) if buf.rope != doc.buf.rope => {
+                    doc.hl = Highlighter::new(Some(&path), &buf.rope);
+                    doc.max_cols = (0, 0);
+                    doc.buf = buf;
+                }
+                Ok(buf) => doc.buf.disk = buf.disk,
+                Err(_) => {}
             }
+        }
+        for doc in self.docs.values_mut().filter(|d| d.buf.is_dirty() && d.buf.disk.is_some()) {
+            let now = doc.buf.path.as_deref().and_then(buffer::disk_time);
+            doc.stale |= now.is_some() && now != doc.buf.disk;
         }
     }
 
@@ -1119,6 +1153,12 @@ impl Editors {
             }
         }
         self.after_views();
+        for (id, compare) in std::mem::take(&mut self.disk_jobs) {
+            match compare {
+                true => self.disk_diff(id),
+                false => drop(self.save_doc(id, false)),
+            }
+        }
         if let Some((g, at)) = self.switcher {
             let order = self.recent_order(g);
             if order.is_empty() || !ui.input(|i| i.modifiers.command || i.modifiers.ctrl) {
@@ -1451,7 +1491,7 @@ impl Editors {
         let font = FontId::monospace(settings.font_size);
         let (char_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
         let line_h = (row_h * 1.25).round();
-        let Doc { buf, hl, max_cols, conflicts, lang, folds, depths, .. } = doc;
+        let Doc { buf, hl, max_cols, conflicts, lang, folds, depths, stale, .. } = doc;
         settle(buf, hl, lang, &mut self.lsp, folds);
         buf.clamp(&mut tab.sels);
 
@@ -2208,6 +2248,42 @@ impl Editors {
             }
         }
 
+        if *stale {
+            let lower = usize::from(is_active && self.banner.is_some()) + usize::from(!conflicts.1.is_empty());
+            let bottom = body.bottom() - 30.0 * lower as f32;
+            let rect = Rect::from_min_max(pos2(body.left(), bottom - 30.0), pos2(text_rect.right(), bottom));
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, ui::mix(theme.raised, theme.warning, 0.25));
+            let mut choice = None;
+            ui.scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(10.0, 3.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+                ui.label(RichText::new("This file changed on disk.").color(theme.text));
+                for (index, label) in ["Compare", "Use Disk Version", "Overwrite"].into_iter().enumerate() {
+                    if ui.button(label).clicked() {
+                        choice = Some(index);
+                    }
+                }
+            });
+            match (choice, buf.path.clone()) {
+                (Some(0), _) => self.disk_jobs.push((doc_id, true)),
+                (Some(1), Some(path)) => match Document::load(&path) {
+                    Ok(fresh) => {
+                        *hl = Highlighter::new(Some(&path), &fresh.rope);
+                        *max_cols = (0, 0);
+                        folds.clear();
+                        *buf = fresh;
+                        tab.sels = vec![Sel::caret(0)];
+                        *stale = false;
+                    }
+                    Err(error) => self.banner = Some(error),
+                },
+                (Some(2), Some(path)) => {
+                    buf.disk = buffer::disk_time(&path);
+                    *stale = false;
+                    self.disk_jobs.push((doc_id, false));
+                }
+                _ => {}
+            }
+        }
+
         if is_active && let Some(message) = self.banner.clone() {
             let rect = Rect::from_min_max(pos2(body.left(), body.bottom() - 30.0), pos2(text_rect.right(), body.bottom()));
             ui.painter().rect_filled(rect, CornerRadius::ZERO, ui::mix(theme.raised, theme.warning, 0.2));
@@ -2434,6 +2510,42 @@ end", "word ".repeat(100)))], &settings);
         assert!(tab.sels[0].head > 0 && tab.sels[0].head < 500);
         frame_with(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default()); rows[1] as usize], &settings);
         assert_eq!(editors.status().unwrap().line, 2);
+    }
+
+    #[test]
+    fn flags_a_dirty_file_that_changed_on_disk_and_overwrites_on_request() {
+        let ctx = egui::Context::default();
+        let settings = Settings { lsp: false, ..Settings::default() };
+        let path = std::env::temp_dir().join(format!("halo-stale-test-{}.txt", std::process::id()));
+        std::fs::write(&path, "one\n").unwrap();
+        let mut editors = Editors::new();
+        editors.open(&path);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![Event::Text("mine ".into())], &settings);
+        std::fs::write(&path, "theirs\n").unwrap();
+        let later = std::time::SystemTime::now() + Duration::from_secs(90);
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(later).unwrap();
+        editors.reload_clean();
+        let doc = |e: &Editors| e.docs.values().next().map(|d| (d.stale, d.buf.is_dirty(), d.buf.rope.to_string())).unwrap();
+        assert_eq!(doc(&editors), (true, true, "mine one\n".to_owned()));
+        editors.exec(&Command::Save, &settings, &ctx);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n");
+
+        let click = |editors: &mut Editors, x: f32| {
+            let pos = pos2(x, 585.0);
+            let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
+            frame_with(&ctx, editors, vec![Event::PointerMoved(pos)], &settings);
+            frame_with(&ctx, editors, vec![button(true)], &settings);
+            frame_with(&ctx, editors, vec![button(false)], &settings);
+        };
+        let saved = (700..60).step_by(10).chain((60..700).rev().step_by(10)).any(|x| {
+            click(&mut editors, x as f32);
+            !doc(&editors).0
+        });
+        assert!(saved, "a button in the changed-on-disk bar");
+        assert_eq!((std::fs::read_to_string(&path).unwrap().as_str(), doc(&editors).1), ("mine one\n", false));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

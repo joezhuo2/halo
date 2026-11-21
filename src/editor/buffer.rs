@@ -116,6 +116,7 @@ pub struct Document {
     pub crlf: bool,
     pub encoding: Encoding,
     pub indent: Option<(bool, usize)>,
+    pub disk: Option<std::time::SystemTime>,
     pub version: u64,
     saved: u64,
     undo: Vec<Transaction>,
@@ -286,6 +287,10 @@ pub fn hidden(folds: &[(usize, usize)], line: usize) -> Option<usize> {
     folds.iter().position(|f| f.0 < line && line <= f.1)
 }
 
+pub fn disk_time(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
+}
+
 fn title_of(path: &Path) -> String {
     path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
 }
@@ -300,6 +305,7 @@ impl Document {
             crlf: cfg!(windows),
             encoding: Encoding::Utf8,
             indent: None,
+            disk: None,
             version,
             saved: version,
             undo: vec![],
@@ -335,6 +341,7 @@ impl Document {
         doc.path = Some(path.to_path_buf());
         doc.crlf = crlf;
         doc.encoding = encoding;
+        doc.disk = disk_time(path);
         doc.indent = doc.detect_indent();
         if lossy {
             doc.note = Some(format!("This file is not valid {}; invalid bytes were replaced.", encoding.label()));
@@ -350,6 +357,7 @@ impl Document {
         }
         std::fs::write(&path, self.encoding.encode(&text)).map_err(|e| format!("Cannot save {}: {e}", title_of(&path)))?;
         self.saved = self.version;
+        self.disk = disk_time(&path);
         self.title = title_of(&path);
         Ok(())
     }
