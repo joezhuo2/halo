@@ -20,6 +20,7 @@ mod settings_page;
 mod statusbar;
 mod tasks;
 mod terminal;
+mod terminal_links;
 mod theme;
 mod timeline;
 mod titlebar;

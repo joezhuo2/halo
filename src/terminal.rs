@@ -1,6 +1,7 @@
 use crate::command::Command;
 use crate::lsp::{Diagnostic, Lsp};
 use crate::settings::{Settings, ShellProfile};
+use crate::terminal_links::{Link, Target};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use alacritty_terminal::event::{Event as TermEvent, EventListener, WindowSize};
@@ -162,6 +163,20 @@ pub fn encode_key(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
     Some(text.into_bytes())
 }
 
+type HoveredLink = (i32, Vec<(usize, usize)>, Link);
+
+fn grid_rows(term: &Term<Proxy>, from: i32, to: i32) -> Vec<(Vec<char>, bool)> {
+    let last = term.last_column();
+    let spacer = Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER;
+    (from..=to)
+        .map(|line| {
+            let row = &term.grid()[Line(line)];
+            let chars = (0..=last.0).map(|c| if row[Column(c)].flags.intersects(spacer) { '\0' } else { row[Column(c)].c }).collect();
+            (chars, row[last].flags.contains(Flags::WRAPLINE))
+        })
+        .collect()
+}
+
 pub struct Terminal {
     term: Arc<FairMutex<Term<Proxy>>>,
     sender: EventLoopSender,
@@ -175,6 +190,8 @@ pub struct Terminal {
     last_input: f64,
     task: Option<String>,
     pub pid: Option<u32>,
+    cwd: Option<PathBuf>,
+    links: (i32, String, Vec<(usize, usize)>, Vec<Link>),
 }
 
 impl Drop for Terminal {
@@ -239,6 +256,8 @@ impl Terminal {
             last_input: 0.0,
             task: task.map(str::to_owned),
             pid,
+            cwd: options.working_directory,
+            links: Default::default(),
         })
     }
 
@@ -315,7 +334,34 @@ impl Terminal {
         (Point::new(Line(row as i32 - offset as i32), Column(column)), side)
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, font_size: f32) {
+    fn cwd(&self) -> Option<PathBuf> {
+        self.cwd.clone()
+    }
+
+    fn hovered_link(&mut self, point: Point) -> Option<HoveredLink> {
+        let term = self.term.lock();
+        let wrapped = |line: i32| term.grid()[Line(line)][term.last_column()].flags.contains(Flags::WRAPLINE);
+        let (top, bottom, at) = (term.topmost_line().0, term.bottommost_line().0, point.line.0);
+        let (mut from, mut to) = (at, at);
+        while from > top && at - from < 40 && wrapped(from - 1) {
+            from -= 1;
+        }
+        while to < bottom && to - at < 40 && wrapped(to) {
+            to += 1;
+        }
+        let (text, cells) = crate::terminal_links::join(&grid_rows(&term, from, to));
+        drop(term);
+        if self.links.0 != from || self.links.1 != text {
+            let (cwd, home) = (self.cwd(), dirs::home_dir());
+            let links = crate::terminal_links::find(&text, cwd.as_deref(), home.as_deref(), Path::is_file);
+            self.links = (from, text, cells, links);
+        }
+        let index = self.links.2.iter().position(|&(r, c)| from + r as i32 == at && c == point.column.0)?;
+        let link = self.links.3.iter().find(|l| l.start <= index && index < l.end)?.clone();
+        Some((from, self.links.2[link.start..link.end].to_vec(), link))
+    }
+
+    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, font_size: f32, cmds: &mut Vec<Command>) {
         let ctx = ui.ctx().clone();
         let rect = ui.available_rect_before_wrap().shrink2(vec2(10.0, 4.0));
         let id = Id::new(("terminal", self.id));
@@ -369,6 +415,19 @@ impl Terminal {
         }
 
         let offset = self.term.lock().grid().display_offset();
+        let link = match (ui.input(|i| i.modifiers.command), resp.hover_pos()) {
+            (true, Some(pos)) => self.hovered_link(self.point_at(rect, pos, cell, offset).0),
+            _ => None,
+        };
+        if let Some((_, _, link)) = link.as_ref().filter(|_| resp.clicked()) {
+            match &link.target {
+                Target::Url(url) => ui::open_url(url),
+                Target::File(path, place) => {
+                    cmds.push(Command::OpenPath(path.clone()));
+                    cmds.extend(place.map(|(line, col)| Command::GoTo(line, col)));
+                }
+            }
+        }
         if let Some(pos) = resp.interact_pointer_pos() {
             let (point, side) = self.point_at(rect, pos, cell, offset);
             let mut term = self.term.lock();
@@ -385,12 +444,12 @@ impl Terminal {
                 term.selection = Some(Selection::new(SelectionType::Lines, point, side));
             } else if resp.double_clicked() {
                 term.selection = Some(Selection::new(SelectionType::Semantic, point, side));
-            } else if resp.clicked() {
+            } else if resp.clicked() && link.is_none() {
                 term.selection = None;
             }
         }
         if resp.hovered() {
-            ctx.set_cursor_icon(egui::CursorIcon::Text);
+            ctx.set_cursor_icon(if link.is_some() { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Text });
             self.wheel += ui.input(|i| i.smooth_scroll_delta.y);
             let lines = (self.wheel / cell.y) as i32;
             if lines != 0 {
@@ -487,6 +546,12 @@ impl Terminal {
         flush(&mut run, run_at);
         flush_bg(&mut bg_run);
         painter.set(under_text, egui::Shape::Vec(backgrounds));
+        if let Some((top, cells, _)) = &link {
+            for &(r, c) in cells {
+                let row = top + r as i32 + offset;
+                painter.hline(cell_pos(row, c).x..=cell_pos(row, c + 1).x, cell_pos(row + 1, c).y - 2.0, Stroke::new(1.0, theme.accent));
+            }
+        }
 
         if content.mode.contains(TermMode::SHOW_CURSOR) && content.cursor.shape != CursorShape::Hidden {
             let point = content.cursor.point;
@@ -940,7 +1005,7 @@ impl BottomPanel {
         ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
             ui.set_clip_rect(body.intersect(ui.clip_rect()));
             match self.tab {
-                PanelTab::Terminal => self.terminals(ui, body, theme, settings, cwd),
+                PanelTab::Terminal => self.terminals(ui, body, theme, settings, cwd, cmds),
                 PanelTab::Ports => self.ports_ui(ui, body, theme),
                 PanelTab::Problems => problems_ui(ui, theme, lsp, task_files, cwd, cmds),
                 PanelTab::Output => output_ui(ui, theme, lsp, settings.font_size),
@@ -949,7 +1014,7 @@ impl BottomPanel {
         });
     }
 
-    fn terminals(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, settings: &Settings, cwd: Option<&Path>) {
+    fn terminals(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, settings: &Settings, cwd: Option<&Path>, cmds: &mut Vec<Command>) {
         let ctx = ui.ctx().clone();
         if self.groups.is_empty() && !self.started {
             self.new_group(default_profile(settings, cwd).as_ref(), cwd, &ctx);
@@ -1033,7 +1098,7 @@ impl BottomPanel {
         for (index, pane) in group.panes.iter_mut().enumerate() {
             let rect = Rect::from_min_size(pos2(area.left() + index as f32 * width, area.top()), vec2(width, area.height()));
             ui.scope_builder(UiBuilder::new().max_rect(rect).id_salt(("terminal_pane", pane.id)), |ui| {
-                pane.ui(ui, theme, settings.font_size);
+                pane.ui(ui, theme, settings.font_size, cmds);
             });
             if index > 0 {
                 ui.painter().vline(rect.left(), rect.y_range(), Stroke::new(1.0, theme.border));
