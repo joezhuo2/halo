@@ -31,6 +31,7 @@ pub struct SettingsPage {
     new_association: (String, String),
     new_server: (String, String),
     new_adapter: (String, String),
+    new_exclude: String,
 }
 
 impl Halo {
@@ -97,6 +98,13 @@ impl Halo {
                             toggle(ui, &theme, "Files", "Trim Trailing Whitespace", about, &mut edited.trim_trailing_whitespace);
                             let about = "End the file with a line break when it is saved.";
                             toggle(ui, &theme, "Files", "Insert Final Newline", about, &mut edited.insert_final_newline);
+                            let about = "Show a chain of folders that each hold only one folder as a single row in the Explorer.";
+                            toggle(ui, &theme, "Explorer", "Compact Folders", about, &mut edited.compact_folders);
+                            let about = "Ask before moving files and folders by dragging them in the Explorer.";
+                            toggle(ui, &theme, "Explorer", "Confirm Drag And Drop", about, &mut edited.confirm_drag_and_drop);
+                            let about = "Glob patterns of files and folders the Explorer hides. Supports *, **, ?, [abc] and {a,b}.";
+                            item(ui, &theme, "Files", "Exclude", about);
+                            exclude_editor(ui, &theme, &mut edited.files_exclude, &mut self.page.new_exclude);
                         }
                         2 => appearance_tab(ui, &theme, &mut edited),
                         3 => terminal_tab(ui, &theme, &mut edited),
@@ -323,6 +331,28 @@ fn map_editor(ui: &mut Ui, theme: &Theme, id: &str, map: &mut BTreeMap<String, S
     });
     if let Some(key) = remove {
         map.remove(&key);
+    }
+}
+
+fn exclude_editor(ui: &mut Ui, theme: &Theme, patterns: &mut Vec<String>, new: &mut String) {
+    let mut remove = None;
+    grid(ui, "settings_exclude", 2, |ui| {
+        for (index, pattern) in patterns.iter_mut().enumerate() {
+            field(ui, pattern, 380.0, "pattern");
+            if remove_button(ui, theme) {
+                remove = Some(index);
+            }
+            ui.end_row();
+        }
+        field(ui, new, 380.0, "**/node_modules");
+        if ui.add_enabled(!new.trim().is_empty(), egui::Button::new("Add")).clicked() {
+            patterns.push(new.trim().to_owned());
+            new.clear();
+        }
+        ui.end_row();
+    });
+    if let Some(index) = remove {
+        patterns.remove(index);
     }
 }
 
