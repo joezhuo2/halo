@@ -252,6 +252,17 @@ impl Explorer {
                 None => {}
             }
         }
+        if let Some(paths) = self.confirm_permanent.front() {
+            let pronoun = if paths.len() == 1 { "it" } else { "them" };
+            let text = format!("{} cannot be moved to the trash. Permanently delete {pronoun}? This cannot be undone.", count_text(paths));
+            let ok = RichText::new("Delete Permanently").color(theme.deleted);
+            if let Some(delete) = confirm(&ctx, "explorer_permanent", "Delete permanently", &text, ok) {
+                let paths = self.confirm_permanent.pop_front().unwrap();
+                if delete {
+                    self.background(&ctx, move || ops::delete_permanently(paths));
+                }
+            }
+        }
         if let Some((paths, dir)) = self.confirm_drop.clone() {
             let text = format!("Move {} into \"{}\"?", count_text(&paths), name_of(&dir));
             match confirm(&ctx, "explorer_drop", "Move", &text, RichText::new("Move").color(theme.accent)) {

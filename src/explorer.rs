@@ -131,6 +131,7 @@ pub struct Explorer {
     scroll_to: Option<PathBuf>,
     edit: Option<Edit>,
     confirm_delete: Vec<PathBuf>,
+    confirm_permanent: std::collections::VecDeque<Vec<PathBuf>>,
     confirm_drop: Option<(Vec<PathBuf>, PathBuf)>,
     clash: Option<Vec<Job>>,
     clipboard: Option<(Vec<PathBuf>, bool)>,
@@ -263,6 +264,7 @@ impl Explorer {
             scroll_to: None,
             edit: None,
             confirm_delete: vec![],
+            confirm_permanent: Default::default(),
             confirm_drop: None,
             clash: None,
             clipboard: None,
@@ -773,7 +775,9 @@ impl Explorer {
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(work());
+            let mut done = work();
+            done.errors.drain(..).for_each(ui::notify_error);
+            let _ = tx.send(done);
             ctx.request_repaint();
         });
         self.work.push(rx);
@@ -790,7 +794,9 @@ impl Explorer {
             Err(TryRecvError::Disconnected) => false,
         });
         for done in finished {
-            done.errors.into_iter().for_each(ui::notify);
+            if !done.remaining.is_empty() {
+                self.confirm_permanent.push_back(done.remaining);
+            }
             if done.cut {
                 self.clipboard = None;
             }
@@ -817,8 +823,7 @@ impl Explorer {
 
     fn delete(&mut self, ctx: &egui::Context) {
         let paths = std::mem::take(&mut self.confirm_delete);
-        let label = count_text(&paths);
-        self.background(ctx, move || ops::trash(paths, label));
+        self.background(ctx, move || ops::trash(paths));
     }
 
     fn apply(&mut self, action: Action, ui: &Ui, cmds: &mut Vec<Command>) {

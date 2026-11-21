@@ -356,13 +356,74 @@ mod headless {
         assert_eq!(explorer.confirm_delete, [dir.join("a.txt"), dir.join("c.txt")]);
         assert_eq!(count_text(&explorer.confirm_delete), "2 items");
 
-        explorer.delete(&ctx);
-        let cmds: Vec<Command> = wait(&ctx, &mut explorer).into_iter().filter(|c| matches!(c, Command::PathChanged(..))).collect();
+        frame(&ctx, &mut explorer, vec![key(Key::Escape, Modifiers::NONE)], Modifiers::NONE);
+        assert!(explorer.confirm_delete.is_empty() && explorer.work.is_empty());
+        assert!(dir.join("a.txt").exists() && dir.join("c.txt").exists());
+
+        explorer.confirm_delete = explorer.sel.paths.clone();
+        frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
+        let mut cmds = frame(&ctx, &mut explorer, vec![key(Key::Enter, Modifiers::NONE)], Modifiers::NONE);
+        assert!(explorer.confirm_delete.is_empty());
+        assert!(!ctx.input(|i| i.key_pressed(Key::Enter)));
+        assert!(!cmds.iter().any(|c| matches!(c, Command::OpenPath(_))));
+        cmds.extend(wait(&ctx, &mut explorer));
+        cmds.retain(|c| matches!(c, Command::PathChanged(..)));
         assert_eq!(cmds.len(), 2);
         assert!(cmds.contains(&Command::PathChanged(dir.join("a.txt"), None)));
         assert!(!dir.join("a.txt").exists() && !dir.join("c.txt").exists());
         assert!(dir.join("b.txt").exists() && dir.join("d.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_enter_only_reaches_the_top_confirmation() {
+        let ctx = egui::Context::default();
+        let frame = |events| {
+            let mut choices = [false; 2];
+            let input = RawInput { events, focused: true, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                assert!(!ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)));
+                for (i, id) in ["first", "second"].iter().enumerate() {
+                    choices[i] = ui::modal(&ctx, id, ui::Enter::Primary, |ui, keys| keys.primary(ui, "OK", true)).inner;
+                }
+                assert!(!ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)));
+            });
+            out.textures_delta.clear();
+            choices
+        };
+        frame(vec![]);
+        let top = ctx.memory(|m| m.top_modal_layer().unwrap().id);
+        let choices = frame(vec![key(Key::Enter, Modifiers::NONE)]);
+        assert_eq!(choices.iter().filter(|&&accepted| accepted).count(), 1);
+        assert_eq!(choices, [top == Id::new("first"), top == Id::new("second")]);
+    }
+
+    #[test]
+    fn partial_trash_failure_only_offers_remaining_paths() {
+        let (dir, ctx, mut explorer) = setup("trash-fallback", &["keep.txt", "delete.txt"]);
+        let (gone, keep, file) = (dir.join("already-trashed"), dir.join("keep.txt"), dir.join("delete.txt"));
+        let folder = dir.join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("child"), "contents").unwrap();
+
+        let failed = ops::trash_failed(vec![gone.clone(), keep.clone()]);
+        explorer.background(&ctx, move || failed);
+        assert!(wait(&ctx, &mut explorer).contains(&Command::PathChanged(gone, None)));
+        assert_eq!(explorer.confirm_permanent[0], [keep.clone()]);
+        frame(&ctx, &mut explorer, vec![key(Key::Escape, Modifiers::NONE)], Modifiers::NONE);
+        assert!(explorer.confirm_permanent.is_empty() && keep.is_file());
+
+        let failed = ops::trash_failed(vec![file.clone(), folder.clone()]);
+        explorer.background(&ctx, move || failed);
+        wait(&ctx, &mut explorer);
+        assert_eq!(count_text(&explorer.confirm_permanent[0]), "2 items");
+        let mut cmds = frame(&ctx, &mut explorer, vec![key(Key::Enter, Modifiers::NONE)], Modifiers::NONE);
+        cmds.extend(wait(&ctx, &mut explorer));
+        assert!(explorer.confirm_permanent.is_empty());
+        assert!(cmds.contains(&Command::PathChanged(file.clone(), None)) && !file.exists());
+        assert!(cmds.contains(&Command::PathChanged(folder.clone(), None)) && !folder.exists());
+        assert!(keep.is_file());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

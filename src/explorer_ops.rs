@@ -125,7 +125,17 @@ pub fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 fn remove(path: &Path) -> std::io::Result<()> {
-    if path.symlink_metadata()?.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }
+    let meta = path.symlink_metadata()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const REPARSE_POINT: u32 = 0x400;
+        const DIRECTORY: u32 = 0x10;
+        if meta.file_attributes() & REPARSE_POINT != 0 {
+            return if meta.file_attributes() & DIRECTORY != 0 { std::fs::remove_dir(path) } else { std::fs::remove_file(path) };
+        }
+    }
+    if meta.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }
 }
 
 fn move_tree(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -141,14 +151,43 @@ pub struct Done {
     pub cut: bool,
     pub done: Vec<(PathBuf, PathBuf)>,
     pub removed: Vec<PathBuf>,
+    pub remaining: Vec<PathBuf>,
     pub errors: Vec<String>,
 }
 
-pub fn trash(paths: Vec<PathBuf>, label: String) -> Done {
-    match trash::delete_all(&paths) {
-        Ok(()) => Done { removed: paths, ..Done::default() },
-        Err(e) => Done { errors: vec![format!("Could not delete {label}: {e}")], ..Done::default() },
+pub fn trash(paths: Vec<PathBuf>) -> Done {
+    let (mut unavailable, recyclable): (Vec<_>, Vec<_>) =
+        paths.into_iter().partition(|path| cfg!(windows) && crate::wsl::parse(path).is_some());
+    if !recyclable.is_empty() && trash::delete_all(&recyclable).is_ok() {
+        let mut out = trash_failed(unavailable);
+        out.removed.extend(recyclable);
+        return out;
     }
+    unavailable.extend(recyclable);
+    trash_failed(unavailable)
+}
+
+pub fn trash_failed(paths: Vec<PathBuf>) -> Done {
+    let mut out = Done::default();
+    for path in paths {
+        match path.symlink_metadata() {
+            Ok(_) => out.remaining.push(path),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => out.removed.push(path),
+            Err(e) => out.errors.push(format!("Could not check {} after moving it to the trash failed: {e}", path.display())),
+        }
+    }
+    out
+}
+
+pub fn delete_permanently(paths: Vec<PathBuf>) -> Done {
+    let mut out = Done::default();
+    for path in paths {
+        match remove(&path) {
+            Ok(()) => out.removed.push(path),
+            Err(e) => out.errors.push(format!("Could not permanently delete {}: {e}", path.display())),
+        }
+    }
+    out
 }
 
 pub fn run(jobs: Vec<Job>, cut: bool) -> Done {
@@ -243,6 +282,39 @@ mod tests {
         let mut none = Selection::default();
         none.range(&order, "c".into());
         assert_eq!(none.paths, paths(&["c"]));
+    }
+
+    #[test]
+    fn permanently_deletes_files_and_nonempty_folders_and_reports_failures() {
+        let dir = temp("permanent");
+        let (file, folder, missing) = (dir.join("file"), dir.join("folder"), dir.join("missing"));
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("child"), "data").unwrap();
+        std::fs::write(&file, "data").unwrap();
+        let done = delete_permanently(vec![file.clone(), missing, folder.clone()]);
+        assert_eq!(done.removed, [file, folder]);
+        assert_eq!(done.errors.len(), 1);
+        assert!(done.errors[0].contains("missing"));
+        assert!(done.remaining.is_empty() && dir.read_dir().unwrap().next().is_none());
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn permanent_delete_leaves_link_targets_intact() {
+        let dir = temp("permanent-link");
+        let (target, link) = (dir.join("target"), dir.join("link"));
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("child"), "keep").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(windows)]
+        assert!(std::process::Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(&link).arg(&target).output().unwrap().status.success());
+        let done = delete_permanently(vec![link.clone()]);
+        assert!(done.errors.is_empty());
+        assert_eq!(done.removed, [link.clone()]);
+        assert!(link.symlink_metadata().is_err() && target.join("child").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
