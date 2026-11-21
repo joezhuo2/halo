@@ -373,12 +373,28 @@ impl Halo {
             OpenOutputInEditor => self.editors.open_untitled(&crate::output::current_text()),
             ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => crate::notifications::exec(&cmd),
             FocusNextRegion | FocusPrevRegion => {
-                if crate::a11y::cycle(ctx, cmd == FocusNextRegion) == Some(crate::a11y::Region::Editor) {
-                    self.editors.focus();
+                if let Some(region) = crate::a11y::cycle(ctx, cmd == FocusNextRegion) {
+                    if region == crate::a11y::Region::Editor {
+                        self.editors.focus();
+                    }
+                    crate::a11y::announce(region.label(), false);
                 }
             }
-            ToggleTabFocus => {
-                crate::a11y::toggle_tab_focus();
+            ToggleTabFocus => crate::a11y::announce(if crate::a11y::toggle_tab_focus() { "Tab moves focus" } else { "Tab inserts a tab" }, true),
+            ShowAccessibilityHelp => crate::a11y::show_help(),
+            AnnounceCursorPosition => match self.editors.status() {
+                Some(s) => {
+                    let file = self.editors.active_path().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+                    let selected = if s.selected > 0 { format!(", {} selected", s.selected) } else { String::new() };
+                    crate::a11y::announce(format!("Line {}, Column {}{selected} {file}", s.line, s.column), true);
+                }
+                None => crate::a11y::announce("No active editor", true),
+            },
+            ToggleScreenReaderMode => {
+                self.settings.accessibility_support = if crate::a11y::optimized() { "off" } else { "on" }.into();
+                self.settings.save();
+                self.apply_settings(ctx);
+                crate::a11y::announce(if crate::a11y::optimized() { "Screen reader optimized mode on" } else { "Screen reader optimized mode off" }, true);
             }
             Git(op) | GitAt(op, _) => {
                 let target = if let GitAt(_, value) = cmd { Some(value) } else { None };
@@ -466,6 +482,7 @@ impl Halo {
     }
 
     fn after_save(&mut self, ctx: &egui::Context) {
+        crate::a11y::saved(ctx.input(|i| i.time));
         self.git.refresh(ctx);
         self.explorer.refresh();
         let active = self.editors.active_path();
@@ -858,6 +875,10 @@ impl eframe::App for Halo {
             ctx.send_viewport_cmd(ViewportCommand::Icon(Some(std::sync::Arc::new(egui::IconData { rgba, width: 128, height: 128 }))));
         }
         command::set_context(self.when_keys(&ctx));
+        if crate::a11y::frame(&ctx, self.editors.lsp.counts()) {
+            self.apply_settings(&ctx);
+        }
+        crate::a11y::watch("tests", self.testing.status().map(|s| s.1).unwrap_or_default().split(" (").next().unwrap_or_default());
         self.page.find_key(&ctx);
         if !self.page.keys.recording() {
             self.global_shortcuts(&ctx);
@@ -892,6 +913,7 @@ impl eframe::App for Halo {
         self.debug_frame(&ctx, window.top() + 44.0);
         self.testing_frame(&ctx);
         self.dialogs(&ctx);
+        crate::a11y::help_ui(&ctx, &self.theme);
 
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false));
         if !maximized {

@@ -1956,7 +1956,7 @@ impl Editors {
         let diffed = shown.is_some() || merging.is_some();
 
         ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
-        let minimap_w = if shown.is_some() { diff_view::RULER } else if settings.minimap && !diffed && !buf.large && body.width() > 420.0 { 78.0 } else { 0.0 };
+        let minimap_w = if shown.is_some() { diff_view::RULER } else if settings.minimap && !crate::a11y::optimized() && !diffed && !buf.large && body.width() > 420.0 { 78.0 } else { 0.0 };
         let left_map = settings.minimap_side == "left" && shown.is_none() && !diffed;
         let text_rect = match left_map {
             true => Rect::from_min_max(pos2(body.left() + minimap_w, body.top()), body.max),
@@ -1964,7 +1964,7 @@ impl Editors {
         };
         let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 5.0) * char_w + 6.0;
         let fits = (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20);
-        let wrap_cols = prefs::wrap_columns(&settings.word_wrap, settings.word_wrap_column, fits).filter(|_| !diffed && !buf.large);
+        let wrap_cols = prefs::wrap_columns(if crate::a11y::optimized() { "off" } else { &settings.word_wrap }, settings.word_wrap_column, fits).filter(|_| !diffed && !buf.large);
 
         if self.want_focus && is_active && self.goto.is_none() {
             ui.memory_mut(|m| m.request_focus(id));
@@ -2069,7 +2069,7 @@ impl Editors {
             _ => 4,
         };
         let stuck = tab.stuck;
-        let mut lens_rows: Vec<(usize, usize)> = match settings.code_lens && lang.attached && !diffed {
+        let mut lens_rows: Vec<(usize, usize)> = match settings.code_lens && !crate::a11y::optimized() && lang.attached && !diffed {
             true => lang.lens.iter().enumerate().filter_map(|(index, lens)| Some((lang.symbols.get(lens.symbol)?.line.min(total - 1), index))).collect(),
             false => vec![],
         };
@@ -2200,7 +2200,7 @@ impl Editors {
                         }
                         let (mut inserts, mut hints) = (vec![], vec![]);
                         let from = lang_ref.hints.partition_point(|h| h.line < line);
-                        for hint in lang_ref.hints[from..].iter().take_while(|h| h.line == line && settings.inlay_hints) {
+                        for hint in lang_ref.hints[from..].iter().take_while(|h| h.line == line && settings.inlay_hints && !crate::a11y::optimized()) {
                             let col = lsp::utf16_to_char(text.chars(), hint.col);
                             inserts.push((text.char_indices().nth(col).map_or(text.len(), |c| c.0), hint.label.as_str()));
                             hints.push((col, hint.label.chars().count()));
@@ -2977,6 +2977,7 @@ impl Editors {
                     (_, n, Some(i)) => (format!("{} of {n}", i + 1), theme.text_dim),
                     (_, n, None) => (format!("{n} found"), theme.text_dim),
                 };
+                crate::a11y::watch("find", &label);
                 ui.label(RichText::new(label).size(12.0).color(color)).on_hover_text(self.find.error.clone().unwrap_or_default());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui::icon_button(ui, theme, icons::X, 22.0, false, "Close (Escape)").clicked() {

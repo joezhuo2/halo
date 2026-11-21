@@ -342,6 +342,7 @@ fn toasts_ui(ctx: &egui::Context, theme: &Theme, cmds: &mut Vec<Command>, store:
         (s.shown().into_iter().map(|i| s.items[i].clone()).collect::<Vec<_>>(), s.hidden(), s.focus)
     };
     if notes.is_empty() {
+        crate::a11y::watch("toast", "");
         return;
     }
     let (mut close, mut action, mut hovered) = (None, None, None);
@@ -355,6 +356,9 @@ fn toasts_ui(ctx: &egui::Context, theme: &Theme, cmds: &mut Vec<Command>, store:
                 ctx.request_repaint();
             }
             let focused = focus && position == notes.len() - 1;
+            if position + 1 == notes.len() {
+                crate::a11y::watch_with("toast", &format!("{}: {}", note.severity.label(), note.text), note.severity == Severity::Error);
+            }
             let out = ui.scope(|ui| {
                 ui.set_opacity(fade);
                 ui::access(ui, ui.unique_id(), ui::Role::Alert, &format!("{}: {}", note.severity.label(), note.text), |_| {});

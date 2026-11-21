@@ -972,6 +972,8 @@ impl Debug {
                 if live.state == State::Stopped {
                     let index = live.frames.iter().position(|f| f.path.as_deref().is_some_and(Path::is_file)).unwrap_or(0);
                     live.select(index, &self.watches, env.marks, env.cmds);
+                    let at = live.frames.get(index).map(|f| format!("{}:{}", f.path.as_deref().and_then(Path::file_name).unwrap_or_default().to_string_lossy(), f.line));
+                    crate::a11y::announce(format!("Paused on {} at {}", live.reason, at.unwrap_or_default()), true);
                 }
             }
             Want::Scopes(frame) if success && live.frame_id() == Some(frame) => {

@@ -213,6 +213,9 @@ pub enum Command {
     FocusNextRegion,
     FocusPrevRegion,
     ToggleTabFocus,
+    ShowAccessibilityHelp,
+    AnnounceCursorPosition,
+    ToggleScreenReaderMode,
 
     GitSync,
     Git(GitCommand),
@@ -444,6 +447,7 @@ fn defaults() -> Vec<Binding> {
         g(NONE, Key::F6, FocusNextRegion),
         g(Modifiers::SHIFT, Key::F6, FocusPrevRegion),
         e(C, Key::M, ToggleTabFocus),
+        g(Modifiers::ALT, Key::F1, ShowAccessibilityHelp),
         g(NONE, Key::F9, ToggleBreakpoint),
         g(NONE, Key::F10, StepOver),
         g(NONE, Key::F11, StepInto),
@@ -521,7 +525,7 @@ pub fn all() -> Vec<Command> {
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.extend([ShowOutput, ShowOutputChannels, ClearOutput, OpenOutputInEditor, ShowNotifications, ClearNotifications, ToggleDoNotDisturb, FocusNotification]);
-    commands.extend([FocusNextRegion, FocusPrevRegion, ToggleTabFocus]);
+    commands.extend([FocusNextRegion, FocusPrevRegion, ToggleTabFocus, ShowAccessibilityHelp, AnnounceCursorPosition, ToggleScreenReaderMode]);
     commands.push(About);
     commands
 }
@@ -713,7 +717,7 @@ impl Command {
             | MergeNextConflict | MergePrevConflict | MergeToggleBase | MergeComplete => "Source Control",
             ShowOutput | ShowOutputChannels | ClearOutput | OpenOutputInEditor | SelectOutputChannel(_) => "Output",
             ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => "Notifications",
-            FocusNextRegion | FocusPrevRegion | ToggleTabFocus => "Help",
+            FocusNextRegion | FocusPrevRegion | ToggleTabFocus | ShowAccessibilityHelp | AnnounceCursorPosition | ToggleScreenReaderMode => "Help",
             About => "Help",
         }
     }
@@ -917,6 +921,9 @@ impl Command {
             FocusNextRegion => "View: Focus Next Part",
             FocusPrevRegion => "View: Focus Previous Part",
             ToggleTabFocus => "Toggle Tab Key Moves Focus",
+            ShowAccessibilityHelp => "Accessibility: Show Accessibility Help",
+            AnnounceCursorPosition => "Accessibility: Announce Cursor Position",
+            ToggleScreenReaderMode => "Accessibility: Toggle Screen Reader Optimized Mode",
             GitSync => "Synchronize Changes",
             RefreshExplorer => "Refresh Explorer",
             CutFiles => "File: Cut",

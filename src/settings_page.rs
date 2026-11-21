@@ -107,6 +107,7 @@ pub const SETTINGS: &[Meta] = &[
     m("auto_detect_high_contrast", 2, A11Y, "Auto Detect High Contrast", "Switch to a high contrast theme while the operating system is in high contrast mode (Windows).", Kind::Toggle),
     m("preferred_high_contrast_theme", 2, A11Y, "Preferred High Contrast Theme", "The theme used when the operating system is in a dark high contrast mode.", Kind::Choice(THEMES)),
     m("preferred_high_contrast_light_theme", 2, A11Y, "Preferred High Contrast Light Theme", "The theme used when the operating system is in a light high contrast mode.", Kind::Choice(THEMES)),
+    m("accessibility_support", 2, A11Y, "Accessibility Support", "Optimize for screen readers: word wrap, minimap, code lens, inlay hints and animations are turned off. Auto follows whether a screen reader is active.", Kind::Choice(&[("auto", "Auto"), ("on", "On"), ("off", "Off")])),
     m("reduce_motion", 2, A11Y, "Reduce Motion", "Jump animations to their end, stop loading shimmers and spinners, and stop the cursor blinking. Auto follows the operating system (Windows).", Kind::Choice(&[("auto", "Auto"), ("on", "On"), ("off", "Off")])),
     m("restore_session", 2, "Window", "Restore Session", "Open the last folder and its files when Halo starts.", Kind::Toggle),
     m("tab_close_button", 2, "Workbench", "Tab Close Button", "Where the close button of an editor tab is.", Kind::Choice(&[("right", "Right"), ("left", "Left"), ("off", "Off")])),

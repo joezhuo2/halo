@@ -201,6 +201,9 @@ fn list_popup(
                     let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                     ui::row_bg(ui, theme, r, row.id, row.hovered(), index == selected);
                     ui::list_item(ui, &row, label, index == selected, (index, rows.len()));
+                    if index == selected {
+                        crate::a11y::watch("completion", label);
+                    }
                     let painter = ui.painter().with_clip_rect(r.shrink2(vec2(6.0, 0.0)));
                     painter.text(r.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, *icon, FontId::proportional(13.0), theme.accent);
                     let end = painter.text(r.left_center() + vec2(28.0, 0.0), Align2::LEFT_CENTER, *label, font.clone(), theme.text);

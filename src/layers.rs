@@ -75,6 +75,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("preferred_high_contrast_theme", "workbench.preferredHighContrastColorTheme"),
     ("preferred_high_contrast_light_theme", "workbench.preferredHighContrastLightColorTheme"),
     ("reduce_motion", "workbench.reduceMotion"),
+    ("accessibility_support", "editor.accessibilitySupport"),
     ("restore_session", "window.restoreWindows"),
     ("auto_update", "update.mode"),
     ("terminal_font_family", "terminal.integrated.fontFamily"),
