@@ -209,7 +209,7 @@ impl Highlighter {
         let started = Instant::now();
         let mut line = index * STEP;
         while line < end {
-            if line % STEP == 0 && line / STEP >= self.checkpoints.len() {
+            if line.is_multiple_of(STEP) && line / STEP >= self.checkpoints.len() {
                 self.checkpoints.push((parse.clone(), state.clone()));
                 if started.elapsed() > budget {
                     return false;

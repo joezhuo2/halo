@@ -407,7 +407,9 @@ pub fn symbols(value: &Value) -> Vec<Symbol> {
 pub fn tokens(value: &Value) -> Vec<(usize, usize, usize, usize)> {
     let data: Vec<usize> = value["data"].as_array().into_iter().flatten().map(|n| n.as_u64().unwrap_or(0) as usize).collect();
     let (mut line, mut col) = (0, 0);
-    data.chunks_exact(5)
+    data.as_chunks::<5>()
+        .0
+        .iter()
         .map(|t| {
             col = if t[0] > 0 { t[1] } else { col + t[1] };
             line += t[0];

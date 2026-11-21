@@ -186,9 +186,11 @@ impl Terminal {
     }
 
     pub fn spawn_with(id: u64, name: &str, program: &str, args: &[String], cwd: Option<&Path>, env: &[(String, String)], ctx: egui::Context) -> std::io::Result<Self> {
-        let mut options = tty::Options::default();
-        options.shell = Some(tty::Shell::new(program.to_owned(), args.to_vec()));
-        options.working_directory = cwd.map(Path::to_path_buf).or_else(dirs::home_dir);
+        let mut options = tty::Options {
+            shell: Some(tty::Shell::new(program.to_owned(), args.to_vec())),
+            working_directory: cwd.map(Path::to_path_buf).or_else(dirs::home_dir),
+            ..Default::default()
+        };
         options.env = HashMap::from([
             ("TERM".to_owned(), "xterm-256color".to_owned()),
             ("COLORTERM".to_owned(), "truecolor".to_owned()),

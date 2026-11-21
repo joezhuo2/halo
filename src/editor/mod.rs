@@ -1254,6 +1254,7 @@ impl Editors {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn group_ui(&mut self, ui: &mut Ui, g: usize, rect: Rect, theme: &Theme, settings: &Settings, git: &Git, pending: &mut Vec<Command>) {
         let strip = Rect::from_min_size(rect.min, vec2(rect.width(), TAB_H));
         self.tab_strip(ui, g, strip, theme, pending);
