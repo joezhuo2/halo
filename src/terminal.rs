@@ -1,4 +1,5 @@
 use crate::command::Command;
+use crate::lsp::Lsp;
 use crate::settings::{Settings, ShellProfile};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
@@ -601,6 +602,10 @@ impl BottomPanel {
         self.focused = false;
     }
 
+    pub fn show_problems(&mut self) {
+        self.tab = PanelTab::Problems;
+    }
+
     fn spawn(&mut self, profile: &ShellProfile, cwd: Option<&Path>, ctx: &egui::Context) -> Option<Terminal> {
         let id = self.next_id;
         self.next_id += 1;
@@ -727,7 +732,7 @@ impl BottomPanel {
         true
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, settings: &Settings, cwd: Option<&Path>, cmds: &mut Vec<Command>) {
+    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, settings: &Settings, cwd: Option<&Path>, lsp: &Lsp, cmds: &mut Vec<Command>) {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         self.focused = false;
         self.prune();
@@ -784,8 +789,8 @@ impl BottomPanel {
             match self.tab {
                 PanelTab::Terminal => self.terminals(ui, body, theme, settings, cwd),
                 PanelTab::Ports => self.ports_ui(ui, body, theme),
-                PanelTab::Problems => empty(ui, theme, "No problems have been detected in the workspace."),
-                PanelTab::Output => empty(ui, theme, "No output yet."),
+                PanelTab::Problems => problems_ui(ui, theme, lsp, cwd, cmds),
+                PanelTab::Output => output_ui(ui, theme, lsp, settings.font_size),
                 PanelTab::Debug => self.debug_ui(ui, body, theme, settings.font_size),
             }
         });
@@ -933,6 +938,61 @@ impl BottomPanel {
             });
         });
     }
+}
+
+fn problems_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, cwd: Option<&Path>, cmds: &mut Vec<Command>) {
+    let files: Vec<_> = lsp.problems().filter(|file| file.items.iter().any(|d| d.severity <= 3)).collect();
+    if files.is_empty() {
+        return empty(ui, theme, "No problems have been detected in the workspace.");
+    }
+    ScrollArea::vertical().id_salt("problems").auto_shrink(false).show(ui, |ui| {
+        ui.add_space(4.0);
+        for file in files {
+            let shown = cwd.and_then(|root| file.path.strip_prefix(root).ok()).unwrap_or(&file.path);
+            let name = shown.file_name().unwrap_or(shown.as_os_str()).to_string_lossy();
+            let folder = shown.parent().map(|dir| dir.to_string_lossy()).unwrap_or_default();
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+            let painter = ui.painter().with_clip_rect(r);
+            let title = format!("{}  {name}", icons::FILE_CODE);
+            let end = painter.text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(12.5), theme.text);
+            painter.text(pos2(end.right() + 10.0, r.center().y), Align2::LEFT_CENTER, folder, FontId::proportional(11.5), theme.text_dim);
+            for problem in file.items.iter().filter(|d| d.severity <= 3) {
+                let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+                ui::row_bg(ui, theme, r, row.id, row.hovered(), false);
+                let (icon, color) = match problem.severity {
+                    1 => (icons::X_CIRCLE, theme.error),
+                    2 => (icons::WARNING, theme.warning),
+                    _ => (icons::INFO, theme.accent),
+                };
+                let painter = ui.painter().with_clip_rect(r);
+                painter.text(r.left_center() + vec2(30.0, 0.0), Align2::LEFT_CENTER, icon, FontId::proportional(13.0), color);
+                let message = problem.message.lines().next().unwrap_or_default();
+                let end = painter.text(r.left_center() + vec2(50.0, 0.0), Align2::LEFT_CENTER, message, FontId::proportional(12.5), theme.text);
+                let place = format!("{}  [Ln {}, Col {}]", problem.source, problem.start.0 + 1, problem.start.1 + 1);
+                painter.text(pos2(end.right() + 10.0, r.center().y), Align2::LEFT_CENTER, place, FontId::proportional(11.5), theme.text_dim);
+                if row.clicked() {
+                    cmds.push(Command::OpenPath(file.path.clone()));
+                    cmds.push(Command::GoTo(problem.start.0 + 1, problem.start.1 + 1));
+                }
+                row.on_hover_text(&problem.message);
+            }
+        }
+    });
+}
+
+fn output_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, font_size: f32) {
+    if lsp.log.is_empty() {
+        return empty(ui, theme, "Messages from language servers appear here.");
+    }
+    ScrollArea::both().id_salt("output").auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
+        ui.add_space(4.0);
+        for line in &lsp.log {
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(RichText::new(line).font(FontId::monospace(font_size - 1.0)).color(theme.text));
+            });
+        }
+    });
 }
 
 fn empty(ui: &mut Ui, theme: &Theme, text: &str) {

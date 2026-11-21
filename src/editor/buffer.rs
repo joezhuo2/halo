@@ -125,7 +125,7 @@ pub struct Document {
     pub read_only: bool,
 }
 
-fn is_word(c: char) -> bool {
+pub fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 

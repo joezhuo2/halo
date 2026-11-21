@@ -4,6 +4,7 @@ use crate::command::{self, Command, Scope};
 use crate::editor::Editors;
 use crate::explorer::Explorer;
 use crate::git::Git;
+use crate::lsp;
 use crate::scm::Scm;
 use crate::search::Search;
 use crate::settings::{Session, Settings};
@@ -12,8 +13,8 @@ use crate::theme::Theme;
 use crate::wsl::{self, Wsl};
 use crate::ui::{self, icons};
 use eframe::egui::{
-    self, Align, Align2, CornerRadius, CursorIcon, FontId, Frame, Id, Layout, Panel, Response, RichText,
-    Sense, Stroke, StrokeKind, Ui, ViewportCommand, vec2,
+    self, Align, Align2, CornerRadius, CursorIcon, FontId, Frame, Id, Layout, Panel, Response, RichText, ScrollArea,
+    Sense, Stroke, StrokeKind, Ui, UiBuilder, ViewportCommand, pos2, vec2,
 };
 use std::path::PathBuf;
 
@@ -116,6 +117,7 @@ impl Halo {
         };
         ctx.send_viewport_cmd(ViewportCommand::Title(title));
         self.explorer.set_root(folder.clone());
+        self.editors.set_root(folder.clone());
         self.git.set_root(folder.clone(), ctx);
         self.session.folder = folder;
         self.session.save();
@@ -246,6 +248,12 @@ impl Halo {
             ShowCommands => self.search.open(">"),
             FindInFiles => self.search.open("%"),
             GoToSymbol => self.search.open("@"),
+            GoToWorkspaceSymbol => self.search.open("#"),
+            RestartLanguageServers => self.editors.lsp.restart(),
+            ShowProblems => {
+                self.session.panel = true;
+                self.bottom.show_problems();
+            }
             GitSync => self.git.sync(),
             RefreshExplorer => {
                 self.explorer.refresh();
@@ -262,15 +270,7 @@ impl Halo {
             }
             Save | SaveAs | SaveAll => {
                 self.editors.exec(&cmd, &self.settings, ctx);
-                self.git.refresh(ctx);
-                self.explorer.refresh();
-                let active = self.editors.active_path();
-                if active.as_ref().is_some_and(|p| *p == Settings::path()) {
-                    self.reload_settings(ctx);
-                }
-                if active.is_some_and(|p| p == command::path()) {
-                    command::reload();
-                }
+                self.after_save(ctx);
             }
             other => {
                 let _ = match self.zone {
@@ -285,6 +285,18 @@ impl Halo {
                     _ => self.editors.exec(&other, &self.settings, ctx) || self.bottom.exec(&other, &self.settings, cwd.as_deref(), ctx),
                 };
             }
+        }
+    }
+
+    fn after_save(&mut self, ctx: &egui::Context) {
+        self.git.refresh(ctx);
+        self.explorer.refresh();
+        let active = self.editors.active_path();
+        if active.as_ref().is_some_and(|p| *p == Settings::path()) {
+            self.reload_settings(ctx);
+        }
+        if active.is_some_and(|p| p == command::path()) {
+            command::reload();
         }
     }
 
@@ -372,10 +384,20 @@ impl Halo {
             .frame(Frame::new().fill(self.theme.panel))
             .show_collapsible(ui, &mut open, |ui| {
                 if self.session.source_control {
-                    self.scm.ui(ui, &self.theme, &mut self.git, &mut self.cmds);
-                } else {
-                    self.explorer.ui(ui, &self.theme, &self.git, active.as_deref(), &mut self.cmds);
+                    return self.scm.ui(ui, &self.theme, &mut self.git, &mut self.cmds);
                 }
+                let full = ui.available_rect_before_wrap();
+                let symbols = self.editors.outline();
+                let height = if self.session.outline && symbols.is_some() { (full.height() * 0.4).max(24.0) } else { 24.0 };
+                let split = full.bottom() - height;
+                ui.scope_builder(UiBuilder::new().max_rect(full.with_max_y(split)), |ui| {
+                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                    self.explorer.ui(ui, &self.theme, &self.git, active.as_deref(), &mut self.cmds);
+                });
+                ui.scope_builder(UiBuilder::new().max_rect(full.with_min_y(split)), |ui| {
+                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                    outline(ui, &self.theme, symbols, &mut self.session.outline, &mut self.cmds);
+                });
             });
         self.session.sidebar = open;
     }
@@ -405,7 +427,7 @@ impl Halo {
             .size_range(90.0..=900.0)
             .frame(Frame::new().fill(self.theme.panel))
             .show_collapsible(ui, &mut open, |ui| {
-                self.bottom.ui(ui, &self.theme, &self.settings, cwd.as_deref(), &mut self.cmds);
+                self.bottom.ui(ui, &self.theme, &self.settings, cwd.as_deref(), &self.editors.lsp, &mut self.cmds);
             })
             .is_none()
             .then(|| self.bottom.blur());
@@ -567,6 +589,9 @@ impl eframe::App for Halo {
         for (title, text) in self.git.take_texts() {
             self.editors.open_text(&title, &text);
         }
+        if self.editors.take_saved() {
+            self.after_save(&ctx);
+        }
         self.handle_window_events(&ctx);
         let dark = ctx.system_theme() == Some(egui::Theme::Dark);
         if self.icon_dark != Some(dark) {
@@ -645,6 +670,35 @@ fn strip_unc(path: PathBuf) -> PathBuf {
         Some((_, Some(rest))) => PathBuf::from(rest),
         _ => path,
     }
+}
+
+fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>, open: &mut bool, cmds: &mut Vec<Command>) {
+    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, CornerRadius::ZERO, ui::mix(theme.panel, theme.bar, 0.5));
+    painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, theme.border));
+    let caret = if *open && symbols.is_some() { icons::CARET_DOWN } else { icons::CARET_RIGHT };
+    painter.text(pos2(rect.left() + 12.0, rect.center().y), Align2::CENTER_CENTER, caret, FontId::proportional(10.0), theme.text);
+    painter.text(pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, "OUTLINE", FontId::proportional(11.5), theme.text);
+    if resp.on_hover_text("Symbols of the active file, from its language server").clicked() {
+        *open ^= true;
+    }
+    let Some((symbols, line)) = symbols.filter(|_| *open) else { return };
+    let current = symbols.iter().rposition(|s| s.line <= line && line <= s.end_line);
+    ScrollArea::vertical().id_salt("outline").auto_shrink(false).show(ui, |ui| {
+        for (index, symbol) in symbols.iter().enumerate() {
+            let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+            ui::row_bg(ui, theme, r, row.id, row.hovered(), current == Some(index));
+            let x = r.left() + 12.0 + symbol.depth as f32 * 12.0;
+            let painter = ui.painter().with_clip_rect(r);
+            painter.text(pos2(x, r.center().y), Align2::LEFT_CENTER, lsp::symbol_icon(symbol.kind), FontId::proportional(13.0), theme.accent);
+            painter.text(pos2(x + 20.0, r.center().y), Align2::LEFT_CENTER, &symbol.name, FontId::proportional(12.5), theme.text);
+            if row.clicked() {
+                cmds.push(Command::GoTo(symbol.line + 1, symbol.col + 1));
+            }
+        }
+    });
 }
 
 fn activity_item(ui: &mut Ui, theme: &Theme, icon: &str, active: bool, tip: &str) -> Response {

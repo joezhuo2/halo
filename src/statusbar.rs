@@ -22,9 +22,16 @@ impl Halo {
                         item(ui, &theme, &format!("{} WSL: {distro}", icons::LINUX_LOGO), true, "This folder is open in WSL");
                     }
 
-                    let problems = format!("{} 0   {} 0", icons::X_CIRCLE, icons::WARNING);
-                    if item(ui, &theme, &problems, false, "No problems").clicked() {
-                        self.cmds.push(Command::TogglePanel);
+                    if self.settings.status_problems {
+                        let (errors, warnings) = if self.settings.diagnostics { self.editors.lsp.counts() } else { (0, 0) };
+                        let problems = format!("{} {errors}   {} {warnings}", icons::X_CIRCLE, icons::WARNING);
+                        let tip = match errors + warnings {
+                            0 => "No problems".to_owned(),
+                            _ => format!("{errors} errors, {warnings} warnings"),
+                        };
+                        if item(ui, &theme, &problems, false, &tip).clicked() {
+                            self.cmds.push(Command::ShowProblems);
+                        }
                     }
 
                     if let Some(branch) = self.git.branch() {
@@ -67,6 +74,9 @@ impl Halo {
                             if item(ui, &theme, &position, false, "Go to line (Ctrl+G)").clicked() {
                                 self.cmds.push(Command::GoToLine);
                             }
+                        }
+                        if let Some((status, tip)) = self.editors.lsp.status() {
+                            item(ui, &theme, &format!("{} {status}", icons::PLUGS_CONNECTED), false, &tip);
                         }
                     });
                 });

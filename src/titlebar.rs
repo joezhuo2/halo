@@ -67,7 +67,7 @@ impl Halo {
                 if self.search.is_open() {
                     let rect = Rect::from_center_size(bar.center(), vec2((bar.width() - 24.0).min(600.0), 26.0));
                     let folder = self.session.folder.clone();
-                    if self.search.ui(ui, &theme, rect, folder.as_deref(), &self.editors, &mut self.cmds) && self.zone == Zone::Editor {
+                    if self.search.ui(ui, &theme, rect, folder.as_deref(), &mut self.editors, &mut self.cmds) && self.zone == Zone::Editor {
                         self.editors.focus();
                     }
                 } else if search.width() > 90.0 {
@@ -79,7 +79,7 @@ impl Halo {
     fn search_box(&mut self, ui: &mut Ui, theme: &Theme, rect: Rect) {
         let resp = ui
             .interact(rect, Id::new("titlebar_search"), Sense::click())
-            .on_hover_text("Search files, > commands, % text, @ symbols, : line (Ctrl+P)");
+            .on_hover_text("Search files, > commands, % text, @ symbols, # workspace symbols, : line (Ctrl+P)");
         if resp.clicked() {
             self.cmds.push(Command::GoToFile);
         }
@@ -115,7 +115,8 @@ impl Halo {
             Some(Undo), Some(Redo), None,
             Some(Cut), Some(Copy), Some(Paste), None,
             Some(Find), Some(Replace), None,
-            Some(ToggleComment),
+            Some(ToggleComment), None,
+            Some(RenameSymbol), Some(QuickFix), Some(OrganizeImports), Some(FormatDocument), Some(FormatSelection),
         ]);
         self.menu(ui, "Selection", &[
             Some(SelectAll), None,
@@ -123,13 +124,15 @@ impl Halo {
         ]);
         self.menu(ui, "View", &[
             Some(ShowExplorer), Some(ShowSourceControl), None,
-            Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), None,
+            Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), Some(ShowProblems), None,
             Some(SplitEditor), Some(ToggleMinimap), None,
             Some(ToggleTheme), Some(ZoomIn), Some(ZoomOut), Some(ZoomReset),
         ]);
         self.menu(ui, "Go", &[
-            Some(GoToFile), Some(GoToSymbol), Some(GoToLine), Some(FindInFiles), Some(ShowCommands), None,
-            Some(NextEditor), Some(PrevEditor),
+            Some(GoToFile), Some(GoToSymbol), Some(GoToWorkspaceSymbol), Some(GoToLine), Some(FindInFiles), Some(ShowCommands), None,
+            Some(GoToDefinition), Some(GoToDeclaration), Some(GoToTypeDefinition), Some(GoToImplementation), Some(FindReferences),
+            Some(ShowCallHierarchy), Some(ShowTypeHierarchy), None,
+            Some(GoBack), Some(NextEditor), Some(PrevEditor),
         ]);
         ui.menu_button("Run", |ui| {
             ui.set_min_width(230.0);

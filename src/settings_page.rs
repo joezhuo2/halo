@@ -29,6 +29,7 @@ pub struct SettingsPage {
     fonts: Option<Vec<(&'static str, String)>>,
     new_run: (String, String),
     new_association: (String, String),
+    new_server: (String, String),
 }
 
 impl Halo {
@@ -187,6 +188,14 @@ fn editor_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsP
     ui.add(egui::DragValue::new(&mut s.tab_size).range(1..=8).speed(0.1));
     toggle(ui, theme, "Editor", "Insert Spaces", "Insert spaces when pressing Tab.", &mut s.insert_spaces);
     toggle(ui, theme, "Editor", "Minimap", "Show the minimap beside the editor.", &mut s.minimap);
+    toggle(ui, theme, "Editor", "Breadcrumbs", "Show the path and the enclosing symbols above the text.", &mut s.breadcrumbs);
+    toggle(ui, theme, "Editor", "Code Lens", "Show reference counts above declarations. Click one to list the places.", &mut s.code_lens);
+    toggle(ui, theme, "Editor", "Inlay Hints", "Show inferred types and parameter names inside the line.", &mut s.inlay_hints);
+    toggle(ui, theme, "Editor", "Semantic Highlighting", "Color types, functions and constants as the language server reports them.", &mut s.semantic_highlighting);
+    toggle(ui, theme, "Editor", "Format On Save", "Format the file with its language server when it is saved by hand.", &mut s.format_on_save);
+    toggle(ui, theme, "Editor", "Format On Paste", "Format pasted text with the language server.", &mut s.format_on_paste);
+    toggle(ui, theme, "Problems", "Diagnostics", "Underline errors and warnings, and list them in the Problems panel.", &mut s.diagnostics);
+    toggle(ui, theme, "Problems", "Status Bar Counts", "Show the number of errors and warnings in the status bar.", &mut s.status_problems);
 }
 
 fn appearance_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings) {
@@ -339,6 +348,11 @@ fn languages_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut Settin
     let about = "Open files with an extension as another language, given by its name or its extension.";
     item(ui, theme, "Languages", "File Associations", about);
     map_editor(ui, theme, "settings_associations", &mut s.associations, &mut page.new_association, "language");
+    let about = "Start the language server of a file for diagnostics, completion, hover, navigation, rename and formatting.";
+    toggle(ui, theme, "Language Servers", "Enabled", about, &mut s.lsp);
+    let about = "The command that starts the server for each file extension. It must be on PATH and speak LSP over standard input and output.";
+    item(ui, theme, "Language Servers", "Commands", about);
+    map_editor(ui, theme, "settings_servers", &mut s.servers, &mut page.new_server, "command");
     let languages = crate::editor::languages();
     item(ui, theme, "Languages", "Installed", &format!("{} languages are installed.", languages.len()));
     for (name, extensions) in languages {

@@ -1,0 +1,1251 @@
+use super::buffer::{After, Document, Kind, Sel, is_word};
+use super::{Editors, Tab};
+use crate::command::Command;
+use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
+use crate::settings::Settings;
+use crate::theme::Theme;
+use crate::ui::{self, icons};
+use eframe::egui::text::{LayoutJob, TextFormat};
+use eframe::egui::{
+    self, Align, Align2, Area, Color32, CornerRadius, Event, FontId, Frame, Galley, Id, Key, Layout, Order, Pos2, Rect, RichText,
+    ScrollArea, Sense, Shape, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, pos2, vec2,
+};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+pub(super) struct Lens {
+    pub symbol: usize,
+    pub refs: Option<Vec<Location>>,
+    pub impls: Option<Vec<Location>>,
+    pub asked: bool,
+}
+
+#[derive(Default)]
+pub(super) struct Lang {
+    pub synced: u64,
+    pub attached: bool,
+    pub lines: usize,
+    pub requested: u64,
+    pub retry: f64,
+    pub settled: u64,
+    pub symbols: Vec<Symbol>,
+    pub generation: u64,
+    pub lens: Vec<Lens>,
+    pub tokens: HashMap<usize, Vec<(usize, usize, u8)>>,
+    pub hints: Vec<Hint>,
+    pub hinted: (u64, usize, usize),
+    pub visible: (usize, usize),
+}
+
+impl Lang {
+    pub fn edited(&mut self, line: usize, now: usize) -> isize {
+        let delta = now as isize - self.lines as isize;
+        self.lines = now;
+        for symbol in &mut self.symbols {
+            symbol.line = lsp::shift(symbol.line, line, delta).unwrap_or(line);
+            symbol.end_line = lsp::shift(symbol.end_line, line, delta).unwrap_or(line).max(symbol.line);
+        }
+        self.hints.retain_mut(|hint| hint.line != line && lsp::shift(hint.line, line, delta).map(|moved| hint.line = moved).is_some());
+        if delta == 0 {
+            self.tokens.remove(&line);
+        } else {
+            let old = std::mem::take(&mut self.tokens);
+            self.tokens = old.into_iter().filter(|(at, _)| *at != line).filter_map(|(at, found)| Some((lsp::shift(at, line, delta)?, found))).collect();
+        }
+        delta
+    }
+}
+
+pub(super) struct Row {
+    pub galley: Arc<Galley>,
+    pub len: usize,
+    pub hints: Vec<(usize, usize)>,
+}
+
+pub(super) fn display(hints: &[(usize, usize)], col: usize) -> usize {
+    col + hints.iter().filter(|hint| hint.0 < col).map(|hint| hint.1).sum::<usize>()
+}
+
+pub(super) fn undisplay(hints: &[(usize, usize)], shown: usize) -> usize {
+    let mut shift = 0;
+    for (at, len) in hints {
+        let start = at + shift;
+        if shown <= start {
+            break;
+        }
+        if shown < start + len {
+            return *at;
+        }
+        shift += len;
+    }
+    shown - shift
+}
+
+pub(super) fn to_lsp(buf: &Document, pos: usize) -> Pos {
+    let pos = pos.min(buf.len());
+    let line = buf.line_of(pos);
+    (line, lsp::char_to_utf16(buf.rope.line(line).chars(), pos - buf.line_start(line)))
+}
+
+pub(super) fn from_lsp(buf: &Document, (line, col): Pos) -> usize {
+    if line >= buf.lines() {
+        return buf.len();
+    }
+    buf.line_start(line) + lsp::utf16_to_char(buf.rope.line(line).chars(), col).min(buf.line_len(line))
+}
+
+pub(super) fn sync(lsp: &mut Lsp, buf: &Document, lang: &mut Lang, ctx: &egui::Context) {
+    let Some(path) = buf.path.as_deref().filter(|_| !buf.read_only) else { return };
+    if lang.synced == 0 {
+        lang.attached = buf.rope.len_bytes() < 2_000_000 && lsp.open(path, || buf.rope.to_string(), ctx);
+        lang.lines = buf.lines();
+    } else if lang.attached && lang.synced != buf.version {
+        lsp.change(path, buf.rope.to_string());
+    }
+    lang.synced = buf.version;
+}
+
+fn tone(name: &str) -> u8 {
+    match name {
+        "namespace" | "type" | "class" | "enum" | "interface" | "struct" | "typeParameter" | "builtinType" | "typeAlias" | "union"
+        | "selfTypeKeyword" => 1,
+        "function" | "method" | "macro" | "decorator" => 2,
+        "enumMember" | "constParameter" | "const" | "static" => 3,
+        _ => 0,
+    }
+}
+
+pub(super) fn tone_color(theme: &Theme, tone: u8) -> Color32 {
+    match tone {
+        1 => theme.syntax.type_name,
+        2 => theme.syntax.function,
+        _ => theme.syntax.constant,
+    }
+}
+
+pub(super) fn severity_color(theme: &Theme, severity: u8) -> Color32 {
+    match severity {
+        1 => theme.error,
+        2 => theme.warning,
+        3 => theme.accent,
+        _ => theme.text_dim,
+    }
+}
+
+pub(super) fn squiggle(painter: &egui::Painter, from: f32, to: f32, y: f32, color: Color32) {
+    let mut points = vec![];
+    let (mut x, mut up) = (from, true);
+    while x <= to {
+        points.push(pos2(x, if up { y } else { y + 2.0 }));
+        x += 2.0;
+        up = !up;
+    }
+    painter.add(Shape::line(points, Stroke::new(1.0, color)));
+}
+
+fn popup_frame(theme: &Theme) -> Frame {
+    Frame::new().fill(theme.raised).stroke(Stroke::new(1.0, theme.border)).corner_radius(CornerRadius::same(4))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn list_popup(
+    ctx: &egui::Context,
+    theme: &Theme,
+    id: &str,
+    at: Pos2,
+    rows: &[(&str, &str, &str)],
+    selected: usize,
+    reveal: bool,
+    font: &FontId,
+) -> (Option<usize>, Rect) {
+    let mut clicked = None;
+    let area = Area::new(Id::new(id)).order(Order::Foreground).fixed_pos(at).show(ctx, |ui| {
+        popup_frame(theme).show(ui, |ui| {
+            ui.set_width(460.0);
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            ScrollArea::vertical().max_height(22.0 * 10.0).show(ui, |ui| {
+                for (index, (icon, label, detail)) in rows.iter().enumerate() {
+                    let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+                    ui::row_bg(ui, theme, r, row.id, row.hovered(), index == selected);
+                    let painter = ui.painter().with_clip_rect(r.shrink2(vec2(6.0, 0.0)));
+                    painter.text(r.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, *icon, FontId::proportional(13.0), theme.accent);
+                    let end = painter.text(r.left_center() + vec2(28.0, 0.0), Align2::LEFT_CENTER, *label, font.clone(), theme.text);
+                    painter.text(pos2(end.right() + 12.0, r.center().y), Align2::LEFT_CENTER, *detail, FontId::proportional(11.5), theme.text_dim);
+                    if index == selected && reveal {
+                        ui.scroll_to_rect(r, None);
+                    }
+                    if row.clicked() {
+                        clicked = Some(index);
+                    }
+                }
+            });
+        });
+    });
+    (clicked, area.response.rect)
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
+}
+
+fn problem_blocks(lsp: &Lsp, path: &Path, start: Pos, end: Pos) -> Vec<(u8, String)> {
+    let touching = lsp.diagnostics(path).iter().filter(|d| d.start <= end && d.end >= start && d.severity <= 3);
+    touching.map(|d| (d.severity + 1, if d.source.is_empty() { d.message.clone() } else { format!("{}  {}", d.message, d.source) })).collect()
+}
+
+fn hierarchy_title(call: bool, outgoing: bool) -> &'static str {
+    match (call, outgoing) {
+        (true, false) => "Incoming Calls",
+        (true, true) => "Outgoing Calls",
+        (false, false) => "Supertypes",
+        (false, true) => "Subtypes",
+    }
+}
+
+enum Want {
+    Completion { doc: u64, start: usize, dot: bool },
+    Signature { doc: u64 },
+    Hover { doc: u64, word: (usize, usize) },
+    Locations { doc: u64, pos: usize, title: &'static str, peek: bool },
+    Lens { doc: u64, generation: u64, symbol: usize, impls: bool },
+    Rename,
+    Actions { doc: u64, apply: bool },
+    Format { doc: u64, version: u64, save: bool },
+    Symbols { doc: u64, version: u64 },
+    Tokens { doc: u64, version: u64 },
+    Hints { doc: u64, version: u64 },
+    Prepare { doc: u64, pos: usize, call: bool, outgoing: bool },
+    Hierarchy { doc: u64, pos: usize, call: bool, outgoing: bool },
+}
+
+pub(super) enum Queued {
+    Jump(PathBuf, Pos),
+    Peek(u64, usize, &'static str, Vec<Location>),
+    Action(u64, Value),
+    Hierarchy(u64, usize, bool, bool),
+}
+
+struct Suggest {
+    doc: u64,
+    start: usize,
+    items: Vec<Completion>,
+    shown: Vec<usize>,
+    selected: usize,
+    prefix: Option<String>,
+    incomplete: bool,
+    dot: bool,
+    reveal: bool,
+}
+
+pub(super) struct Hover {
+    pub group: usize,
+    pub doc: u64,
+    pub word: (usize, usize),
+    since: f64,
+    asked: bool,
+    pinned: bool,
+    blocks: Vec<(u8, String)>,
+}
+
+pub(super) struct Peek {
+    pub doc: u64,
+    pub pos: usize,
+    title: String,
+    items: Vec<Location>,
+    selected: usize,
+    files: HashMap<String, Vec<String>>,
+    hierarchy: Option<(bool, bool)>,
+    reveal: bool,
+}
+
+struct Rename {
+    doc: u64,
+    pos: usize,
+    text: String,
+    focus: bool,
+}
+
+struct Actions {
+    doc: u64,
+    items: Vec<(String, Value)>,
+    selected: usize,
+    reveal: bool,
+}
+
+#[derive(Default)]
+pub(super) struct Intel {
+    wants: Vec<(u64, Want)>,
+    epoch: u64,
+    suggest: Option<Suggest>,
+    signature: Option<(u64, Signature)>,
+    pub hover: Option<Hover>,
+    hover_rect: Option<Rect>,
+    pub peek: Option<Peek>,
+    rename: Option<Rename>,
+    actions: Option<Actions>,
+    saving: Option<(u64, f64)>,
+    saved: bool,
+    history: Vec<(PathBuf, usize)>,
+    rects: Vec<Rect>,
+    last_rects: Vec<Rect>,
+    pub queued: Vec<Queued>,
+}
+
+impl Intel {
+    pub fn dismiss(&mut self) {
+        self.suggest = None;
+        self.signature = None;
+        self.actions = None;
+        self.hover = None;
+    }
+}
+
+impl Editors {
+    pub fn set_root(&mut self, root: Option<PathBuf>) {
+        self.root = root;
+    }
+
+    pub fn take_saved(&mut self) -> bool {
+        std::mem::take(&mut self.intel.saved)
+    }
+
+    pub fn outline(&self) -> Option<(&[Symbol], usize)> {
+        let (g, t) = self.active_tab()?;
+        let tab = &self.groups[g].tabs[t];
+        let doc = self.docs.get(&tab.doc)?;
+        let line = doc.buf.line_of(tab.sels.first().map_or(0, |s| s.head));
+        (!doc.lang.symbols.is_empty()).then(|| (doc.lang.symbols.as_slice(), line))
+    }
+
+    pub(super) fn process(&mut self, settings: &Settings, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        self.intel.last_rects = std::mem::take(&mut self.intel.rects);
+        self.lsp.configure(settings, self.root.as_deref());
+        self.lsp.poll();
+        if self.intel.epoch != self.lsp.epoch {
+            self.intel.epoch = self.lsp.epoch;
+            self.intel.wants.clear();
+            for doc in self.docs.values_mut() {
+                doc.lang = Lang::default();
+            }
+            if let Some((doc, _)) = self.intel.saving.take() {
+                self.finish_save(doc);
+            }
+        }
+        for doc in self.docs.values_mut() {
+            sync(&mut self.lsp, &doc.buf, &mut doc.lang, ctx);
+        }
+        for edit in std::mem::take(&mut self.lsp.edits) {
+            self.apply_workspace_edit(lsp::workspace_edit(&edit));
+        }
+        for (id, want) in std::mem::take(&mut self.intel.wants) {
+            match self.lsp.take(id) {
+                Some(reply) => self.reply(want, reply, now),
+                None => self.intel.wants.push((id, want)),
+            }
+        }
+        if self.intel.wants.len() > 600 {
+            self.intel.wants.drain(..300);
+        }
+        if let Some((doc, _)) = self.intel.saving.take_if(|saving| now > saving.1) {
+            self.finish_save(doc);
+        }
+        let visible: Vec<u64> = self.groups.iter().filter_map(|group| group.tabs.get(group.active).map(|tab| tab.doc)).collect();
+        for id in visible {
+            self.refresh(id, settings, now, ctx);
+        }
+        let outside = |rects: &[Rect]| !ctx.pointer_interact_pos().is_some_and(|pos| rects.iter().any(|r| r.contains(pos)));
+        if ctx.input(|i| i.pointer.any_pressed()) && outside(&self.intel.last_rects) {
+            self.intel.suggest = None;
+            self.intel.actions = None;
+            self.intel.signature = None;
+        }
+    }
+
+    fn refresh(&mut self, id: u64, settings: &Settings, now: f64, ctx: &egui::Context) {
+        let Some(doc) = self.docs.get_mut(&id) else { return };
+        let (buf, lang) = (&doc.buf, &mut doc.lang);
+        let Some(path) = buf.path.as_deref().filter(|_| lang.attached) else { return };
+        if lang.settled != self.lsp.settled {
+            lang.settled = self.lsp.settled;
+            lang.requested = 0;
+            lang.hinted = (0, 0, 0);
+        }
+        let version = buf.version;
+        if now - self.last_input <= 0.3 || now < lang.retry {
+            if lang.requested != version || now < lang.retry {
+                ctx.request_repaint_after(Duration::from_millis(350));
+            }
+            return;
+        }
+        let target = json!({"textDocument": {"uri": lsp::uri(path)}});
+        if lang.requested != version {
+            lang.requested = version;
+            if let Some(request) = self.lsp.request(path, "textDocument/documentSymbol", target.clone()) {
+                self.intel.wants.push((request, Want::Symbols { doc: id, version }));
+            }
+            if settings.semantic_highlighting
+                && let Some(request) = self.lsp.request(path, "textDocument/semanticTokens/full", target.clone())
+            {
+                self.intel.wants.push((request, Want::Tokens { doc: id, version }));
+            }
+        }
+        let (first, last) = lang.visible;
+        if settings.inlay_hints && last > first && !(lang.hinted.0 == version && lang.hinted.1 <= first && lang.hinted.2 >= last) {
+            let (from, to) = (first.saturating_sub(50), last + 50);
+            lang.hinted = (version, from, to);
+            let mut params = target.clone();
+            params["range"] = lsp::range_json((from, 0), (to, 0));
+            if let Some(request) = self.lsp.request(path, "textDocument/inlayHint", params) {
+                self.intel.wants.push((request, Want::Hints { doc: id, version }));
+            }
+        }
+        if !settings.code_lens {
+            return;
+        }
+        let mut budget = 12;
+        for lens in lang.lens.iter_mut().filter(|lens| !lens.asked) {
+            let Some(symbol) = lang.symbols.get(lens.symbol).filter(|s| s.line + 2 >= first && s.line <= last) else { continue };
+            if budget == 0 {
+                ctx.request_repaint();
+                break;
+            }
+            budget -= 1;
+            lens.asked = true;
+            let mut params = lsp::at(path, (symbol.line, symbol.col));
+            let want = |impls| Want::Lens { doc: id, generation: lang.generation, symbol: lens.symbol, impls };
+            if symbol.kind == 11
+                && let Some(request) = self.lsp.request(path, "textDocument/implementation", params.clone())
+            {
+                self.intel.wants.push((request, want(true)));
+            }
+            params["context"] = json!({"includeDeclaration": false});
+            if let Some(request) = self.lsp.request(path, "textDocument/references", params) {
+                self.intel.wants.push((request, want(false)));
+            }
+        }
+    }
+
+    fn reply(&mut self, want: Want, reply: Option<Value>, now: f64) {
+        let failed = reply.is_none();
+        let value = reply.unwrap_or(Value::Null);
+        match want {
+            Want::Symbols { doc, version } => {
+                let Some(d) = self.docs.get_mut(&doc) else { return };
+                if failed {
+                    d.lang.requested = 0;
+                    d.lang.retry = now + 1.0;
+                }
+                if failed || d.buf.version != version {
+                    return;
+                }
+                let lang = &mut d.lang;
+                let before = std::mem::replace(&mut lang.symbols, lsp::symbols(&value));
+                let mut carried: Vec<(String, u8, Lens)> = std::mem::take(&mut lang.lens)
+                    .into_iter()
+                    .filter_map(|lens| before.get(lens.symbol).map(|s| (s.name.clone(), s.kind, lens)))
+                    .collect();
+                for (index, symbol) in lang.symbols.iter().enumerate() {
+                    let taken = lang.lens.last().is_some_and(|lens| lang.symbols[lens.symbol].line == symbol.line);
+                    if taken || !matches!(symbol.kind, 5 | 6 | 9 | 10 | 11 | 12 | 23) {
+                        continue;
+                    }
+                    let kept = carried.iter().position(|c| c.0 == symbol.name && c.1 == symbol.kind).map(|at| carried.remove(at).2);
+                    let (refs, impls) = kept.map_or((None, None), |lens| (lens.refs, lens.impls));
+                    lang.lens.push(Lens { symbol: index, refs, impls, asked: false });
+                }
+                lang.generation += 1;
+            }
+            Want::Tokens { doc, version } => {
+                let Some(d) = self.docs.get_mut(&doc).filter(|d| !failed && d.buf.version == version) else { return };
+                let Some(path) = d.buf.path.as_deref() else { return };
+                let tones: Vec<u8> = self.lsp.token_types(path).iter().map(|name| tone(name)).collect();
+                d.lang.tokens.clear();
+                for (line, col, len, kind) in lsp::tokens(&value) {
+                    if let Some(tone) = tones.get(kind).copied().filter(|tone| *tone > 0) {
+                        d.lang.tokens.entry(line).or_default().push((col, len, tone));
+                    }
+                }
+            }
+            Want::Hints { doc, version } => {
+                let Some(d) = self.docs.get_mut(&doc) else { return };
+                if failed {
+                    d.lang.hinted = (0, 0, 0);
+                    d.lang.retry = now + 1.0;
+                } else if d.buf.version == version {
+                    d.lang.hints = lsp::hints(&value);
+                }
+            }
+            Want::Lens { doc, generation, symbol, impls } => {
+                let Some(d) = self.docs.get_mut(&doc).filter(|d| d.lang.generation == generation) else { return };
+                let Some(lens) = d.lang.lens.iter_mut().find(|lens| lens.symbol == symbol) else { return };
+                if failed {
+                    lens.asked = false;
+                    d.lang.retry = now + 1.0;
+                } else if impls {
+                    lens.impls = Some(lsp::locations(&value));
+                } else {
+                    lens.refs = Some(lsp::locations(&value));
+                }
+            }
+            Want::Completion { doc, start, dot } => {
+                let (items, incomplete) = lsp::completions(&value);
+                let single = self.active_tab().is_some_and(|(g, t)| self.groups[g].tabs[t].doc == doc && self.groups[g].tabs[t].sels.len() == 1);
+                if single && !items.is_empty() {
+                    self.intel.suggest = Some(Suggest { doc, start, items, shown: vec![], selected: 0, prefix: None, incomplete, dot, reveal: true });
+                }
+            }
+            Want::Signature { doc } => self.intel.signature = lsp::signature(&value).map(|found| (doc, found)),
+            Want::Hover { doc, word } => {
+                if let Some(hover) = self.intel.hover.as_mut().filter(|h| h.doc == doc && h.word == word) {
+                    hover.blocks.extend(lsp::blocks(&lsp::hover(&value)).into_iter().map(|(code, text)| (code as u8, text)));
+                }
+            }
+            Want::Locations { doc, pos, title, peek } => {
+                let found = lsp::locations(&value);
+                match found.as_slice() {
+                    [] => self.banner = Some(format!("No {} found.", title.to_lowercase())),
+                    [only] if !peek => {
+                        let (path, start) = (only.path.clone(), only.start);
+                        self.jump(&path, start, true);
+                    }
+                    _ => self.open_peek(doc, pos, title, found, None),
+                }
+            }
+            Want::Rename => match lsp::workspace_edit(&value) {
+                changes if changes.is_empty() => self.banner = Some("The language server could not rename this symbol.".into()),
+                changes => self.apply_workspace_edit(changes),
+            },
+            Want::Actions { doc, apply } => {
+                let found = lsp::actions(&value);
+                match found.first() {
+                    Some((_, action)) if apply => self.run_action(doc, action.clone()),
+                    Some(_) => self.intel.actions = Some(Actions { doc, items: found, selected: 0, reveal: true }),
+                    None if apply => {}
+                    None => self.banner = Some("No code actions are available here.".into()),
+                }
+            }
+            Want::Format { doc, version, save } => {
+                if !failed && self.docs.get(&doc).is_some_and(|d| d.buf.version == version) {
+                    self.edit_doc(doc, &lsp::edits(&value));
+                }
+                if save && self.intel.saving.take_if(|saving| saving.0 == doc).is_some() {
+                    self.finish_save(doc);
+                }
+            }
+            Want::Prepare { doc, pos, call, outgoing } => {
+                let item = value.as_array().and_then(|items| items.first());
+                let path = self.docs.get(&doc).and_then(|d| d.buf.path.clone());
+                let (Some(item), Some(path)) = (item, path) else {
+                    self.banner = Some("No hierarchy is available here.".into());
+                    return;
+                };
+                let method = match (call, outgoing) {
+                    (true, false) => "callHierarchy/incomingCalls",
+                    (true, true) => "callHierarchy/outgoingCalls",
+                    (false, false) => "typeHierarchy/supertypes",
+                    (false, true) => "typeHierarchy/subtypes",
+                };
+                if let Some(request) = self.lsp.request(&path, method, json!({"item": item})) {
+                    self.intel.wants.push((request, Want::Hierarchy { doc, pos, call, outgoing }));
+                }
+            }
+            Want::Hierarchy { doc, pos, call, outgoing } => {
+                self.open_peek(doc, pos, hierarchy_title(call, outgoing), lsp::hierarchy(&value), Some((call, outgoing)));
+            }
+        }
+    }
+
+    fn lines_of(&self, path: &Path) -> Vec<String> {
+        let wanted = lsp::key(path);
+        match self.docs.values().find(|d| d.buf.path.as_deref().is_some_and(|p| lsp::key(p) == wanted)) {
+            Some(doc) => doc.buf.rope.lines().map(|line| line.to_string().trim_end_matches('\n').to_owned()).collect(),
+            None => std::fs::read_to_string(path).unwrap_or_default().lines().map(str::to_owned).collect(),
+        }
+    }
+
+    fn open_peek(&mut self, doc: u64, pos: usize, title: &str, mut items: Vec<Location>, hierarchy: Option<(bool, bool)>) {
+        items.truncate(500);
+        let mut files: HashMap<String, Vec<String>> = HashMap::new();
+        for item in &mut items {
+            let lines = files.entry(lsp::key(&item.path)).or_insert_with(|| self.lines_of(&item.path));
+            let text = lines.get(item.start.0).map(|line| line.trim()).unwrap_or_default();
+            item.label = if item.label.is_empty() { text.to_owned() } else { format!("{}   {text}", item.label) };
+        }
+        self.intel.peek = Some(Peek { doc, pos, title: title.to_owned(), items, selected: 0, files, hierarchy, reveal: true });
+    }
+
+    pub(super) fn find_doc(&self, path: &Path) -> Option<u64> {
+        let wanted = lsp::key(path);
+        self.docs.iter().find(|(_, d)| d.buf.path.as_deref().is_some_and(|p| lsp::key(p) == wanted)).map(|(id, _)| *id)
+    }
+
+    fn remember(&mut self) {
+        let Some((g, t)) = self.active_tab() else { return };
+        let tab = &self.groups[g].tabs[t];
+        if let Some(path) = self.docs.get(&tab.doc).and_then(|d| d.buf.path.clone()) {
+            self.intel.history.push((path, tab.sels.first().map_or(0, |s| s.head)));
+            if self.intel.history.len() > 60 {
+                self.intel.history.remove(0);
+            }
+        }
+    }
+
+    fn show_path(&mut self, path: &Path) {
+        match self.find_doc(path) {
+            Some(id) => self.show_doc(id),
+            None => self.open(path),
+        }
+    }
+
+    fn jump(&mut self, path: &Path, at: Pos, record: bool) {
+        if record {
+            self.remember();
+        }
+        self.show_path(path);
+        self.with_active(|buf, tab| tab.sels = vec![Sel::caret(from_lsp(buf, at))]);
+    }
+
+    fn apply_workspace_edit(&mut self, changes: Vec<(PathBuf, Vec<lsp::Edit>)>) {
+        let active = self.active_tab();
+        for (path, edits) in changes {
+            let id = match self.find_doc(&path) {
+                Some(id) => id,
+                None => match Document::load(&path) {
+                    Ok(buf) => {
+                        let id = self.insert_doc(buf);
+                        self.add_tab(id, vec![Sel::caret(0)]);
+                        id
+                    }
+                    Err(error) => {
+                        self.banner = Some(error);
+                        continue;
+                    }
+                },
+            };
+            self.edit_doc(id, &edits);
+        }
+        if let Some((g, t)) = active {
+            self.active = g;
+            self.groups[g].active = t;
+        }
+    }
+
+    fn edit_doc(&mut self, id: u64, edits: &[lsp::Edit]) {
+        let Some(doc) = self.docs.get_mut(&id) else { return };
+        let list = edits.iter().map(|e| (from_lsp(&doc.buf, e.start), from_lsp(&doc.buf, e.end), e.text.clone())).collect();
+        match self.groups.iter_mut().flat_map(|group| &mut group.tabs).find(|tab| tab.doc == id) {
+            Some(tab) => doc.buf.apply(&mut tab.sels, list, Kind::Other, After::Map),
+            None => doc.buf.apply(&mut vec![Sel::caret(0)], list, Kind::Other, After::Map),
+        };
+    }
+
+    fn run_action(&mut self, doc: u64, action: Value) {
+        let changes = lsp::workspace_edit(&action["edit"]);
+        if !changes.is_empty() {
+            self.apply_workspace_edit(changes);
+        }
+        let command = if action["command"].is_object() { &action["command"] } else { &action };
+        let path = self.docs.get(&doc).and_then(|d| d.buf.path.clone());
+        if let (Some(name), Some(path)) = (command["command"].as_str(), path) {
+            self.lsp.request(&path, "workspace/executeCommand", json!({"command": name, "arguments": command["arguments"]}));
+        }
+    }
+
+    fn prepare(&mut self, doc: u64, pos: usize, call: bool, outgoing: bool) {
+        let Some(d) = self.docs.get(&doc) else { return };
+        let Some(path) = d.buf.path.clone() else { return };
+        let method = if call { "textDocument/prepareCallHierarchy" } else { "textDocument/prepareTypeHierarchy" };
+        match self.lsp.request(&path, method, lsp::at(&path, to_lsp(&d.buf, pos))) {
+            Some(request) => self.intel.wants.push((request, Want::Prepare { doc, pos, call, outgoing })),
+            None => self.banner = Some(format!("The language server does not provide {}.", hierarchy_title(call, outgoing).to_lowercase())),
+        }
+    }
+
+    pub(super) fn after_views(&mut self) {
+        for item in std::mem::take(&mut self.intel.queued) {
+            match item {
+                Queued::Jump(path, at) => self.jump(&path, at, true),
+                Queued::Peek(doc, pos, title, items) => self.open_peek(doc, pos, title, items, None),
+                Queued::Action(doc, action) => self.run_action(doc, action),
+                Queued::Hierarchy(doc, pos, call, outgoing) => self.prepare(doc, pos, call, outgoing),
+            }
+        }
+    }
+
+    fn finish_save(&mut self, id: u64) {
+        if self.save_doc(id, false) {
+            self.intel.saved = true;
+        }
+    }
+
+    pub(super) fn save_formatted(&mut self, id: u64, settings: &Settings, ctx: &egui::Context) -> bool {
+        let Some(doc) = self.docs.get_mut(&id).filter(|_| settings.format_on_save) else { return false };
+        sync(&mut self.lsp, &doc.buf, &mut doc.lang, ctx);
+        let Some(path) = doc.buf.path.clone().filter(|_| doc.lang.attached) else { return false };
+        let options = json!({"tabSize": settings.tab_size, "insertSpaces": settings.insert_spaces});
+        let params = json!({"textDocument": {"uri": lsp::uri(&path)}, "options": options});
+        let Some(request) = self.lsp.request(&path, "textDocument/formatting", params) else { return false };
+        self.intel.wants.push((request, Want::Format { doc: id, version: doc.buf.version, save: true }));
+        self.intel.saving = Some((id, ctx.input(|i| i.time) + 1.5));
+        ctx.request_repaint_after(Duration::from_millis(1600));
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn format_range(&mut self, id: u64, buf: &Document, lang: &mut Lang, from: usize, to: usize, settings: &Settings, ctx: &egui::Context) {
+        let Some(path) = buf.path.clone().filter(|_| lang.attached && from < to) else { return };
+        sync(&mut self.lsp, buf, lang, ctx);
+        let options = json!({"tabSize": settings.tab_size, "insertSpaces": settings.insert_spaces});
+        let span = lsp::range_json(to_lsp(buf, from), to_lsp(buf, to));
+        let params = json!({"textDocument": {"uri": lsp::uri(&path)}, "range": span, "options": options});
+        if let Some(request) = self.lsp.request(&path, "textDocument/rangeFormatting", params) {
+            self.intel.wants.push((request, Want::Format { doc: id, version: buf.version, save: false }));
+        }
+    }
+
+    pub(super) fn intel_exec(&mut self, cmd: &Command, settings: &Settings, ctx: &egui::Context) -> bool {
+        use Command::*;
+        if *cmd == GoBack {
+            if let Some((path, pos)) = self.intel.history.pop() {
+                self.show_path(&path);
+                self.with_active(|_, tab| tab.sels = vec![Sel::caret(pos)]);
+            }
+            return true;
+        }
+        let known = matches!(
+            cmd,
+            GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition | GoToImplementation | FindReferences
+                | ShowCallHierarchy | ShowTypeHierarchy | ShowHover | TriggerSuggest | TriggerParameterHints | RenameSymbol
+                | QuickFix | OrganizeImports | FormatDocument | FormatSelection
+        );
+        let Some((g, t)) = self.active_tab().filter(|_| known) else { return false };
+        let tab = &self.groups[g].tabs[t];
+        let (id, sel) = (tab.doc, tab.sels.first().copied().unwrap_or_default());
+        let Some(doc) = self.docs.get_mut(&id) else { return false };
+        sync(&mut self.lsp, &doc.buf, &mut doc.lang, ctx);
+        let buf = &doc.buf;
+        let Some(path) = buf.path.clone().filter(|_| doc.lang.attached) else {
+            self.banner = Some("No language server is running for this file. Servers are listed under Languages in Settings.".into());
+            return true;
+        };
+        let head = sel.head.min(buf.len());
+        let here = lsp::at(&path, to_lsp(buf, head));
+        let document = json!({"uri": lsp::uri(&path)});
+        let locations = |title, peek| Want::Locations { doc: id, pos: head, title, peek };
+        let (method, params, want) = match cmd {
+            GoToDefinition => ("textDocument/definition", here, locations("Definitions", false)),
+            PeekDefinition => ("textDocument/definition", here, locations("Definitions", true)),
+            GoToDeclaration => ("textDocument/declaration", here, locations("Declarations", false)),
+            GoToTypeDefinition => ("textDocument/typeDefinition", here, locations("Type Definitions", false)),
+            GoToImplementation => ("textDocument/implementation", here, locations("Implementations", false)),
+            FindReferences => {
+                let mut params = here;
+                params["context"] = json!({"includeDeclaration": true});
+                ("textDocument/references", params, locations("References", true))
+            }
+            ShowCallHierarchy => ("textDocument/prepareCallHierarchy", here, Want::Prepare { doc: id, pos: head, call: true, outgoing: false }),
+            ShowTypeHierarchy => ("textDocument/prepareTypeHierarchy", here, Want::Prepare { doc: id, pos: head, call: false, outgoing: false }),
+            TriggerSuggest => {
+                let mut params = here;
+                params["context"] = json!({"triggerKind": 1});
+                ("textDocument/completion", params, Want::Completion { doc: id, start: buf.word_at(head).0.min(head), dot: true })
+            }
+            TriggerParameterHints => ("textDocument/signatureHelp", here, Want::Signature { doc: id }),
+            ShowHover => {
+                let word = buf.word_at(head);
+                let blocks = problem_blocks(&self.lsp, &path, to_lsp(buf, word.0), to_lsp(buf, word.1));
+                self.intel.hover = Some(Hover { group: g, doc: id, word, since: 0.0, asked: true, pinned: true, blocks });
+                ("textDocument/hover", here, Want::Hover { doc: id, word })
+            }
+            RenameSymbol => {
+                let (from, to) = buf.word_at(head);
+                self.intel.rename = Some(Rename { doc: id, pos: head, text: buf.text_of(from, to), focus: true });
+                return true;
+            }
+            QuickFix | OrganizeImports => {
+                let organize = *cmd == OrganizeImports;
+                let (from, to) = if organize { (0, buf.len()) } else { (sel.start(), sel.end()) };
+                let (start, end) = (to_lsp(buf, from), to_lsp(buf, to));
+                let touching: Vec<Value> =
+                    self.lsp.diagnostics(&path).iter().filter(|d| d.start <= end && d.end >= start).map(|d| d.raw.clone()).collect();
+                let mut context = json!({"diagnostics": touching, "triggerKind": 1});
+                if organize {
+                    context["only"] = json!(["source.organizeImports"]);
+                }
+                let params = json!({"textDocument": document, "range": lsp::range_json(start, end), "context": context});
+                ("textDocument/codeAction", params, Want::Actions { doc: id, apply: organize })
+            }
+            _ => {
+                let whole = *cmd == FormatDocument || sel.is_empty();
+                let options = json!({"tabSize": settings.tab_size, "insertSpaces": settings.insert_spaces});
+                let mut params = json!({"textDocument": document, "options": options});
+                if !whole {
+                    params["range"] = lsp::range_json(to_lsp(buf, sel.start()), to_lsp(buf, sel.end()));
+                }
+                let method = if whole { "textDocument/formatting" } else { "textDocument/rangeFormatting" };
+                (method, params, Want::Format { doc: id, version: buf.version, save: false })
+            }
+        };
+        match self.lsp.request(&path, method, params) {
+            Some(request) => self.intel.wants.push((request, want)),
+            None => self.banner = Some(format!("The language server does not support {}.", cmd.label())),
+        }
+        true
+    }
+
+    pub(super) fn typed(&mut self, c: char, id: u64, buf: &Document, lang: &mut Lang, tab: &Tab, ctx: &egui::Context) {
+        self.intel.hover = None;
+        let Some(path) = buf.path.clone().filter(|_| lang.attached) else { return };
+        let head = tab.sels[0].head;
+        let word = is_word(c);
+        if word || self.lsp.triggers(&path, "completionProvider").contains(&c) {
+            let start = if word { buf.word_at(head).0.min(head) } else { head };
+            let open = self.intel.suggest.as_ref().is_some_and(|p| p.doc == id && p.start == start && !p.incomplete);
+            let waiting = self.intel.wants.iter().any(|(_, w)| matches!(w, Want::Completion { doc, start: s, .. } if *doc == id && *s == start));
+            if !(word && (open || waiting)) {
+                sync(&mut self.lsp, buf, lang, ctx);
+                let mut params = lsp::at(&path, to_lsp(buf, head));
+                params["context"] = if word { json!({"triggerKind": 1}) } else { json!({"triggerKind": 2, "triggerCharacter": c.to_string()}) };
+                if let Some(request) = self.lsp.request(&path, "textDocument/completion", params) {
+                    self.intel.wants.push((request, Want::Completion { doc: id, start, dot: !word }));
+                }
+                if !word {
+                    self.intel.suggest = None;
+                }
+            }
+        } else {
+            self.intel.suggest = None;
+        }
+        if self.intel.signature.is_some() || self.lsp.triggers(&path, "signatureHelpProvider").contains(&c) {
+            sync(&mut self.lsp, buf, lang, ctx);
+            if let Some(request) = self.lsp.request(&path, "textDocument/signatureHelp", lsp::at(&path, to_lsp(buf, head))) {
+                self.intel.wants.push((request, Want::Signature { doc: id }));
+            }
+        }
+    }
+
+    pub(super) fn popup_keys(&mut self, events: &mut Vec<Event>, id: u64, buf: &mut Document, tab: &mut Tab) {
+        let mut accept = false;
+        events.retain(|event| {
+            let Event::Key { key, pressed: true, modifiers, .. } = event else { return true };
+            let step = match key {
+                Key::ArrowDown => 1,
+                Key::ArrowUp => -1,
+                Key::Enter | Key::Tab | Key::Escape => 0,
+                _ => return true,
+            };
+            if modifiers.any() {
+                return true;
+            }
+            let intel = &mut self.intel;
+            let moved = |selected: &mut usize, count: usize| *selected = (*selected as isize + step).rem_euclid(count as isize) as usize;
+            if let Some(popup) = intel.suggest.as_mut().filter(|p| p.doc == id && !p.shown.is_empty()) {
+                match key {
+                    Key::Escape => intel.suggest = None,
+                    Key::Enter | Key::Tab => accept = true,
+                    _ => {
+                        moved(&mut popup.selected, popup.shown.len());
+                        popup.reveal = true;
+                    }
+                }
+            } else if let Some(popup) = intel.actions.as_mut().filter(|p| p.doc == id && *key != Key::Tab) {
+                match key {
+                    Key::Escape => {}
+                    Key::Enter => intel.queued.extend(popup.items.get(popup.selected).map(|item| Queued::Action(id, item.1.clone()))),
+                    _ => {
+                        moved(&mut popup.selected, popup.items.len().max(1));
+                        popup.reveal = true;
+                        return false;
+                    }
+                }
+                intel.actions = None;
+            } else if *key == Key::Escape && (intel.signature.is_some() || intel.hover.is_some()) {
+                intel.signature = None;
+                intel.hover = None;
+            } else if let Some(peek) = intel.peek.as_mut().filter(|p| p.doc == id && *key != Key::Tab) {
+                match key {
+                    Key::Escape => {}
+                    Key::Enter => intel.queued.extend(peek.items.get(peek.selected).map(|item| Queued::Jump(item.path.clone(), item.start))),
+                    _ => {
+                        moved(&mut peek.selected, peek.items.len().max(1));
+                        peek.reveal = true;
+                        return false;
+                    }
+                }
+                intel.peek = None;
+            } else {
+                return true;
+            }
+            false
+        });
+        if accept {
+            self.accept_suggestion(buf, tab);
+        }
+    }
+
+    fn accept_suggestion(&mut self, buf: &mut Document, tab: &mut Tab) {
+        let Some(popup) = self.intel.suggest.take() else { return };
+        let Some(item) = popup.shown.get(popup.selected).map(|index| &popup.items[*index]) else { return };
+        let head = tab.sels[0].head;
+        let from = item.range.map_or(popup.start, |span| from_lsp(buf, span.0)).min(head);
+        let mut edits = vec![(from, head, item.text.clone())];
+        edits.extend(item.extra.iter().map(|e| (from_lsp(buf, e.start), from_lsp(buf, e.end), e.text.clone())));
+        let before = edits.iter().skip(1).filter(|e| e.0 < from).count();
+        let mut sels = tab.sels.clone();
+        if buf.apply(&mut sels, edits, Kind::Other, After::Carets) {
+            tab.sels = vec![sels.get(before).copied().unwrap_or(sels[0])];
+            buf.fix_after(&tab.sels);
+            tab.reveal = Some(tab.sels[0].head);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn track_hover(&mut self, over: Option<(usize, usize)>, g: usize, id: u64, buf: &Document, lang: &mut Lang, now: f64, ctx: &egui::Context) {
+        let on_popup = self.intel.hover_rect.is_some_and(|r| ctx.pointer_latest_pos().is_some_and(|p| r.expand(4.0).contains(p)));
+        match self.intel.hover.as_ref().map(|h| ((h.group, h.doc) == (g, id), h.word, h.pinned)) {
+            Some((false, ..)) if over.is_none() => return,
+            Some((true, word, pinned)) if Some(word) == over || on_popup || (pinned && over.is_none()) => {}
+            None if over.is_none() => return,
+            _ => {
+                self.intel.hover = over.map(|word| Hover { group: g, doc: id, word, since: now, asked: false, pinned: false, blocks: vec![] });
+                self.intel.hover_rect = None;
+                ctx.request_repaint_after(Duration::from_millis(450));
+            }
+        }
+        let Some(hover) = self.intel.hover.as_mut().filter(|h| (h.group, h.doc) == (g, id) && !h.asked && now - h.since >= 0.4) else { return };
+        hover.asked = true;
+        let Some(path) = buf.path.clone().filter(|_| lang.attached) else { return };
+        let (start, end) = (to_lsp(buf, hover.word.0), to_lsp(buf, hover.word.1));
+        hover.blocks = problem_blocks(&self.lsp, &path, start, end);
+        let word = hover.word;
+        sync(&mut self.lsp, buf, lang, ctx);
+        if let Some(request) = self.lsp.request(&path, "textDocument/hover", lsp::at(&path, start)) {
+            self.intel.wants.push((request, Want::Hover { doc: id, word }));
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn hover_ui(&mut self, ctx: &egui::Context, theme: &Theme, font: &FontId, g: usize, id: u64, at: Option<Pos2>, line_h: f32) {
+        let Some(hover) = self.intel.hover.as_ref().filter(|h| (h.group, h.doc) == (g, id) && !h.blocks.is_empty()) else { return };
+        let Some(at) = at else { return };
+        let (pivot, pos) = match at.y > ctx.content_rect().center().y {
+            true => (Align2::LEFT_BOTTOM, at - vec2(0.0, 2.0)),
+            false => (Align2::LEFT_TOP, at + vec2(0.0, line_h + 2.0)),
+        };
+        let area = Area::new(Id::new("hover_info")).order(Order::Foreground).pivot(pivot).fixed_pos(pos).show(ctx, |ui| {
+            popup_frame(theme).inner_margin(8.0).show(ui, |ui| {
+                ui.set_max_width(580.0);
+                ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    for (kind, text) in &hover.blocks {
+                        let rich = match kind {
+                            0 => RichText::new(text).color(theme.text),
+                            1 => RichText::new(text).font(font.clone()).color(theme.text),
+                            severity => RichText::new(text).color(severity_color(theme, severity - 1)),
+                        };
+                        ui.add(egui::Label::new(rich).wrap());
+                        ui.add_space(4.0);
+                    }
+                });
+            });
+        });
+        self.intel.hover_rect = Some(area.response.rect);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn popups(&mut self, ui: &mut Ui, theme: &Theme, id: u64, buf: &mut Document, tab: &mut Tab, caret: Option<Pos2>, line_h: f32, font: &FontId) {
+        let ctx = ui.ctx().clone();
+        let head = tab.sels[0].head;
+        let mut keep = false;
+        if let Some(popup) = self.intel.suggest.as_mut().filter(|p| p.doc == id) {
+            let valid = tab.sels.len() == 1 && tab.sels[0].is_empty() && head >= popup.start && buf.line_of(popup.start) == buf.line_of(head);
+            let prefix = if valid { buf.text_of(popup.start, head) } else { String::new() };
+            if valid && prefix.chars().all(is_word) && (popup.dot || !prefix.is_empty()) {
+                if popup.prefix.as_deref() != Some(prefix.as_str()) {
+                    let lower = prefix.to_lowercase();
+                    let rank = |item: &Completion| if prefix.is_empty() { Some(0) } else { crate::search::score(&prefix, &item.filter) };
+                    let mut ranked: Vec<(i32, usize)> = popup.items.iter().enumerate().filter_map(|(index, item)| Some((rank(item)?, index))).collect();
+                    ranked.sort_by_key(|(score, index)| {
+                        let item = &popup.items[*index];
+                        (!item.filter.to_lowercase().starts_with(&lower), -score, item.sort.clone())
+                    });
+                    let shown: Vec<usize> = ranked.into_iter().take(300).map(|found| found.1).collect();
+                    (popup.shown, popup.selected, popup.reveal, popup.prefix) = (shown, 0, true, Some(prefix));
+                }
+                keep = !popup.shown.is_empty();
+            }
+        }
+        if !keep {
+            self.intel.suggest = None;
+        }
+        let _ = self.intel.signature.take_if(|s| s.0 != id);
+        let _ = self.intel.actions.take_if(|a| a.doc != id);
+        let below = caret.map(|at| at + vec2(0.0, line_h + 2.0));
+
+        let mut accept = false;
+        if let (Some(popup), Some(at)) = (self.intel.suggest.as_mut(), below) {
+            let reveal = std::mem::take(&mut popup.reveal);
+            let rows: Vec<(&str, &str, &str)> = popup
+                .shown
+                .iter()
+                .map(|index| &popup.items[*index])
+                .map(|item| (lsp::completion_icon(item.kind), item.label.as_str(), item.detail.as_str()))
+                .collect();
+            let (clicked, rect) = list_popup(&ctx, theme, "suggest", at, &rows, popup.selected, reveal, font);
+            if let Some(index) = clicked {
+                popup.selected = index;
+                accept = true;
+            }
+            self.intel.rects.push(rect);
+        }
+        if accept {
+            self.accept_suggestion(buf, tab);
+            self.want_focus = true;
+        }
+
+        if let (Some(popup), Some(at)) = (self.intel.actions.as_mut(), below) {
+            let reveal = std::mem::take(&mut popup.reveal);
+            let rows: Vec<(&str, &str, &str)> = popup.items.iter().map(|item| (icons::LIGHTBULB, item.0.as_str(), "")).collect();
+            let (clicked, rect) = list_popup(&ctx, theme, "code_actions", at, &rows, popup.selected, reveal, &FontId::proportional(12.5));
+            let chosen = clicked.and_then(|index| popup.items.get(index)).map(|item| item.1.clone());
+            self.intel.rects.push(rect);
+            if let Some(action) = chosen {
+                self.intel.queued.push(Queued::Action(id, action));
+                self.intel.actions = None;
+                self.want_focus = true;
+            }
+        }
+
+        if let (Some((_, sig)), Some(at)) = (&self.intel.signature, caret) {
+            let mut job = LayoutJob::default();
+            let plain = TextFormat::simple(font.clone(), theme.text);
+            let label = sig.label.as_str();
+            match sig.param.filter(|(a, b)| a <= b && label.is_char_boundary(*a) && label.is_char_boundary(*b) && *b <= label.len()) {
+                Some((a, b)) => {
+                    job.append(&label[..a], 0.0, plain.clone());
+                    job.append(&label[a..b], 0.0, TextFormat::simple(font.clone(), theme.accent));
+                    job.append(&label[b..], 0.0, plain);
+                }
+                None => job.append(label, 0.0, plain),
+            }
+            let note: String = sig.doc.lines().take(3).collect::<Vec<_>>().join("\n");
+            let area = Area::new(Id::new("signature_help")).order(Order::Foreground).pivot(Align2::LEFT_BOTTOM).fixed_pos(at - vec2(0.0, 4.0)).show(&ctx, |ui| {
+                popup_frame(theme).inner_margin(8.0).show(ui, |ui| {
+                    ui.set_max_width(580.0);
+                    ui.label(job);
+                    if !note.trim().is_empty() {
+                        ui.add(egui::Label::new(RichText::new(note).color(theme.text_dim)).wrap());
+                    }
+                });
+            });
+            self.intel.rects.push(area.response.rect);
+        }
+
+        if let (Some(rename), Some(at)) = (self.intel.rename.as_mut().filter(|r| r.doc == id), below) {
+            let (mut done, mut focused) = (None, false);
+            Area::new(Id::new("rename_symbol")).order(Order::Foreground).fixed_pos(at).show(&ctx, |ui| {
+                popup_frame(theme).inner_margin(6.0).show(ui, |ui| {
+                    let field = ui.add(TextEdit::singleline(&mut rename.text).margin(ui::FIELD).desired_width(240.0).font(font.clone()));
+                    if std::mem::take(&mut rename.focus) {
+                        field.request_focus();
+                    }
+                    focused = field.has_focus();
+                    if field.lost_focus() {
+                        done = Some(ui.input(|i| i.key_pressed(Key::Enter)));
+                    }
+                    ui.label(RichText::new("Enter to rename, Escape to cancel").size(11.0).color(theme.text_dim));
+                });
+            });
+            self.focused |= focused;
+            if let Some(submit) = done {
+                let (pos, name) = (rename.pos, rename.text.trim().to_owned());
+                self.intel.rename = None;
+                self.want_focus = true;
+                if let Some(path) = buf.path.clone().filter(|_| submit && !name.is_empty()) {
+                    let mut params = lsp::at(&path, to_lsp(buf, pos));
+                    params["newName"] = json!(name);
+                    match self.lsp.request(&path, "textDocument/rename", params) {
+                        Some(request) => self.intel.wants.push((request, Want::Rename)),
+                        None => self.banner = Some("The language server does not support Rename Symbol.".into()),
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn peek_ui(&mut self, ui: &mut Ui, theme: &Theme, font: &FontId, area: Rect, below: Option<f32>, id: u64) {
+        let Some(peek) = self.intel.peek.as_mut().filter(|p| p.doc == id) else { return };
+        let height = (area.height() - 30.0).clamp(80.0, 240.0);
+        let top = below.filter(|y| *y > area.top()).unwrap_or(area.top()).min(area.bottom() - height).max(area.top());
+        let rect = Rect::from_min_size(pos2(area.left() + 6.0, top), vec2(area.width() - 14.0, height));
+        ui.interact(rect, Id::new(("peek", id)), Sense::click());
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect(rect, CornerRadius::same(3), theme.panel, Stroke::new(1.0, theme.accent), StrokeKind::Inside);
+        let header = Rect::from_min_size(rect.min, vec2(rect.width(), 26.0)).shrink(1.0);
+        painter.rect_filled(header, CornerRadius::ZERO, ui::mix(theme.panel, theme.accent, 0.14));
+        let (mut close, mut flip, mut jump, mut select) = (false, false, None, None);
+        let current = peek.items.get(peek.selected).cloned();
+        let name = current.as_ref().map(|item| file_name(&item.path)).unwrap_or_default();
+        let folder = current.as_ref().and_then(|item| item.path.parent()).map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default();
+        ui.scope_builder(UiBuilder::new().max_rect(header.shrink2(vec2(8.0, 0.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
+            close = ui::icon_button(ui, theme, icons::X, 22.0, false, "Close (Escape)").clicked();
+            if let Some((call, outgoing)) = peek.hierarchy {
+                let tip = format!("Show {}", hierarchy_title(call, !outgoing));
+                flip = ui::icon_button(ui, theme, icons::ARROWS_LEFT_RIGHT, 22.0, false, &tip).clicked();
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.label(RichText::new(name).color(theme.text));
+                let detail = format!("{folder}  -  {} ({})", peek.title, peek.items.len());
+                ui.add(egui::Label::new(RichText::new(detail).size(12.0).color(theme.text_dim)).truncate());
+            });
+        });
+        let body = Rect::from_min_max(pos2(rect.left() + 1.0, header.bottom()), rect.max - vec2(1.0, 1.0));
+        let split = body.left() + body.width() * 0.62;
+        let (preview, list) = (body.with_max_x(split), body.with_min_x(split + 1.0));
+        painter.vline(split, body.y_range(), Stroke::new(1.0, theme.border));
+        if let Some(item) = &current {
+            let lines = peek.files.get(&lsp::key(&item.path));
+            let row_h = (font.size * 1.35).round();
+            let shown = (preview.height() / row_h) as usize;
+            let first = item.start.0.saturating_sub(shown / 3);
+            let clip = painter.with_clip_rect(preview);
+            for (index, line) in (first..first + shown).enumerate() {
+                let Some(text) = lines.and_then(|lines| lines.get(line)) else { break };
+                let y = preview.top() + index as f32 * row_h;
+                if line == item.start.0 {
+                    let band = Rect::from_min_size(pos2(preview.left(), y), vec2(preview.width(), row_h));
+                    clip.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(theme.accent, 0.16));
+                }
+                let shown_text: String = text.chars().take(300).collect::<String>().replace('\t', "    ");
+                clip.text(pos2(preview.left() + 44.0, y + row_h / 2.0), Align2::RIGHT_CENTER, line + 1, font.clone(), theme.text_dim);
+                clip.text(pos2(preview.left() + 56.0, y + row_h / 2.0), Align2::LEFT_CENTER, shown_text, font.clone(), theme.text);
+            }
+            let opened = ui.interact(preview, Id::new(("peek_preview", id)), Sense::click()).on_hover_text("Double-click to open");
+            if opened.double_clicked() {
+                jump = Some(peek.selected);
+            }
+        }
+        let reveal = std::mem::take(&mut peek.reveal);
+        ui.scope_builder(UiBuilder::new().max_rect(list), |ui| {
+            ui.set_clip_rect(list.intersect(ui.clip_rect()));
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            ScrollArea::vertical().id_salt(("peek_list", id)).auto_shrink(false).show(ui, |ui| {
+                if peek.items.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("   No results").color(theme.text_dim));
+                }
+                for (index, item) in peek.items.iter().enumerate() {
+                    let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+                    ui::row_bg(ui, theme, r, row.id, row.hovered(), index == peek.selected);
+                    let p = ui.painter().with_clip_rect(r.shrink2(vec2(6.0, 0.0)));
+                    let end = p.text(r.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, &item.label, FontId::proportional(12.5), theme.text);
+                    let place = format!("{}:{}", file_name(&item.path), item.start.0 + 1);
+                    p.text(pos2(end.right() + 10.0, r.center().y), Align2::LEFT_CENTER, place, FontId::proportional(11.5), theme.text_dim);
+                    if index == peek.selected && reveal {
+                        ui.scroll_to_rect(r, None);
+                    }
+                    if row.double_clicked() {
+                        jump = Some(index);
+                    } else if row.clicked() {
+                        select = Some(index);
+                    }
+                }
+            });
+        });
+        if let Some(index) = select {
+            peek.selected = index;
+        }
+        let (pos, hierarchy) = (peek.pos, peek.hierarchy);
+        let target = jump.and_then(|index| peek.items.get(index)).map(|item| (item.path.clone(), item.start));
+        if let Some((path, at)) = target {
+            self.intel.queued.push(Queued::Jump(path, at));
+        } else if let Some((call, outgoing)) = hierarchy.filter(|_| flip) {
+            self.intel.queued.push(Queued::Hierarchy(id, pos, call, !outgoing));
+        }
+        if close || jump.is_some() {
+            self.intel.peek = None;
+            self.want_focus = true;
+        }
+    }
+
+    pub(super) fn breadcrumbs(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, g: usize) {
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, theme.bg);
+        let group = &self.groups[g];
+        let Some(tab) = group.tabs.get(group.active.min(group.tabs.len().saturating_sub(1))) else { return };
+        let Some(doc) = self.docs.get(&tab.doc) else { return };
+        let mut parts: Vec<(&str, String, Option<Pos>)> = match &doc.buf.path {
+            Some(path) => {
+                let shown = self.root.as_deref().and_then(|root| path.strip_prefix(root).ok()).unwrap_or(path);
+                shown.components().map(|part| ("", part.as_os_str().to_string_lossy().into_owned(), None)).collect()
+            }
+            None => vec![("", doc.buf.title.clone(), None)],
+        };
+        let line = doc.buf.line_of(tab.sels.first().map_or(0, |s| s.head));
+        let mut chain: Vec<&Symbol> = vec![];
+        for symbol in doc.lang.symbols.iter().filter(|s| s.line <= line && line <= s.end_line) {
+            chain.truncate(symbol.depth);
+            chain.push(symbol);
+        }
+        parts.extend(chain.iter().map(|s| (lsp::symbol_icon(s.kind), s.name.clone(), Some((s.line, s.col)))));
+        let mut clicked = None;
+        ui.scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (index, (icon, name, target)) in parts.iter().enumerate() {
+                if index > 0 {
+                    ui.label(RichText::new(icons::CARET_RIGHT).size(10.0).color(theme.text_dim));
+                }
+                let text = if icon.is_empty() { name.clone() } else { format!("{icon} {name}") };
+                let label = egui::Label::new(RichText::new(text).size(12.0).color(theme.text_dim));
+                let Some(at) = target else {
+                    ui.add(label);
+                    continue;
+                };
+                if ui.add(label.sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    clicked = Some(*at);
+                }
+            }
+        });
+        if let Some(at) = clicked {
+            let pos = from_lsp(&doc.buf, at);
+            let group = &mut self.groups[g];
+            let active = group.active.min(group.tabs.len().saturating_sub(1));
+            group.tabs[active].sels = vec![Sel::caret(pos)];
+            group.tabs[active].reveal = Some(pos);
+            self.active = g;
+            self.want_focus = true;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_hint_columns_and_shifts_server_data() {
+        let hints = [(2, 3), (5, 2)];
+        assert_eq!([0, 2, 3, 5, 6].map(|col| display(&hints, col)), [0, 2, 6, 8, 11]);
+        assert_eq!([0, 2, 3, 4, 5, 6, 8, 9, 11].map(|shown| undisplay(&hints, shown)), [0, 2, 2, 2, 2, 3, 5, 5, 6]);
+        assert!((0..9).all(|col| undisplay(&hints, display(&hints, col)) == col));
+
+        let symbol = |line, end_line| Symbol { name: "s".into(), kind: 12, line, col: 0, end_line, depth: 0, container: String::new(), path: None };
+        let hint = |line| Hint { line, col: 1, label: ": u8".into() };
+        let mut lang = Lang { lines: 10, symbols: vec![symbol(1, 2), symbol(6, 8)], hints: vec![hint(1), hint(4), hint(6)], ..Default::default() };
+        lang.tokens.extend([(1, vec![(0, 2, 1)]), (4, vec![(0, 2, 1)]), (7, vec![(0, 2, 2)])]);
+        assert_eq!(lang.edited(4, 12), 2);
+        assert_eq!(lang.symbols.iter().map(|s| (s.line, s.end_line)).collect::<Vec<_>>(), vec![(1, 2), (8, 10)]);
+        assert_eq!(lang.hints.iter().map(|h| h.line).collect::<Vec<_>>(), vec![1, 8]);
+        let mut lines: Vec<usize> = lang.tokens.keys().copied().collect();
+        lines.sort();
+        assert_eq!(lines, vec![1, 9]);
+        assert_eq!(lang.edited(0, 9), -3);
+        assert_eq!(lang.symbols.iter().map(|s| s.line).collect::<Vec<_>>(), vec![0, 5]);
+
+        let buf = Document::from_text("a😀b\nsecond", "t".into());
+        assert_eq!((to_lsp(&buf, 2), from_lsp(&buf, (0, 3)), from_lsp(&buf, (1, 99)), from_lsp(&buf, (9, 0))), ((0, 3), 2, 10, 10));
+    }
+}

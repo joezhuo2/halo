@@ -1,12 +1,14 @@
 mod buffer;
 mod highlight;
+mod intel;
 
 use crate::command::{self, Command, Scope};
 use crate::git::{Git, LineChange};
+use crate::lsp::{self, Lsp};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use buffer::{After, Document, Kind, Motion, Sel, Take, merge_sels};
+use buffer::{After, Document, Kind, Motion, Sel, Take, is_word, merge_sels};
 use eframe::egui::text::{CCursor, LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, CursorIcon, Event, EventFilter, FontId, Id, Key, Layout, PointerButton,
@@ -14,6 +16,7 @@ use eframe::egui::{
     scroll_area::ScrollBarVisibility, vec2,
 };
 use highlight::{Highlighter, Spans};
+use intel::{Intel, Lang, Queued, Row, display, from_lsp, undisplay};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -40,6 +43,7 @@ struct Doc {
     hl: Highlighter,
     max_cols: (u64, usize),
     conflicts: (u64, Vec<[usize; 4]>),
+    lang: Lang,
 }
 
 #[derive(Default)]
@@ -103,6 +107,9 @@ pub struct Editors {
     drag: Option<(usize, usize)>,
     drop: Option<DropAt>,
     pub ai_open: bool,
+    pub lsp: Lsp,
+    root: Option<PathBuf>,
+    intel: Intel,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -128,24 +135,65 @@ fn visible_text(buf: &Document, line: usize) -> String {
     text.chars().take(MAX_COLS).collect()
 }
 
-fn job(text: &str, spans: Option<&Spans>, font: &FontId, color: Color32) -> LayoutJob {
-    let Some(spans) = spans.filter(|s| !s.is_empty()) else {
+fn job(
+    text: &str,
+    spans: Option<&Spans>,
+    font: &FontId,
+    color: Color32,
+    over: &[(usize, usize, Color32)],
+    inserts: &[(usize, &str)],
+    hint: &TextFormat,
+) -> LayoutJob {
+    let spans = spans.filter(|s| !s.is_empty());
+    if spans.is_none() && over.is_empty() && inserts.is_empty() {
         return LayoutJob::simple_singleline(text.to_owned(), font.clone(), color);
-    };
-    let mut job = LayoutJob::default();
-    let mut at = 0;
-    for (len, c) in spans.iter() {
-        let end = (at + len).min(text.len());
-        if at >= text.len() || !text.is_char_boundary(end) {
-            break;
-        }
-        job.append(&text[at..end], 0.0, TextFormat::simple(font.clone(), *c));
-        at = end;
     }
-    if at < text.len() {
-        job.append(&text[at..], 0.0, TextFormat::simple(font.clone(), color));
+    let mut cuts = vec![0, text.len()];
+    let mut base: Vec<(usize, Color32)> = vec![];
+    let mut at = 0;
+    for (len, c) in spans.into_iter().flat_map(|s| s.iter()) {
+        at = (at + len).min(text.len());
+        base.push((at, *c));
+        cuts.push(at);
+    }
+    cuts.extend(over.iter().flat_map(|o| [o.0, o.1]));
+    cuts.extend(inserts.iter().map(|i| i.0));
+    cuts.retain(|cut| text.is_char_boundary(*cut));
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut job = LayoutJob::default();
+    let (mut b, mut o, mut i) = (0, 0, 0);
+    for pair in cuts.windows(2) {
+        let (from, to) = (pair[0], pair[1]);
+        while i < inserts.len() && inserts[i].0 <= from {
+            job.append(inserts[i].1, 0.0, hint.clone());
+            i += 1;
+        }
+        while b < base.len() && base[b].0 <= from {
+            b += 1;
+        }
+        while o < over.len() && over[o].1 <= from {
+            o += 1;
+        }
+        let shade = match over.get(o) {
+            Some(found) if found.0 <= from => found.2,
+            _ => base.get(b).map_or(color, |span| span.1),
+        };
+        job.append(&text[from..to], 0.0, TextFormat::simple(font.clone(), shade));
+    }
+    for insert in &inserts[i..] {
+        job.append(insert.1, 0.0, hint.clone());
     }
     job
+}
+
+fn settle(buf: &mut Document, hl: &mut Highlighter, lang: &mut Lang, lsp: &mut Lsp) {
+    let Some(line) = buf.dirty_from.take() else { return };
+    hl.invalidate(line);
+    let delta = lang.edited(line, buf.lines());
+    if let Some(path) = &buf.path {
+        lsp.shift_diagnostics(path, line, delta);
+    }
 }
 
 fn handle_event(buf: &mut Document, tab: &mut Tab, event: &Event, settings: &Settings, page: usize, ctx: &egui::Context) -> bool {
@@ -221,6 +269,9 @@ impl Editors {
             drag: None,
             drop: None,
             ai_open: false,
+            lsp: Lsp::default(),
+            root: None,
+            intel: Intel::default(),
         }
     }
 
@@ -247,7 +298,7 @@ impl Editors {
             self.banner = Some(note.clone());
         }
         let hl = Highlighter::new(buf.path.as_deref(), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]) });
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default() });
         id
     }
 
@@ -261,8 +312,7 @@ impl Editors {
 
     pub fn open(&mut self, path: &Path) {
         self.active = self.active.min(self.groups.len() - 1);
-        let existing = self.docs.iter().find(|(_, d)| d.buf.path.as_deref() == Some(path)).map(|(id, _)| *id);
-        if let Some(id) = existing {
+        if let Some(id) = self.find_doc(path) {
             return self.show_doc(id);
         }
         match Document::load(path) {
@@ -313,8 +363,10 @@ impl Editors {
         if group.active >= t && group.active > 0 {
             group.active -= 1;
         }
-        if self.references(doc) == 0 {
-            self.docs.remove(&doc);
+        if self.references(doc) == 0
+            && let Some(path) = self.docs.remove(&doc).and_then(|d| d.buf.path)
+        {
+            self.lsp.close(&path);
         }
         self.want_focus = true;
     }
@@ -369,10 +421,16 @@ impl Editors {
             }
             let Some(path) = dialog.save_file() else { return false };
             doc.hl = Highlighter::new(Some(&path), &doc.buf.rope);
-            doc.buf.path = Some(path);
+            if let Some(old) = doc.buf.path.replace(path) {
+                self.lsp.close(&old);
+            }
+            doc.lang = Lang::default();
         }
         match doc.buf.save() {
-            Ok(()) => true,
+            Ok(()) => {
+                self.lsp.save(doc.buf.path.as_deref().unwrap_or(Path::new("")));
+                true
+            }
             Err(error) => {
                 self.banner = Some(error);
                 false
@@ -414,14 +472,19 @@ impl Editors {
             }
             _ => {}
         }
+        if self.intel_exec(cmd, settings, ctx) {
+            self.last_input = ctx.input(|i| i.time);
+            self.want_focus |= *cmd != RenameSymbol;
+            return true;
+        }
         let Some((g, t)) = self.active_tab() else { return false };
         let doc_id = self.groups[g].tabs[t].doc;
-        let unit = if settings.insert_spaces { " ".repeat(settings.tab_size) } else { "\t".to_owned() };
-        let _ = unit;
         let mut refocus = true;
         match cmd {
             Save => {
-                self.save_doc(doc_id, false);
+                if !self.save_formatted(doc_id, settings, ctx) {
+                    self.save_doc(doc_id, false);
+                }
             }
             SaveAs => {
                 self.save_doc(doc_id, true);
@@ -551,8 +614,11 @@ impl Editors {
     }
 
     pub fn symbols(&self) -> Vec<(usize, String)> {
-        let doc = self.active_tab().and_then(|(g, t)| self.docs.get(&self.groups[g].tabs[t].doc));
-        doc.map(|d| highlight::symbols(d.buf.path.as_deref(), &d.buf.rope)).unwrap_or_default()
+        let Some(doc) = self.active_tab().and_then(|(g, t)| self.docs.get(&self.groups[g].tabs[t].doc)) else { return vec![] };
+        if doc.lang.symbols.is_empty() {
+            return highlight::symbols(doc.buf.path.as_deref(), &doc.buf.rope);
+        }
+        doc.lang.symbols.iter().map(|s| (s.line, format!("{}{}", "  ".repeat(s.depth), s.name))).collect()
     }
 
     pub fn auto_save_due(&mut self, now: f64) -> bool {
@@ -596,6 +662,8 @@ impl Editors {
         for id in affected {
             let Some(doc) = self.docs.get_mut(&id) else { continue };
             let Some(path) = doc.buf.path.clone() else { continue };
+            self.lsp.close(&path);
+            doc.lang = Lang::default();
             match new {
                 Some(new) => {
                     let rest = path.strip_prefix(old).unwrap_or(Path::new(""));
@@ -623,6 +691,7 @@ impl Editors {
         self.focused = false;
         self.drop = None;
         self.active = self.active.min(self.groups.len().saturating_sub(1));
+        self.process(settings, ui.ctx());
         let rect = ui.available_rect_before_wrap();
         let count = self.groups.len();
         let width = rect.width() / count as f32;
@@ -649,6 +718,7 @@ impl Editors {
                 self.exec(&cmd, settings, ui.ctx());
             }
         }
+        self.after_views();
         if let Some((g, t)) = self.drag {
             let ctx = ui.ctx();
             ctx.set_cursor_icon(CursorIcon::Grabbing);
@@ -693,7 +763,12 @@ impl Editors {
     fn group_ui(&mut self, ui: &mut Ui, g: usize, rect: Rect, theme: &Theme, settings: &Settings, git: &Git, pending: &mut Vec<Command>) {
         let strip = Rect::from_min_size(rect.min, vec2(rect.width(), TAB_H));
         self.tab_strip(ui, g, strip, theme, pending);
-        let body = Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max);
+        let mut body = Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max);
+        if settings.breadcrumbs && !self.groups[g].tabs.is_empty() {
+            let bar = Rect::from_min_size(body.min, vec2(body.width(), 22.0));
+            self.breadcrumbs(ui, bar, theme, g);
+            body.min.y = bar.bottom();
+        }
         if self.groups[g].tabs.is_empty() {
             ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
         } else {
@@ -930,10 +1005,8 @@ impl Editors {
         let font = FontId::monospace(settings.font_size);
         let (char_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
         let line_h = (row_h * 1.25).round();
-        let Doc { buf, hl, max_cols, conflicts } = doc;
-        if let Some(line) = buf.dirty_from.take() {
-            hl.invalidate(line);
-        }
+        let Doc { buf, hl, max_cols, conflicts, lang } = doc;
+        settle(buf, hl, lang, &mut self.lsp);
         buf.clamp(&mut tab.sels);
 
         ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
@@ -957,15 +1030,27 @@ impl Editors {
                 }
             }
             let page = ((text_rect.height() / line_h) as usize).saturating_sub(2).max(1);
-            let events = ui.input(|i| i.events.clone());
+            let mut events = ui.input(|i| i.events.clone());
+            self.popup_keys(&mut events, doc_id, buf, tab);
+            let (mut typed, mut pasted) = (None, None);
             for event in &events {
+                let from = tab.sels.first().map_or(0, |s| s.start());
                 if handle_event(buf, tab, event, settings, page, &ctx) {
                     self.last_input = now;
                     tab.reveal = tab.sels.last().map(|s| s.head);
+                    match event {
+                        Event::Text(text) if tab.sels.len() == 1 => typed = text.chars().next().filter(|_| text.chars().count() == 1),
+                        Event::Paste(_) if tab.sels.len() == 1 => pasted = Some((from, tab.sels[0].head)),
+                        _ => {}
+                    }
                 }
             }
-            if let Some(line) = buf.dirty_from.take() {
-                hl.invalidate(line);
+            settle(buf, hl, lang, &mut self.lsp);
+            if let Some(c) = typed {
+                self.typed(c, doc_id, buf, lang, tab, &ctx);
+            }
+            if let Some((from, to)) = pasted.filter(|_| settings.format_on_paste) {
+                self.format_range(doc_id, buf, lang, from, to, settings, &ctx);
             }
         }
         let find_open = self.find.open && is_active;
@@ -977,9 +1062,33 @@ impl Editors {
         if max_cols.0 != buf.version {
             *max_cols = (buf.version, (0..total).map(|l| buf.line_len(l)).max().unwrap_or(0).min(MAX_COLS));
         }
+        let mut lens_rows: Vec<(usize, usize)> = match settings.code_lens && lang.attached {
+            true => lang.lens.iter().enumerate().filter_map(|(index, lens)| Some((lang.symbols.get(lens.symbol)?.line.min(total - 1), index))).collect(),
+            false => vec![],
+        };
+        lens_rows.sort_unstable();
+        lens_rows.dedup_by_key(|row| row.0);
+        let rows = total + lens_rows.len();
+        let row_of = |line: usize| line + lens_rows.partition_point(|row| row.0 <= line);
+        let locate = |row: usize| -> (usize, Option<usize>) {
+            let (mut low, mut high) = (0, lens_rows.len());
+            while low < high {
+                let mid = (low + high) / 2;
+                if lens_rows[mid].0 + mid <= row {
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+            match low.checked_sub(1).map(|index| (index, lens_rows[index])) {
+                Some((index, (line, lens))) if line + index == row => (line, Some(lens)),
+                _ => ((row - low).min(total - 1), None),
+            }
+        };
         let digits = total.to_string().len().max(3) as f32;
         let gutter_w = (digits + 3.0) * char_w + 6.0;
-        let content = vec2(gutter_w + (max_cols.1 as f32 + 10.0) * char_w, total as f32 * line_h + (text_rect.height() * 0.5).max(line_h));
+        let spare = if lang.hints.is_empty() { 10.0 } else { 40.0 };
+        let content = vec2(gutter_w + (max_cols.1 as f32 + spare) * char_w, rows as f32 * line_h + (text_rect.height() * 0.5).max(line_h));
         let idle = now - self.last_input;
         let caret_alpha = if !has_focus {
             0.35
@@ -994,13 +1103,29 @@ impl Editors {
 
         let matches: &[(usize, usize)] = if find_open { &self.find.matches } else { &[] };
         let path = buf.path.clone();
-        let mut activated = false;
-        let mut touched = false;
+        let problems = match &path {
+            Some(path) if settings.diagnostics => self.lsp.diagnostics(path),
+            _ => &[],
+        };
+        let hover_word = self.intel.hover.as_ref().filter(|h| h.doc == doc_id && h.group == g).map(|h| h.word);
+        let peek_pos = self.intel.peek.as_ref().filter(|p| p.doc == doc_id && is_active).map(|p| p.pos);
+        let hint_format = TextFormat {
+            font_id: FontId::monospace((settings.font_size * 0.9).round()),
+            color: theme.text_dim,
+            background: ui::mix(theme.bg, theme.hover, 0.6),
+            valign: Align::Center,
+            ..Default::default()
+        };
+        let lens_font = FontId::proportional((settings.font_size * 0.88).round());
+        let (mut activated, mut touched, mut pressed_text) = (false, false, false);
+        let (mut caret_at, mut hover_at, mut peek_y, mut over_word, mut lens_open) = (None, None, None, None, None);
+        let mut visible = (0, 0);
         let mut area = ScrollArea::both().id_salt(id.with("scroll")).auto_shrink(false);
         if let Some(y) = tab.set_scroll.take() {
             area = area.vertical_scroll_offset(y.max(0.0));
         }
         let buf_ref: &Document = buf;
+        let lang_ref: &Lang = lang;
         let out = ui
             .scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
                 area.show_viewport(ui, |ui, viewport| {
@@ -1009,24 +1134,59 @@ impl Editors {
                     let clip = ui.clip_rect();
                     let resp = ui.interact(clip, id, Sense::click_and_drag());
                     let text_x = origin.x + gutter_w;
-                    let hit = |ui: &Ui, pos: Pos2| -> usize {
-                        let line = (((pos.y - origin.y) / line_h).floor().max(0.0) as usize).min(total - 1);
+                    let row_at = |y: f32| locate((((y - origin.y) / line_h).floor().max(0.0) as usize).min(rows - 1));
+                    let first = row_at(origin.y + viewport.min.y).0;
+                    let last = (row_at(origin.y + viewport.max.y + line_h).0 + 1).min(total);
+                    visible = (first, last);
+                    if !hl.ensure(&buf_ref.rope, first..last, theme, Duration::from_millis(8)) {
+                        ui.ctx().request_repaint();
+                    }
+                    let hl: &Highlighter = hl;
+                    let layout = |painter: &egui::Painter, line: usize| -> Row {
                         let text = visible_text(buf_ref, line);
-                        let len = text.chars().count();
-                        let galley = ui.painter().layout_job(LayoutJob::simple_singleline(text, font.clone(), theme.text));
-                        let column = usize::from(galley.cursor_from_pos(vec2(pos.x - text_x, 0.0)).index);
-                        buf_ref.line_start(line) + column.min(len)
+                        let mut over: Vec<(usize, usize, Color32)> = vec![];
+                        for (col, len, tone) in lang_ref.tokens.get(&line).into_iter().flatten().filter(|_| settings.semantic_highlighting) {
+                            let (from, to) = (lsp::utf16_to_byte(&text, *col), lsp::utf16_to_byte(&text, col + len));
+                            if from < to && over.last().is_none_or(|last| last.1 <= from) {
+                                over.push((from, to, intel::tone_color(theme, *tone)));
+                            }
+                        }
+                        let (mut inserts, mut hints) = (vec![], vec![]);
+                        let from = lang_ref.hints.partition_point(|h| h.line < line);
+                        for hint in lang_ref.hints[from..].iter().take_while(|h| h.line == line && settings.inlay_hints) {
+                            let col = lsp::utf16_to_char(text.chars(), hint.col);
+                            inserts.push((text.char_indices().nth(col).map_or(text.len(), |c| c.0), hint.label.as_str()));
+                            hints.push((col, hint.label.chars().count()));
+                        }
+                        let galley = painter.layout_job(job(&text, hl.get(line), &font, theme.text, &over, &inserts, &hint_format));
+                        Row { len: text.chars().count(), galley, hints }
+                    };
+                    let hit = |painter: &egui::Painter, pos: Pos2| -> usize {
+                        let (line, lens) = row_at(pos.y);
+                        if lens.is_some() {
+                            return buf_ref.line_start(line);
+                        }
+                        let row = layout(painter, line);
+                        let column = usize::from(row.galley.cursor_from_pos(vec2(pos.x - text_x, 0.0)).index);
+                        buf_ref.line_start(line) + undisplay(&row.hints, column).min(row.len)
                     };
 
+                    let painter = ui.painter().clone();
                     let pointer = ui.input(|i| i.pointer.interact_pos());
-                    let (pressed, mods) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers));
+                    let (pressed, mods, down) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers, i.pointer.any_down()));
+                    let on_lens = pointer.is_some_and(|pos| row_at(pos.y).1.is_some());
+                    let mut lens_press = false;
                     if let Some(pos) = pointer {
                         if pressed && resp.is_pointer_button_down_on() {
                             resp.request_focus();
                             activated = true;
                             touched = true;
-                            let p = hit(ui, pos);
-                            if mods.alt {
+                            pressed_text = true;
+                            let p = hit(&painter, pos);
+                            if on_lens {
+                                lens_press = true;
+                                tab.drag_anchor = None;
+                            } else if mods.alt {
                                 tab.sels.push(Sel::caret(p));
                                 merge_sels(&mut tab.sels);
                                 tab.drag_anchor = Some(p);
@@ -1037,9 +1197,12 @@ impl Editors {
                             } else {
                                 tab.sels = vec![Sel::caret(p)];
                                 tab.drag_anchor = Some(p);
+                                if mods.command {
+                                    pending.push(Command::GoToDefinition);
+                                }
                             }
                         } else if resp.dragged_by(PointerButton::Primary) {
-                            let p = hit(ui, pos);
+                            let p = hit(&painter, pos);
                             if let Some(anchor) = tab.drag_anchor
                                 && let Some(s) = tab.sels.iter_mut().find(|s| s.anchor == anchor)
                             {
@@ -1052,43 +1215,99 @@ impl Editors {
                                 ui.ctx().request_repaint();
                             }
                         }
-                        if resp.double_clicked() {
-                            let (a, b) = buf_ref.word_at(hit(ui, pos));
+                        if resp.double_clicked() && !on_lens {
+                            let (a, b) = buf_ref.word_at(hit(&painter, pos));
                             tab.sels = vec![Sel::new(a, b)];
                         }
-                        if resp.triple_clicked() {
-                            let line = buf_ref.line_of(hit(ui, pos));
+                        if resp.triple_clicked() && !on_lens {
+                            let line = buf_ref.line_of(hit(&painter, pos));
                             tab.sels = vec![Sel::new(buf_ref.line_start(line), buf_ref.line_start(line + 1).min(buf_ref.len()))];
                         }
-                        if resp.hovered() && pos.x > clip.left() + gutter_w {
+                        if resp.secondary_clicked() && !on_lens {
+                            let p = hit(&painter, pos);
+                            if !tab.sels.iter().any(|s| s.start() <= p && p <= s.end()) {
+                                tab.sels = vec![Sel::caret(p)];
+                            }
+                        }
+                        if resp.hovered() && pos.x > clip.left() + gutter_w && !on_lens {
                             ui.ctx().set_cursor_icon(CursorIcon::Text);
+                        }
+                        if resp.hovered() && !down && !on_lens && pos.x > text_x && pos.y < origin.y + rows as f32 * line_h {
+                            let p = hit(&painter, pos);
+                            let (a, b) = buf_ref.word_at(p);
+                            let inside = pos.x - text_x <= layout(&painter, buf_ref.line_of(p)).galley.size().x;
+                            if inside && a < b && buf_ref.rope.get_char(a).is_some_and(is_word) {
+                                over_word = Some((a, b));
+                            }
                         }
                     }
                     if resp.drag_stopped() {
                         merge_sels(&mut tab.sels);
                     }
+                    resp.context_menu(|ui| {
+                        use Command::*;
+                        ui.set_min_width(230.0);
+                        ui::menu_pad(ui);
+                        let items = [
+                            Some(GoToDefinition), Some(PeekDefinition), Some(GoToImplementation), Some(FindReferences), Some(ShowCallHierarchy), None,
+                            Some(RenameSymbol), Some(QuickFix), Some(FormatDocument), None,
+                            Some(Cut), Some(Copy), Some(Paste),
+                        ];
+                        for item in items {
+                            let Some(cmd) = item else {
+                                ui.separator();
+                                continue;
+                            };
+                            let keys = command::shortcut_text(ui.ctx(), &cmd).unwrap_or_default();
+                            if ui.add(egui::Button::new(cmd.label()).shortcut_text(keys)).clicked() {
+                                pending.push(cmd);
+                                ui.close();
+                            }
+                        }
+                    });
 
-                    let first = ((viewport.min.y / line_h).floor().max(0.0) as usize).min(total - 1);
-                    let last = ((viewport.max.y / line_h).ceil() as usize + 1).min(total);
-                    if !hl.ensure(&buf_ref.rope, first..last, theme, Duration::from_millis(8)) {
-                        ui.ctx().request_repaint();
-                    }
-                    let painter = ui.painter().clone();
                     let single = tab.sels.len() == 1 && tab.sels[0].is_empty();
                     let current_line = single.then(|| buf_ref.line_of(tab.sels[0].head));
                     let bracket = if single { buf_ref.matching_bracket(tab.sels[0].head) } else { None };
 
                     for line in first..last {
-                        let y = origin.y + line as f32 * line_h;
+                        let y = origin.y + row_of(line) as f32 * line_h;
                         let start = buf_ref.line_start(line);
-                        let text = visible_text(buf_ref, line);
-                        let len = text.chars().count();
-                        if current_line == Some(line) {
-                            let row = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), y + line_h));
-                            painter.rect_filled(row, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
+                        let row = layout(&painter, line);
+                        let len = row.len;
+                        let x_at = |column: usize| text_x + row.galley.pos_from_cursor(CCursor::new(display(&row.hints, column.min(len)))).min.x;
+                        let indent = buf_ref.rope.line(line).chars().take_while(|c| *c == ' ' || *c == '\t').count();
+                        if let Ok(at) = lens_rows.binary_search_by_key(&line, |row| row.0) {
+                            let index = lens_rows[at].1;
+                            let lens = &lang_ref.lens[index];
+                            let interface = lang_ref.symbols.get(lens.symbol).is_some_and(|s| s.kind == 11);
+                            let mut x = x_at(indent);
+                            for (found, noun, impls) in [(&lens.refs, "reference", false), (&lens.impls, "implementation", true)] {
+                                if impls && !interface {
+                                    continue;
+                                }
+                                let text = match found.as_ref().map(Vec::len) {
+                                    Some(1) => format!("1 {noun}"),
+                                    Some(count) => format!("{count} {noun}s"),
+                                    None => format!("... {noun}s"),
+                                };
+                                let galley = painter.layout_no_wrap(text, lens_font.clone(), Color32::PLACEHOLDER);
+                                let r = Rect::from_min_size(pos2(x, y - line_h + (line_h - galley.size().y) / 2.0 + 1.0), galley.size());
+                                let over = on_lens && resp.hovered() && pointer.is_some_and(|p| r.expand(3.0).contains(p));
+                                if over && found.is_some() {
+                                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                                    if lens_press {
+                                        lens_open = Some((index, impls));
+                                    }
+                                }
+                                x = r.right() + 16.0;
+                                painter.galley(r.min, galley, if over && found.is_some() { theme.accent } else { ui::with_alpha(theme.text_dim, 0.85) });
+                            }
                         }
-                        let galley = painter.layout_job(job(&text, hl.get(line), &font, theme.text));
-                        let x_at = |column: usize| text_x + galley.pos_from_cursor(CCursor::new(column.min(len))).min.x;
+                        if current_line == Some(line) {
+                            let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), y + line_h));
+                            painter.rect_filled(band, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
+                        }
                         let from = matches.partition_point(|m| m.1 <= start);
                         for m in matches[from..].iter().take_while(|m| m.0 <= start + len) {
                             let r = Rect::from_min_max(pos2(x_at(m.0.saturating_sub(start)), y), pos2(x_at(m.1 - start), y + line_h));
@@ -1105,11 +1324,34 @@ impl Editors {
                                 painter.rect(r, CornerRadius::same(2), ui::with_alpha(theme.accent, 0.12), Stroke::new(1.0, ui::with_alpha(theme.accent, 0.7)), StrokeKind::Inside);
                             }
                         }
-                        painter.galley(pos2(text_x, y + (line_h - galley.size().y) / 2.0), galley.clone(), theme.text);
+                        painter.galley(pos2(text_x, y + (line_h - row.galley.size().y) / 2.0), row.galley.clone(), theme.text);
+                        let upto = problems.partition_point(|d| d.start.0 <= line);
+                        for problem in problems[..upto].iter().filter(|d| d.end.0 >= line) {
+                            let column = |at: lsp::Pos| lsp::utf16_to_char(buf_ref.rope.line(line).chars(), at.1).min(len);
+                            let from = if problem.start.0 == line { column(problem.start) } else { indent.min(len) };
+                            let to = if problem.end.0 == line { column(problem.end) } else { len };
+                            let (x0, x1) = (x_at(from), x_at(to.max(from)).max(x_at(from) + char_w));
+                            let color = intel::severity_color(theme, problem.severity);
+                            match problem.severity {
+                                4.. if problem.start.0 == line => intel::squiggle(&painter, x0, x0 + 5.0, y + line_h - 2.5, color),
+                                4.. => {}
+                                _ => intel::squiggle(&painter, x0, x1, y + line_h - 2.5, color),
+                            }
+                        }
                         for s in tab.sels.iter().filter(|s| s.head >= start && s.head <= start + len) {
                             let x = x_at(s.head - start);
                             let caret = Rect::from_min_max(pos2(x - 0.75, y + 1.0), pos2(x + 0.75, y + line_h - 1.0));
                             painter.rect_filled(caret, CornerRadius::ZERO, ui::with_alpha(theme.accent, caret_alpha));
+                        }
+                        let within = |pos: usize| pos >= start && pos <= start + len;
+                        if let Some(head) = tab.sels.first().map(|s| s.head).filter(|head| within(*head)) {
+                            caret_at = Some(pos2(x_at(head - start), y));
+                        }
+                        if let Some((word, _)) = hover_word.filter(|word| within(word.0)) {
+                            hover_at = Some(pos2(x_at(word - start), y));
+                        }
+                        if peek_pos.is_some_and(within) {
+                            peek_y = Some(y + line_h);
                         }
                     }
 
@@ -1117,14 +1359,14 @@ impl Editors {
                     painter.rect_filled(gutter, CornerRadius::ZERO, theme.bg);
                     let number_font = FontId::monospace(settings.font_size - 1.0);
                     for line in first..last {
-                        let y = origin.y + line as f32 * line_h + line_h / 2.0;
+                        let y = origin.y + row_of(line) as f32 * line_h + line_h / 2.0;
                         let color = if current_line == Some(line) { theme.text } else { ui::with_alpha(theme.text_dim, 0.75) };
                         painter.text(pos2(gutter.right() - 12.0, y), Align2::RIGHT_CENTER, line + 1, number_font.clone(), color);
                     }
                     if let Some(changes) = path.as_deref().and_then(|p| git.line_changes(p)) {
                         let from = changes.partition_point(|c| c.0 < first);
                         for (line, kind) in changes[from..].iter().take_while(|c| c.0 <= last) {
-                            let y = origin.y + *line as f32 * line_h;
+                            let y = origin.y + row_of(*line) as f32 * line_h;
                             let x = gutter.right() - 6.0;
                             let (r, color) = match kind {
                                 LineChange::Added => (Rect::from_min_max(pos2(x, y), pos2(x + 3.0, y + line_h)), theme.added),
@@ -1138,7 +1380,7 @@ impl Editors {
                     if let Some(pos) = tab.reveal.take() {
                         let line = buf_ref.line_of(pos);
                         let x = text_x + (pos - buf_ref.line_start(line)) as f32 * char_w;
-                        let top = origin.y + line as f32 * line_h;
+                        let top = origin.y + row_of(line) as f32 * line_h;
                         let target = Rect::from_min_max(pos2(x - gutter_w - char_w * 3.0, top - line_h), pos2(x + char_w * 4.0, top + line_h * 2.0));
                         ui.scroll_to_rect(target, None);
                     }
@@ -1175,16 +1417,42 @@ impl Editors {
                 let bar = Rect::from_min_max(pos2(mm.left() + 6.0 + indent as f32 * 0.75, y), pos2(mm.left() + 6.0 + len as f32 * 0.75, y + (step - 0.5).max(1.0)));
                 p.rect_filled(bar, CornerRadius::ZERO, color);
             }
-            let visible = text_rect.height() / line_h;
-            let top = mm.top() + scroll_y / line_h * scale;
-            let slider = Rect::from_min_max(pos2(mm.left() + 1.0, top), pos2(mm.right(), top + (visible * scale).max(12.0)));
+            for problem in problems.iter().filter(|d| d.severity <= 2) {
+                let y = mm.top() + problem.start.0 as f32 * scale;
+                let mark = Rect::from_min_max(pos2(mm.right() - 5.0, y), pos2(mm.right() - 1.0, y + 2.0));
+                p.rect_filled(mark, CornerRadius::ZERO, intel::severity_color(theme, problem.severity));
+            }
+            let visible_lines = text_rect.height() / line_h;
+            let top_row = scroll_y / line_h;
+            let top = mm.top() + (locate((top_row as usize).min(rows - 1)).0 as f32 + top_row.fract()) * scale;
+            let slider = Rect::from_min_max(pos2(mm.left() + 1.0, top), pos2(mm.right(), top + (visible_lines * scale).max(12.0)));
             let h = ui::anim(ui, id.with("minimap_hover"), resp.hovered() || resp.dragged());
             p.rect_filled(slider, CornerRadius::ZERO, ui::with_alpha(theme.text, 0.06 + 0.08 * h));
             if (resp.clicked() || resp.dragged())
                 && let Some(pos) = resp.interact_pointer_pos()
             {
-                tab.set_scroll = Some((((pos.y - mm.top()) / scale - visible / 2.0) * line_h).max(0.0));
+                let line = (((pos.y - mm.top()) / scale - visible_lines / 2.0).max(0.0) as usize).min(total - 1);
+                tab.set_scroll = Some(row_of(line) as f32 * line_h);
             }
+        }
+
+        lang.visible = visible;
+        if pressed_text {
+            self.intel.dismiss();
+        }
+        if let Some((index, impls)) = lens_open
+            && let Some(lens) = lang.lens.get(index)
+            && let Some(symbol) = lang.symbols.get(lens.symbol)
+            && let Some(found) = if impls { &lens.impls } else { &lens.refs }
+        {
+            let title = if impls { "Implementations" } else { "References" };
+            self.intel.queued.push(Queued::Peek(doc_id, from_lsp(buf, (symbol.line, symbol.col)), title, found.clone()));
+        }
+        self.track_hover(over_word, g, doc_id, buf, lang, now, &ctx);
+        self.hover_ui(&ctx, theme, &font, g, doc_id, hover_at, line_h);
+        if is_active {
+            self.popups(ui, theme, doc_id, buf, tab, caret_at, line_h, &font);
+            self.peek_ui(ui, theme, &font, text_rect, peek_y, doc_id);
         }
 
         let find_t = ui::anim(ui, Id::new(("editor_find", g)), find_open);
@@ -1534,6 +1802,58 @@ mod tests {
         });
         assert!(resolved, "an accept button in the conflict bar");
         assert_eq!(text(&editors), "ours\nend\n");
+    }
+
+    #[test]
+    fn draws_lens_rows_and_inlay_hints_and_maps_clicks_through_them() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Paste("fn a() {}
+fn b() {}
+".into())]);
+        let symbol = |name: &str, line| lsp::Symbol { name: name.into(), kind: 12, line, col: 3, end_line: line, depth: 0, container: String::new(), path: None };
+        let place = lsp::Location { path: "x.rs".into(), start: (0, 0), end: (0, 1), label: String::new() };
+        let lang = &mut editors.docs.values_mut().next().unwrap().lang;
+        lang.attached = true;
+        lang.symbols = vec![symbol("a", 0), symbol("b", 1)];
+        lang.lens = (0..2).map(|symbol| intel::Lens { symbol, refs: Some(vec![place.clone()]), impls: None, asked: true }).collect();
+        lang.hints = vec![lsp::Hint { line: 1, col: 2, label: ": T".into() }];
+        lang.tokens.insert(1, vec![(3, 1, 2)]);
+        frame(&ctx, &mut editors, vec![]);
+
+        let font = FontId::monospace(settings.font_size);
+        let small = FontId::monospace((settings.font_size * 0.9).round());
+        let (char_w, hint_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.glyph_width(&small, 'm'), f.row_height(&font)));
+        let line_h = (row_h * 1.25).round();
+        let top = TAB_H + 22.0;
+        let text_x = 6.0 * char_w + 6.0;
+        let click = |editors: &mut Editors, pos: Pos2| {
+            let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
+            frame(&ctx, editors, vec![Event::PointerMoved(pos)]);
+            frame(&ctx, editors, vec![button(true)]);
+            frame(&ctx, editors, vec![button(false)]);
+        };
+        click(&mut editors, pos2(text_x + 3.0 * char_w + 3.0 * hint_w + 1.0, top + 3.5 * line_h));
+        frame(&ctx, &mut editors, vec![Event::Text("x".into())]);
+        let text = |e: &Editors| e.docs.values().next().unwrap().buf.rope.to_string();
+        assert_eq!(text(&editors), "fn a() {}
+fn xb() {}
+");
+        assert_eq!(editors.docs.values().next().unwrap().lang.hints.len(), 0);
+
+        click(&mut editors, pos2(text_x + 4.0, top + 2.5 * line_h));
+        frame(&ctx, &mut editors, vec![]);
+        let peek = editors.intel.peek.as_ref().expect("a click on the lens opens the peek list");
+        assert_eq!((peek.doc, peek.pos), (1, 13));
+        assert_eq!(text(&editors), "fn a() {}
+fn xb() {}
+");
+        let escape = Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        frame(&ctx, &mut editors, vec![escape]);
+        assert!(editors.intel.peek.is_none());
     }
 
     #[test]
