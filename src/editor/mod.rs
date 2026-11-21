@@ -216,6 +216,7 @@ pub struct Editors {
     pub ai_open: bool,
     pub lsp: Lsp,
     pub marks: crate::debug::Marks,
+    pub tests: crate::testing::Marks,
     root: Option<PathBuf>,
     intel: Intel,
     closed: Vec<PathBuf>,
@@ -528,6 +529,7 @@ impl Editors {
             ai_open: false,
             lsp: Lsp::default(),
             marks: Default::default(),
+            tests: Default::default(),
             root: None,
             intel: Intel::default(),
             closed: vec![],
@@ -1651,6 +1653,7 @@ impl Editors {
         let Doc { buf, hl, max_cols, conflicts, lang, folds, depths, stale, .. } = doc;
         if let (Some((line, delta)), Some(path)) = (settle(buf, hl, lang, &mut self.lsp, folds), &buf.path) {
             self.marks.shift(path, line, delta);
+            self.tests.edited(path, line, delta);
         }
         buf.clamp(&mut tab.sels);
 
@@ -1704,6 +1707,7 @@ impl Editors {
             }
             if let (Some((line, delta)), Some(path)) = (settle(buf, hl, lang, &mut self.lsp, folds), &buf.path) {
                 self.marks.shift(path, line, delta);
+            self.tests.edited(path, line, delta);
             }
             if let Some(c) = typed {
                 let prose = matches!(hl.language.as_str(), "Plain Text" | "Markdown");
@@ -1810,6 +1814,8 @@ impl Editors {
         let hover_word = self.intel.hover.as_ref().filter(|h| h.doc == doc_id && h.group == g).map(|h| h.word);
         let marks = path.as_deref().map(|p| (self.marks.of(p).to_vec(), self.marks.stopped_line(p), self.marks.live));
         let (mut bp_action, bp_w) = (None, char_w * 2.2 + 2.0);
+        let (test_marks, mut test_click) = (path.as_deref().and_then(|p| self.tests.of(p)).cloned(), None);
+        let test_at = |line: usize| test_marks.as_ref()?.tests.iter().find(|t| t.0 == line && !marks.as_ref().is_some_and(|m| m.0.iter().any(|b| b.line == line)));
         let peek_pos = self.intel.peek.as_ref().filter(|p| p.doc == doc_id && is_active).map(|p| p.pos);
         let hint_format = TextFormat {
             font_id: FontId::monospace((settings.font_size * 0.9).round()),
@@ -1931,6 +1937,9 @@ impl Editors {
                                 tab.drag_anchor = None;
                             } else if on_lens {
                                 lens_press = true;
+                                tab.drag_anchor = None;
+                            } else if let Some(test) = test_at(row_at(pos.y).0).filter(|_| pos.x < clip.left() + bp_w) {
+                                test_click = Some((test.2, test.3.clone(), mods.command));
                                 tab.drag_anchor = None;
                             } else if marks.is_some() && pos.x < clip.left() + bp_w {
                                 bp_action = Some(crate::debug::Gutter::Toggle(row_at(pos.y).0));
@@ -2145,6 +2154,12 @@ impl Editors {
                             let pos = pos2(text_x + last.galley.size().x + char_w * 3.0, bottom - line_h / 2.0);
                             painter.text(pos, Align2::LEFT_CENTER, label, FontId::proportional(settings.font_size), ui::with_alpha(theme.text_dim, 0.75));
                         }
+                        if let Some((_, message)) = test_marks.as_ref().and_then(|m| m.failures.iter().find(|f| f.0 == line)) {
+                            let last = row.pieces.last().unwrap();
+                            painter.rect_filled(Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom)), CornerRadius::ZERO, ui::with_alpha(theme.error, 0.08));
+                            let pos = pos2(text_x + last.galley.size().x + char_w * 3.0, bottom - line_h / 2.0);
+                            painter.text(pos, Align2::LEFT_CENTER, message, FontId::proportional(settings.font_size), theme.error);
+                        }
                         let linked = if len >= 10 { buf_ref.line_text(line) } else { String::new() };
                         for (x0, x1, y) in links(&linked).into_iter().flat_map(|link| spans(link.0, link.1)) {
                             painter.hline(x0..=x1, y + line_h - 2.0, Stroke::new(1.0, ui::with_alpha(theme.accent, 0.7)));
@@ -2210,9 +2225,17 @@ impl Editors {
                     let bp_hover = pointer.filter(|pos| resp.hovered() && pos.x < clip.left() + bp_w).map(|pos| row_at(pos.y).0);
                     for line in (first..last).filter(|line| starts[line + 1] > starts[*line]) {
                         let y = origin.y + top_of(line) as f32 * line_h + line_h / 2.0;
+                        if let Some(hits) = test_marks.as_ref().and_then(|m| m.coverage.as_ref()?.get(&line)) {
+                            let tint = Rect::from_min_max(pos2(clip.left() + bp_w, y - line_h / 2.0), pos2(gutter.right() - 8.0, y + line_h / 2.0));
+                            painter.rect_filled(tint, CornerRadius::ZERO, ui::with_alpha(if *hits > 0 { theme.added } else { theme.deleted }, 0.22));
+                        }
+                        let test = test_at(line);
                         if let Some((list, stopped, live)) = &marks {
                             let center = pos2(clip.left() + bp_w / 2.0 + 1.0, y);
-                            crate::debug::paint_gutter(&painter, theme, list, *live, *stopped, line, center, (line_h * 0.26).min(char_w * 0.8), bp_hover == Some(line));
+                            crate::debug::paint_gutter(&painter, theme, list, *live, *stopped, line, center, (line_h * 0.26).min(char_w * 0.8), bp_hover == Some(line) && test.is_none());
+                        }
+                        if let Some(test) = test {
+                            crate::testing::paint_glyph(&painter, theme, test.1, pos2(clip.left() + bp_w / 2.0 + 1.0, y), (line_h * 0.62).min(char_w * 1.6));
                         }
                         let color = if current_line == Some(line) { theme.text } else { ui::with_alpha(theme.text_dim, 0.75) };
                         painter.text(pos2(gutter.right() - 10.0 - char_w, y), Align2::RIGHT_CENTER, line + 1, number_font.clone(), color);
@@ -2362,6 +2385,7 @@ impl Editors {
         if let (Some(action), Some(path)) = (bp_action, &path) {
             self.marks.apply(path, action);
         }
+        self.tests.clicked = test_click.or(self.tests.clicked.take());
         if let Some(line) = toggle_fold {
             match folds.iter().position(|f| f.0 == line) {
                 Some(at) => drop(folds.remove(at)),
@@ -3277,6 +3301,37 @@ fn xb() {}
         frame(&ctx, &mut editors, vec![key(Key::Enter, Default::default())]);
         frame(&ctx, &mut editors, vec![]);
         assert_eq!(lines(&editors), [2, 3]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn gutter_test_glyphs_run_tests_and_coverage_drops_on_edit() {
+        use crate::test_parse::{Kind, State};
+        let path = std::env::temp_dir().join(format!("halo-test-glyph-{}.txt", std::process::id()));
+        std::fs::write(&path, "one
+two
+three
+").unwrap();
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.open(&path);
+        let marks = crate::testing::FileMarks { tests: vec![(1, State::Passed, Kind::Rust, "t".into())], failures: vec![(2, "boom".into())], coverage: Some([(0, 1)].into()) };
+        editors.tests.put(&path, marks);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        let row_h = ctx.fonts_mut(|f| f.row_height(&FontId::monospace(settings.font_size)));
+        let pos = pos2(5.0, TAB_H + 22.0 + 1.5 * (row_h * 1.25).round());
+        let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(&ctx, &mut editors, vec![Event::PointerMoved(pos)]);
+        frame(&ctx, &mut editors, vec![button(true)]);
+        frame(&ctx, &mut editors, vec![button(false)]);
+        assert_eq!(editors.tests.clicked.take(), Some((Kind::Rust, "t".into(), false)));
+        assert!(editors.marks.of(&path).is_empty());
+        frame(&ctx, &mut editors, vec![key(Key::Enter, Default::default())]);
+        frame(&ctx, &mut editors, vec![]);
+        let file = editors.tests.of(&path).unwrap();
+        assert_eq!((file.tests[0].0, file.failures.len(), file.coverage.is_none()), (2, 0, true));
         let _ = std::fs::remove_file(&path);
     }
 

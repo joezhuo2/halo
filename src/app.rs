@@ -60,6 +60,7 @@ pub struct Halo {
     update: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pub updated: Option<String>,
     pub debug: crate::debug::Debug,
+    pub testing: crate::testing::Testing,
 }
 
 impl Halo {
@@ -105,6 +106,7 @@ impl Halo {
             update: None,
             updated: None,
             debug: Default::default(),
+            testing: Default::default(),
         };
         if app.settings.auto_update && !cfg!(debug_assertions) && std::env::var_os("HALO_COMMANDS").is_none() {
             app.update = Some(crate::update::start(ctx));
@@ -255,21 +257,26 @@ impl Halo {
             ShowExplorer | ShowSourceControl | FindInFiles => {
                 let shown = (self.session.search, self.session.source_control && !self.session.search);
                 let wanted = (cmd == FindInFiles, cmd == ShowSourceControl);
-                if self.session.sidebar && shown == wanted && cmd != FindInFiles && !self.session.debug_view {
+                if self.session.sidebar && shown == wanted && cmd != FindInFiles && !self.session.debug_view && !self.session.test_view {
                     self.session.sidebar = false;
                 } else {
                     self.session.sidebar = true;
                     (self.session.search, self.session.source_control) = wanted;
                 }
-                self.session.debug_view = false;
+                (self.session.debug_view, self.session.test_view) = (false, false);
                 if cmd == FindInFiles {
                     self.find.focus();
                 }
             }
             ShowRunAndDebug => {
                 self.session.sidebar = !(self.session.sidebar && self.session.debug_view);
-                (self.session.debug_view, self.session.search, self.session.source_control) = (true, false, false);
+                (self.session.debug_view, self.session.search, self.session.source_control, self.session.test_view) = (true, false, false, false);
             }
+            ShowTesting => {
+                (self.session.sidebar, self.session.test_view, self.session.debug_view, self.session.search, self.session.source_control) = (true, true, false, false, false);
+            }
+            RunAllTests | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
+            | RunAllTestsWithCoverage | ToggleCoverageDisplay => self.testing_exec(&cmd, ctx),
             StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver | StepInto | StepOut
             | RemoveAllBreakpoints | AddWatch | AddConfiguration => {
                 if cmd == AddWatch {
@@ -418,7 +425,7 @@ impl Halo {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 let (search, source) = (self.session.search, self.session.source_control && !self.session.search);
-                let explorer = self.session.sidebar && !search && !source && !self.session.debug_view;
+                let explorer = self.session.sidebar && !search && !source && !self.session.debug_view && !self.session.test_view;
                 let source = self.session.sidebar && source;
                 if activity_item(ui, &theme, icons::FILES, explorer, "Explorer (Ctrl+Shift+E)").clicked() {
                     self.cmds.push(Command::ShowExplorer);
@@ -431,6 +438,10 @@ impl Halo {
                 }
                 if activity_item(ui, &theme, icons::BUG, self.session.sidebar && self.session.debug_view, "Run and Debug (Ctrl+Shift+D)").clicked() {
                     self.cmds.push(Command::ShowRunAndDebug);
+                }
+                let testing = self.session.sidebar && self.session.test_view && !self.session.debug_view;
+                if activity_item(ui, &theme, icons::FLASK, testing, "Testing").clicked() {
+                    self.cmds.push(if testing { Command::ToggleSidebar } else { Command::ShowTesting });
                 }
                 ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                     if activity_item(ui, &theme, icons::GEAR, false, "Settings (Ctrl+,)").clicked() {
@@ -459,6 +470,9 @@ impl Halo {
             .show_collapsible(ui, &mut open, |ui| {
                 if self.session.debug_view {
                     return self.debug_view(ui);
+                }
+                if self.session.test_view {
+                    return self.testing_view(ui);
                 }
                 if self.session.search {
                     let folder = self.session.folder.clone();
@@ -722,6 +736,7 @@ impl eframe::App for Halo {
         self.bottom_panel(ui);
         self.central(ui);
         self.debug_frame(&ctx, window.top() + 44.0);
+        self.testing_frame(&ctx);
         self.dialogs(&ctx);
 
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false));

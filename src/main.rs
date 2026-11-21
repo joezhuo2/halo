@@ -21,6 +21,7 @@ mod statusbar;
 mod tasks;
 mod terminal;
 mod test_parse;
+mod testing;
 mod theme;
 mod timeline;
 mod titlebar;

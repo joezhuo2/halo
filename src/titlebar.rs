@@ -124,7 +124,7 @@ impl Halo {
             Some(AddCursorAbove), Some(AddCursorBelow), Some(SelectNextOccurrence),
         ]);
         self.menu(ui, "View", &[
-            Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), None,
+            Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), Some(ShowTesting), None,
             Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), Some(ShowProblems), None,
             Some(SplitEditor), Some(ToggleMinimap), None,
             Some(ToggleTheme), Some(ZoomIn), Some(ZoomOut), Some(ZoomReset),
@@ -147,6 +147,10 @@ impl Halo {
             }
             ui.separator();
             for cmd in [ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration] {
+                self.menu_item(ui, cmd);
+            }
+            ui.separator();
+            for cmd in [RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RunAllTestsWithCoverage, CancelTestRun] {
                 self.menu_item(ui, cmd);
             }
             ui.separator();

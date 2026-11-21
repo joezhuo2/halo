@@ -741,7 +741,7 @@ impl Debug {
         self.begin(config.resolve(&vars), no_debug, env);
     }
 
-    fn begin(&mut self, config: Config, no_debug: bool, env: &mut Env) {
+    pub(crate) fn begin(&mut self, config: Config, no_debug: bool, env: &mut Env) {
         let client = match config.raw.get("debugServer").and_then(Value::as_u64) {
             Some(port) => dap::Client::connect(port as u16, env.ctx),
             None => {
@@ -1611,7 +1611,7 @@ pub fn hover_ui(ctx: &egui::Context, theme: &Theme, marks: &mut Marks, owner: (u
 }
 
 impl Halo {
-    fn debug_env<'a>(&'a mut self, ctx: &'a egui::Context) -> (&'a mut Debug, Env<'a>) {
+    pub(crate) fn debug_env<'a>(&'a mut self, ctx: &'a egui::Context) -> (&'a mut Debug, Env<'a>) {
         let file = self.editors.active_path();
         let env = Env {
             folder: self.session.folder.as_deref(),

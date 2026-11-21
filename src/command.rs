@@ -67,6 +67,7 @@ pub enum Command {
     ShowExplorer,
     ShowSourceControl,
     ShowRunAndDebug,
+    ShowTesting,
     ToggleSidebar,
     TogglePanel,
     ToggleAi,
@@ -143,6 +144,16 @@ pub enum Command {
     RemoveAllBreakpoints,
     AddWatch,
     AddConfiguration,
+    RunAllTests,
+    RunFailedTests,
+    RunTestAtCursor,
+    DebugTestAtCursor,
+    RerunLastTestRun,
+    CancelTestRun,
+    RefreshTests,
+    ShowTestOutput,
+    RunAllTestsWithCoverage,
+    ToggleCoverageDisplay,
 
     GitSync,
     Git(GitCommand),
@@ -272,8 +283,15 @@ fn defaults() -> Vec<Binding> {
     let g = |m, k, c| Binding { command: c, shortcut: key(m, k), chord: None, scope: Scope::Global };
     let e = |m, k, c| Binding { command: c, shortcut: key(m, k), chord: None, scope: Scope::Editor };
     let k = |m, k, c| Binding { command: c, shortcut: key(C, Key::K), chord: Some(key(m, k)), scope: Scope::Global };
+    let t = |m, k, c| Binding { command: c, shortcut: key(C, Key::Semicolon), chord: Some(key(m, k)), scope: Scope::Global };
     let sa = Modifiers::SHIFT | Modifiers::ALT;
     vec![
+        t(NONE, Key::A, RunAllTests),
+        t(NONE, Key::E, RunFailedTests),
+        t(NONE, Key::C, RunTestAtCursor),
+        t(C, Key::C, DebugTestAtCursor),
+        t(NONE, Key::L, RerunLastTestRun),
+        t(C, Key::X, CancelTestRun),
         k(C, Key::F, FormatSelection),
         k(C, Key::I, ShowHover),
         g(cs, Key::M, ShowProblems),
@@ -372,7 +390,7 @@ pub fn all() -> Vec<Command> {
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
         SelectAll, AddCursorAbove, AddCursorBelow, SelectNextOccurrence, SelectAllOccurrences, ExpandSelection, ShrinkSelection, CursorUndo,
-        ShowExplorer, ShowSourceControl, ShowRunAndDebug, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
+        ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
         ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer,
         GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, NextEditor, PrevEditor, GoBack, GoForward, ReopenClosed,
         KeepEditor, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
@@ -381,7 +399,8 @@ pub fn all() -> Vec<Command> {
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut,
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
-        OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, GitSync, ToggleInlineBlame, OpenLineChanges,
+        OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
+        ShowTestOutput, RunAllTestsWithCoverage, ToggleCoverageDisplay, NewTerminal, SplitTerminal, KillTerminal, GitSync, ToggleInlineBlame, OpenLineChanges,
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.push(About);
@@ -520,7 +539,7 @@ impl Command {
             | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection => "Edit",
             SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence | SelectAllOccurrences | ExpandSelection
             | ShrinkSelection | CursorUndo => "Selection",
-            ShowExplorer | ShowSourceControl | ShowRunAndDebug | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
+            ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
             | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | ReopenClosed | KeepEditor | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
@@ -529,7 +548,9 @@ impl Command {
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_)
             | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
-            | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration => "Run",
+            | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
+            | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
+            | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
             NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
             OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) => "Source Control",
@@ -596,6 +617,7 @@ impl Command {
             ShowExplorer => "Explorer",
             ShowSourceControl => "Source Control",
             ShowRunAndDebug => "Run and Debug",
+            ShowTesting => "Test: Focus on Test Explorer View",
             ToggleSidebar => "Toggle Side Bar",
             TogglePanel => "Toggle Panel",
             ToggleAi => "Toggle AI Panel",
@@ -669,6 +691,16 @@ impl Command {
             RemoveAllBreakpoints => "Remove All Breakpoints",
             AddWatch => "Debug: Add Watch Expression",
             AddConfiguration => "Debug: Add Configuration...",
+            RunAllTests => "Test: Run All Tests",
+            RunFailedTests => "Test: Run Failed Tests",
+            RunTestAtCursor => "Test: Run Test at Cursor",
+            DebugTestAtCursor => "Test: Debug Test at Cursor",
+            RerunLastTestRun => "Test: Rerun Last Run",
+            CancelTestRun => "Test: Cancel Test Run",
+            RefreshTests => "Test: Refresh Tests",
+            ShowTestOutput => "Test: Show Output",
+            RunAllTestsWithCoverage => "Test: Run All Tests with Coverage",
+            ToggleCoverageDisplay => "Test: Toggle Coverage Display",
             GitSync => "Synchronize Changes",
             RefreshExplorer => "Refresh Explorer",
             PathChanged(..) => "Path Changed",
