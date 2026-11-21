@@ -105,17 +105,32 @@ language you want diagnostics and completion in. Each is optional.
   any `.sublime-syntax` file you add. A minimap sits beside the text.
 - **Tabs:** drag a tab to reorder it, drop it on another group to move it, or
   drop it on the left or right third of an editor to open it side by side.
-  Right-click a tab to pin it; pinned tabs stay on the left and are skipped by
-  Close Others, Close All and `Ctrl+W`. A newly opened file is a preview with
+  The tab follows the pointer and the others slide apart to show where it
+  lands. Right-click a tab to pin it; pinned tabs stay on the left, are
+  skipped by Close Others, Close All and `Ctrl+W`, and come back after a
+  restart. A newly opened file is a preview with
   an italic title, and the next file you open takes its tab until you edit it
   or double-click the tab. `Ctrl+Tab` switches between recent files,
   `Ctrl+Shift+T` reopens a closed one, and `Alt+Left` and `Alt+Right` go back
   and forward.
 - **Split editor** (`Ctrl+\`) shows one file in several groups.
 - **Merge conflicts** get a bar with Accept Current, Accept Incoming, Accept
-  Both and Next.
-- **Auto save** (off by default) saves changed files one second after the
-  last edit. Saving can trim trailing whitespace and add a final newline.
+  Both and Next, and open in the **merge editor**: Incoming, Current, an
+  optional Base and an editable Result, with accept per conflict and Complete
+  Merge, which saves and stages the file.
+- **Diff editor:** changes open side by side, and the working tree side is
+  the live file, so you can edit it there. `Alt+F5` and `Shift+Alt+F5` step
+  through changes. Stage, unstage or revert a single hunk or the selected
+  lines. Click a change mark in the gutter to peek at the change.
+- **Compare** the active file with another file, the clipboard or its saved
+  version.
+- **Markdown preview** (`Ctrl+Shift+V`, or `Ctrl+K V` to the side) follows
+  the source as you type and scroll.
+- **Images** (png, jpg, gif, webp, bmp, ico, svg) open in a viewer with zoom
+  and pan. Binary files show a notice instead of text, and files over 20 MB
+  open in a light mode without highlighting or language servers.
+- **Auto save** (off by default): after a delay, on focus change or on window
+  change. Saving can trim trailing whitespace and add a final newline.
 - **Hot exit:** unsaved and untitled files come back the next time Halo
   opens. When a file you changed also changes on disk, a bar offers Compare,
   Use Disk Version and Overwrite.
@@ -152,7 +167,8 @@ file extension.
   the explorer lists the active file, and the breadcrumbs above the text show
   the path and the enclosing symbols.
 - **Timeline:** the section under the outline lists the commits that changed
-  the active file. Click one to open its diff of the file.
+  the active file and the versions kept each time you saved it (**local
+  history**). Click one to open its diff; a saved version can be restored.
 - **Semantic highlighting**, **inlay hints** for inferred types and parameter
   names, and **call** (`Shift+Alt+H`) and **type hierarchy** in the peek list.
 - Server messages go to the **Output** panel, and the status bar shows what
@@ -166,13 +182,24 @@ Each of these can be switched off under **Settings > Text Editor**.
   modified, red for deleted, gray for ignored.
 - New file, new folder, rename, delete to the Recycle Bin, copy path and
   reveal in the file manager, from the right-click menu.
+- Select several files (`Ctrl+Click`, `Shift+Click`), cut, copy and paste
+  them, drag them to another folder, and drop files in from the operating
+  system.
+- **Open Editors** lists the open tabs above the tree. Type, or press
+  `Ctrl+Alt+F`, to filter the tree. `files_exclude` hides files, and folder
+  chains with a single child are shown on one row.
 
 ### Source control
 
 - Stage, unstage and discard changes, write a message and commit with
-  `Ctrl+Enter`.
-- Switch or create branches, push, pull, fetch, stash and pop, and
-  synchronize from the status bar.
+  `Ctrl+Enter`. Amend, or undo the last commit.
+- Switch or create branches, push, pull, fetch, and synchronize from the
+  status bar. Merge, rebase and cherry-pick, with Continue, Abort and Skip
+  while one is in progress.
+- Tags, remotes, worktrees, Clone and Initialize Repository, and a Stashes
+  section with Show, Apply, Pop and Drop.
+- **Blame** for the current line in the status bar, and inline on the caret
+  line if you turn it on.
 - The changes, pull requests and commits sections can be minimized, and
   resized by dragging the line between them.
 - **Commit graph** with lanes and branch labels. Click a commit to list its
@@ -188,8 +215,14 @@ Each of these can be switched off under **Settings > Text Editor**.
   profile.
 - Several terminals, each of which can be split side by side. Every pane has
   its own row in the list, and the focused one is highlighted.
-- **Ports** lists listening ports with their process. **Debug Console**
-  mirrors the output of Run File and tasks.
+- `Ctrl+Click` opens a URL or a file path, at the line and column when the
+  output names them. `Ctrl+F` finds in the terminal.
+- **Shell integration** for PowerShell, bash and zsh marks each command with
+  its exit status; `Ctrl+Up` and `Ctrl+Down` move between commands.
+- Rename a terminal, give it a colour, or move it into the editor area.
+- **Ports** lists listening ports with their process. **Output**
+  (`Ctrl+Shift+U`) has a channel each for Git, language servers, debugging,
+  tasks and Halo itself.
 
 ### AI panel
 
@@ -211,10 +244,21 @@ what it searches:
 | `#` | Symbols in the workspace, from the language servers |
 | `:` | A line number |
 
-### Run
+### Run, debug and test
 
 - `F5` saves the file and runs it with the command set for its extension.
-- Named tasks appear in the **Run** menu.
+  With a `.vscode/launch.json` in the folder, `F5` starts the debugger
+  instead and `Ctrl+F5` runs without it.
+- **Debugger** for any Debug Adapter Protocol adapter on `PATH` (defaults for
+  codelldb, lldb-dap, gdb, debugpy and dlv; set others in `debug_adapters`):
+  breakpoints with conditions, hit counts and logpoints (`F9`), stepping
+  (`F10`, `F11`, `Shift+F11`), variables, watch, call stack, and a Debug
+  Console that evaluates expressions while paused.
+- **Tasks** from `.vscode/tasks.json`, plus npm, yarn, pnpm, bun and cargo
+  tasks found in the folder. `Ctrl+Shift+B` runs the build task. Problem
+  matchers send compiler errors to the Problems panel.
+- **Testing** view for cargo, pytest, go, Jest and Vitest: run all, run
+  failed, run or debug the test at the cursor, and run with coverage.
 
 ### WSL
 
@@ -235,9 +279,15 @@ what it searches:
 | Languages | Grammars folder, file associations, language servers and their commands, and the installed languages |
 | Keyboard Shortcuts | Every command with its key, grouped by category |
 
-To change a key, click it in **Keyboard Shortcuts** and press the new one.
-Escape cancels, the cross removes the key and the arrow restores the default.
-Two-step chords such as `Ctrl+K Ctrl+O` are edited in `keybindings.json`.
+A search box at the top filters the settings; `@modified` lists the ones you
+changed. Settings can also live in the folder's `.vscode/settings.json`
+(the Workspace tab) and in `"[language]"` blocks, and both files accept VS
+Code's setting names. VS Code color themes and file icon themes can be
+imported from a file or from installed VS Code extensions.
+
+To change a key, click it in **Keyboard Shortcuts** and press the new one or
+a two-step chord; the page lists the commands already on those keys. Each
+binding can have a `when` clause, as in VS Code's `keybindings.json`.
 
 The defaults follow VS Code:
 
@@ -274,8 +324,12 @@ The sun or moon at the right end of the status bar also switches the theme.
 - Completions insert plain text, without snippet tab stops. Server code
   lenses such as Run and Debug, and the quick fix lightbulb, are not shown.
 - Call and type hierarchy list one level at a time.
-- Pinned tabs are not remembered after a restart.
 - New grammars and file associations load when Halo starts.
+- Debugging and testing need the adapter or test tool on `PATH`; one debug
+  session runs at a time.
+- Imported icon themes must use SVG or PNG icons, and imported color themes
+  must be JSON.
+- No font ligatures or letter spacing, and no VS Code extensions.
 
 ## Screenshots
 
