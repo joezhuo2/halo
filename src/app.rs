@@ -78,13 +78,7 @@ impl Halo {
     pub fn new(cc: &eframe::CreationContext<'_>, mut args: crate::cli::Args, server: Option<crate::ipc::Server>) -> Self {
         let ctx = &cc.egui_ctx;
         let mut app = Self::build(ctx, Settings::load(), Session::load());
-        // eframe shows the window before its first painted frame; stay transparent until the layout has settled
-        crate::windows::conceal(true);
         app.reveal_at = Some(ctx.cumulative_frame_nr() + 3);
-        std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_secs(5));
-            crate::windows::conceal(false);
-        });
         if app.session.layout.zen.is_some() && !app.settings.zen_restore {
             app.toggle_zen();
         }

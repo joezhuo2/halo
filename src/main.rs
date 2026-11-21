@@ -101,6 +101,12 @@ fn main() -> eframe::Result {
         persistence_path: test.then(|| std::env::temp_dir().join("halo-test.ron")),
         ..Default::default()
     };
+    // stay cloaked until the first frames are drawn
+    windows::conceal(true);
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        windows::conceal(false);
+    });
     eframe::run_native(
         "Halo",
         options,

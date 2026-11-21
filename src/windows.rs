@@ -18,37 +18,64 @@ pub fn set_secondary(on: bool) {
 
 #[cfg(windows)]
 pub fn conceal(on: bool) {
+    use std::sync::atomic::{AtomicIsize, Ordering};
     #[link(name = "user32")]
     unsafe extern "system" {
-        fn EnumThreadWindows(thread: u32, each: unsafe extern "system" fn(isize, isize) -> i32, param: isize) -> i32;
-        fn GetWindowLongW(hwnd: isize, index: i32) -> i32;
-        fn SetWindowLongW(hwnd: isize, index: i32, value: i32) -> i32;
-        fn SetLayeredWindowAttributes(hwnd: isize, key: u32, alpha: u8, flags: u32) -> i32;
+        fn SetWindowsHookExW(id: i32, hook: unsafe extern "system" fn(i32, usize, isize) -> isize, module: isize, thread: u32) -> isize;
+        fn UnhookWindowsHookEx(hook: isize) -> i32;
+        fn CallNextHookEx(hook: isize, code: i32, w: usize, l: isize) -> isize;
     }
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentThreadId() -> u32;
     }
-    const EXSTYLE: i32 = -20;
-    const LAYERED: i32 = 0x80000;
-    const ALPHA: u32 = 2;
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmSetWindowAttribute(hwnd: isize, attribute: u32, value: *const i32, size: u32) -> i32;
+    }
+    #[repr(C)]
+    struct Message {
+        l: isize,
+        w: usize,
+        id: u32,
+        hwnd: isize,
+    }
+    const CALLWNDPROC: i32 = 4;
+    const NCCREATE: u32 = 0x81;
+    const CLOAK: u32 = 13;
+    static HOOK: AtomicIsize = AtomicIsize::new(0);
+    static PENDING: std::sync::Mutex<Vec<isize>> = std::sync::Mutex::new(vec![]);
     static HIDDEN: std::sync::Mutex<Vec<isize>> = std::sync::Mutex::new(vec![]);
-    unsafe extern "system" fn each(hwnd: isize, _: isize) -> i32 {
-        unsafe {
-            let style = GetWindowLongW(hwnd, EXSTYLE);
-            if style & LAYERED == 0 {
-                SetWindowLongW(hwnd, EXSTYLE, style | LAYERED);
-                SetLayeredWindowAttributes(hwnd, 0, 0, ALPHA);
-                HIDDEN.lock().unwrap().push(hwnd);
+    fn cloak(hwnd: isize, on: bool) -> bool {
+        let on = on as i32;
+        unsafe { DwmSetWindowAttribute(hwnd, CLOAK, &on, 4) >= 0 }
+    }
+    // winit shows a restored maximized window while creating it, and DWM rejects a cloak until the window has
+    // been set up, so cloak each new top-level window on the first message DWM accepts it
+    unsafe extern "system" fn hook(code: i32, w: usize, l: isize) -> isize {
+        let message = unsafe { &*(l as *const Message) };
+        let mut pending = PENDING.lock().unwrap();
+        if message.id == NCCREATE && unsafe { *(message.l as *const isize).add(3) } == 0 {
+            pending.push(message.hwnd);
+        } else if let Some(i) = pending.iter().position(|h| *h == message.hwnd) {
+            if cloak(message.hwnd, true) {
+                HIDDEN.lock().unwrap().push(pending.swap_remove(i));
             }
         }
-        1
+        unsafe { CallNextHookEx(0, code, w, l) }
     }
     if on {
-        unsafe { EnumThreadWindows(GetCurrentThreadId(), each, 0) };
+        if HOOK.load(Ordering::Relaxed) == 0 {
+            HOOK.store(unsafe { SetWindowsHookExW(CALLWNDPROC, hook, 0, GetCurrentThreadId()) }, Ordering::Relaxed);
+        }
     } else {
+        let hook = HOOK.swap(0, Ordering::Relaxed);
+        if hook != 0 {
+            unsafe { UnhookWindowsHookEx(hook) };
+        }
+        PENDING.lock().unwrap().clear();
         for hwnd in HIDDEN.lock().unwrap().drain(..) {
-            unsafe { SetLayeredWindowAttributes(hwnd, 0, 255, ALPHA) };
+            cloak(hwnd, false);
         }
     }
 }
