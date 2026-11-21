@@ -279,7 +279,8 @@ what it searches:
 ### WSL
 
 - **Switch to WSL** in the activity bar reopens the folder in a WSL distro.
-  Terminals, Run and the AI panel then run inside it.
+  Terminals, Run, language servers and the AI panel then run inside it, so a
+  server such as `clangd` must be installed in the distro.
 
 ### Window layout
 
@@ -377,8 +378,8 @@ The sun or moon at the right end of the status bar also switches the theme.
 
 ### Limits
 
-- Language features need a server that is installed and on `PATH`, and they
-  are off in WSL folders.
+- Language features need a server that is installed and on `PATH` (inside
+  the distro for WSL folders).
 - The peek list and the popups sit over the text instead of pushing it down.
 - Completions insert plain text, without snippet tab stops. Server code
   lenses such as Run and Debug, and the quick fix lightbulb, are not shown.

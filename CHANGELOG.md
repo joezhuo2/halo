@@ -6,6 +6,47 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-21
+
+Checked with tests on Windows, including WSL tests against a real clangd and
+git in Ubuntu. Not yet tried by hand in the running app.
+
+### Added
+
+- **Language servers in WSL**: files in a WSL folder get their language
+  server from inside the distro (for example clangd), with diagnostics while
+  you type, Go to Definition and completions such as `size()`.
+- **Peek context lines**: the peek definition/references preview shows 7
+  lines above the target by default (setting "Peek Context Lines") and
+  scrolls with the mouse wheel.
+- **Git changes in the minimap**: added, modified and deleted lines show in
+  the minimap gutter and its overview lane.
+- **Terminal selection keys**: Shift+Arrow and Ctrl+Shift+Arrow select text
+  (PowerShell keeps its own handling), and Ctrl+Delete deletes the next word.
+
+### Changed
+
+- **Commit with nothing staged** stages all changes and commits them,
+  instead of a disabled button.
+- **Staged lines** show dimmed in the gutter.
+- **Diff view**: the ruler shows removed and added lines in separate lanes,
+  and change highlights are stronger.
+- **Source Control** refreshes as soon as a terminal command finishes, with
+  a spinner while Git status loads.
+- Recent folders and files are shared by all windows, so the jump list keeps
+  folders opened in another window, WSL folders included.
+
+### Fixed
+
+- Deleting a large folder no longer freezes the window: it moves to the
+  Recycle Bin in the background.
+- The gutter change bar no longer flashes while typing or switching windows.
+- Clicking the Outline or Timeline header toggles it again, instead of
+  starting a drag of the view.
+- A file and its diff open side by side no longer clash ("widget ID" error).
+- Clicking a change in Source Control opens its diff even when no editor is
+  open.
+
 ## [0.1.5] - 2026-11-21
 
 Checked on Windows with tests and by watching the window state at startup.
@@ -289,7 +330,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/joezhuo2/halo/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/joezhuo2/halo/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/joezhuo2/halo/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/joezhuo2/halo/compare/v0.1.2...v0.1.3
