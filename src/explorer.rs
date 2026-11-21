@@ -1,18 +1,28 @@
 use crate::command::Command;
+use crate::editor::OpenTab;
+use crate::explorer_ops::{self as ops, Done, Job, Selection};
 use crate::git::{FileState, Git};
+use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use eframe::egui::{
-    self, Align, Align2, Color32, FontId, Id, Key, Layout, Modifiers, Rect, RichText, ScrollArea, Sense, Stroke, Ui,
-    UiBuilder, pos2, vec2,
+    self, Align, Align2, Color32, FontId, Id, Key, Layout, Modifiers, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, Ui,
+    UiBuilder, pos2, text::CCursor, vec2,
 };
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, TryRecvError};
+
+mod panels;
+#[cfg(test)]
+mod tests;
 
 const ROW: f32 = 22.0;
 const INDENT: f32 = 12.0;
 const FOLDER_TIME: f64 = (ui::ANIM * 1.4) as f64;
+const OPEN_ROWS: f32 = 8.0;
+const HOVER_EXPAND: f64 = 0.7;
 
 #[derive(Clone)]
 struct Entry {
@@ -28,6 +38,14 @@ struct Row {
     depth: usize,
     is_dir: bool,
     editing: bool,
+    chain: Vec<PathBuf>,
+    hits: Vec<usize>,
+}
+
+impl Row {
+    fn holds(&self, path: &Path) -> bool {
+        self.path == path || self.chain.iter().any(|p| p == path)
+    }
 }
 
 struct FolderAnimation {
@@ -58,13 +76,37 @@ struct Edit {
     focus: bool,
 }
 
+struct Filter {
+    open: bool,
+    text: String,
+    hide: bool,
+    focus: bool,
+    matches: usize,
+}
+
+impl Filter {
+    fn active(&self) -> bool {
+        self.open && !self.text.trim().is_empty()
+    }
+}
+
 enum Action {
     Toggle(PathBuf),
+    Expand(PathBuf),
     Open(PathBuf),
     Select(PathBuf),
+    Pick(PathBuf),
+    Extend(PathBuf),
+    SelectAll,
     New(EditKind, PathBuf),
     Rename(PathBuf),
-    Delete(PathBuf),
+    Delete(Vec<PathBuf>),
+    Clip(bool),
+    Paste,
+    Drop(Vec<PathBuf>, PathBuf),
+    Import(Vec<PathBuf>, PathBuf),
+    Match(bool),
+    CloseFilter,
     Copy(String),
     Reveal(PathBuf),
     Compare(Command),
@@ -78,35 +120,32 @@ pub struct Explorer {
     expanded: HashSet<PathBuf>,
     rows: Vec<Row>,
     dirty: bool,
-    selected: Option<PathBuf>,
+    sel: Selection,
     pub compare: Option<PathBuf>,
     last_active: Option<PathBuf>,
     scroll_to: Option<PathBuf>,
     edit: Option<Edit>,
-    confirm_delete: Option<PathBuf>,
+    confirm_delete: Vec<PathBuf>,
+    confirm_drop: Option<(Vec<PathBuf>, PathBuf)>,
+    clash: Option<Vec<Job>>,
+    clipboard: Option<(Vec<PathBuf>, bool)>,
+    work: Vec<Receiver<Done>>,
+    drag: Option<Vec<PathBuf>>,
+    hover_dir: Option<(PathBuf, f64)>,
+    dropped: Option<(Vec<PathBuf>, Pos2)>,
+    filter: Filter,
+    focus_tree: bool,
+    open_editors: bool,
+    open_focus: bool,
+    open_cursor: usize,
+    focus_open: bool,
+    compact: bool,
+    exclude: Vec<String>,
+    confirm_drag: bool,
     error: Option<String>,
     focused: bool,
     collapsed: bool,
     animation: Option<FolderAnimation>,
-}
-
-fn read_dir(dir: &Path) -> Vec<Entry> {
-    let Ok(reader) = std::fs::read_dir(dir) else { return vec![] };
-    let mut entries: Vec<Entry> = reader
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name == ".git" {
-                return None;
-            }
-            let kind = e.file_type().ok()?;
-            let path = e.path();
-            let is_dir = if kind.is_symlink() { path.is_dir() } else { kind.is_dir() };
-            Some(Entry { path, name, is_dir })
-        })
-        .collect();
-    entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase()));
-    entries
 }
 
 fn validate(name: &str) -> Result<(), String> {
@@ -165,6 +204,17 @@ fn reveal(path: &Path) {
     let _ = std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)).spawn();
 }
 
+fn name_of(path: &Path) -> String {
+    path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
+}
+
+fn count_text(paths: &[PathBuf]) -> String {
+    match paths {
+        [one] => format!("\"{}\"", name_of(one)),
+        many => format!("{} items", many.len()),
+    }
+}
+
 impl Explorer {
     pub fn new() -> Self {
         Self {
@@ -173,12 +223,28 @@ impl Explorer {
             expanded: HashSet::new(),
             rows: vec![],
             dirty: true,
-            selected: None,
+            sel: Selection::default(),
             compare: None,
             last_active: None,
             scroll_to: None,
             edit: None,
-            confirm_delete: None,
+            confirm_delete: vec![],
+            confirm_drop: None,
+            clash: None,
+            clipboard: None,
+            work: vec![],
+            drag: None,
+            hover_dir: None,
+            dropped: None,
+            filter: Filter { open: false, text: String::new(), hide: true, focus: false, matches: 0 },
+            focus_tree: false,
+            open_editors: true,
+            open_focus: false,
+            open_cursor: 0,
+            focus_open: false,
+            compact: false,
+            exclude: vec![],
+            confirm_drag: true,
             error: None,
             focused: false,
             collapsed: false,
@@ -188,17 +254,43 @@ impl Explorer {
 
     pub fn set_root(&mut self, root: Option<PathBuf>) {
         *self = Self::new();
-        if let Some(root) = &root {
-            self.children.insert(root.clone(), read_dir(root));
-        }
         self.root = root;
+    }
+
+    fn read_dir(&self, dir: &Path) -> Vec<Entry> {
+        let Ok(reader) = std::fs::read_dir(dir) else { return vec![] };
+        let root = self.root.as_deref().unwrap_or(dir);
+        let mut entries: Vec<Entry> = reader
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let kind = e.file_type().ok()?;
+                let path = e.path();
+                let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+                if crate::glob::excluded(&self.exclude, &relative) {
+                    return None;
+                }
+                let is_dir = if kind.is_symlink() { path.is_dir() } else { kind.is_dir() };
+                Some(Entry { path, name, is_dir })
+            })
+            .collect();
+        entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase()));
+        entries
+    }
+
+    fn load(&mut self, dir: &Path) {
+        if !self.children.contains_key(dir) {
+            let entries = self.read_dir(dir);
+            self.children.insert(dir.to_path_buf(), entries);
+        }
     }
 
     pub fn refresh(&mut self) {
         let loaded: Vec<PathBuf> = self.children.keys().cloned().collect();
         for dir in loaded {
             if dir.is_dir() {
-                self.children.insert(dir.clone(), read_dir(&dir));
+                let entries = self.read_dir(&dir);
+                self.children.insert(dir, entries);
             } else {
                 self.children.remove(&dir);
                 self.expanded.remove(&dir);
@@ -208,15 +300,51 @@ impl Explorer {
     }
 
     pub fn has_focus(&self) -> bool {
-        self.focused
+        self.focused || self.open_focus
+    }
+
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    pub fn take_drop(&mut self) -> Option<(Vec<PathBuf>, Pos2)> {
+        self.dropped.take()
+    }
+
+    pub fn open_filter(&mut self) {
+        self.filter.open = true;
+        self.filter.focus = true;
+        self.collapsed = false;
+    }
+
+    pub fn focus_open_editors(&mut self) {
+        self.open_editors = true;
+        self.focus_open = true;
+    }
+
+    pub fn exec(&mut self, cmd: &Command, ctx: &egui::Context) -> bool {
+        match cmd {
+            Command::Cut | Command::CutFiles => self.clip(true, ctx),
+            Command::Copy | Command::CopyFiles => self.clip(false, ctx),
+            Command::Paste | Command::PasteFiles => self.paste(ctx),
+            Command::SelectAll => self.select_all(),
+            _ => return false,
+        }
+        true
     }
 
     fn expand(&mut self, dir: &Path) {
-        if !self.children.contains_key(dir) {
-            self.children.insert(dir.to_path_buf(), read_dir(dir));
-        }
+        self.load(dir);
         self.expanded.insert(dir.to_path_buf());
         self.dirty = true;
+    }
+
+    fn row_of(&self, path: &Path) -> Option<usize> {
+        self.rows.iter().position(|r| r.holds(path))
+    }
+
+    fn is_open(&self, dir: &Path) -> bool {
+        self.expanded.contains(dir) || (self.filter.active() && self.filter.hide && self.children.contains_key(dir))
     }
 
     fn build(&mut self) {
@@ -224,15 +352,50 @@ impl Explorer {
         self.animation = None;
         let mut rows = vec![];
         if let Some(root) = self.root.clone() {
+            self.load(&root);
             self.push_rows(&root, 0, &mut rows);
+            self.apply_filter(&mut rows);
         }
         self.rows = rows;
-        if let Some(path) = &self.selected && !self.rows.iter().any(|r| r.path == *path) {
-            self.selected = self.rows.iter().rev().find(|r| path.starts_with(&r.path)).map(|r| r.path.clone());
-        }
+        self.prune_selection();
     }
 
-    fn push_rows(&self, dir: &Path, depth: usize, rows: &mut Vec<Row>) {
+    fn apply_filter(&mut self, rows: &mut Vec<Row>) {
+        self.filter.matches = 0;
+        if !self.filter.active() {
+            return;
+        }
+        let names: Vec<(usize, &str)> = rows.iter().map(|r| (r.depth, r.name.as_str())).collect();
+        let (hits, keep) = ops::filter_rows(self.filter.text.trim(), &names);
+        self.filter.matches = hits.iter().flatten().count();
+        let mut keep = keep.into_iter();
+        let hide = self.filter.hide;
+        for (row, hit) in rows.iter_mut().zip(hits) {
+            row.hits = hit.unwrap_or_default();
+        }
+        rows.retain(|row| keep.next().unwrap_or(true) || row.editing || !hide);
+    }
+
+    fn prune_selection(&mut self) {
+        if self.filter.active() {
+            return;
+        }
+        let rows = std::mem::take(&mut self.rows);
+        let visible = |p: &Path| rows.iter().any(|r| r.holds(p));
+        self.sel.paths.retain(|p| visible(p));
+        if let Some(cursor) = self.sel.cursor.clone() && !visible(&cursor) {
+            match rows.iter().rev().find(|r| cursor.starts_with(&r.path)).map(|r| r.path.clone()) {
+                Some(path) => self.sel.set(path),
+                None => self.sel.clear(),
+            }
+        }
+        if self.sel.anchor.as_deref().is_some_and(|a| !visible(a)) {
+            self.sel.anchor = self.sel.cursor.clone();
+        }
+        self.rows = rows;
+    }
+
+    fn push_rows(&mut self, dir: &Path, depth: usize, rows: &mut Vec<Row>) {
         if let Some(edit) = &self.edit
             && edit.kind != EditKind::Rename
             && edit.target == dir
@@ -243,20 +406,36 @@ impl Explorer {
                 depth,
                 is_dir: edit.kind == EditKind::NewFolder,
                 editing: true,
+                chain: vec![],
+                hits: vec![],
             });
         }
-        let Some(entries) = self.children.get(dir) else { return };
+        let Some(entries) = self.children.get(dir).cloned() else { return };
         for entry in entries {
             let editing = self.edit.as_ref().is_some_and(|e| e.kind == EditKind::Rename && e.target == entry.path);
-            rows.push(Row {
-                path: entry.path.clone(),
-                name: entry.name.clone(),
-                depth,
-                is_dir: entry.is_dir,
-                editing,
-            });
-            if entry.is_dir && self.expanded.contains(&entry.path) {
-                self.push_rows(&entry.path, depth + 1, rows);
+            let (mut last, mut name, mut chain) = (entry.path.clone(), entry.name.clone(), vec![]);
+            while self.compact && entry.is_dir {
+                if self.edit.as_ref().is_some_and(|e| e.kind != EditKind::Rename && e.target == last) {
+                    break;
+                }
+                self.load(&last);
+                let only = match self.children[&last].as_slice() {
+                    [only] if only.is_dir => only.clone(),
+                    _ => break,
+                };
+                if self.edit.as_ref().is_some_and(|e| e.kind == EditKind::Rename && e.target == only.path) {
+                    break;
+                }
+                if chain.is_empty() {
+                    chain.push(entry.path.clone());
+                }
+                chain.push(only.path.clone());
+                name = format!("{name}/{}", only.name);
+                last = only.path;
+            }
+            rows.push(Row { path: last.clone(), name, depth, is_dir: entry.is_dir, editing, chain, hits: vec![] });
+            if entry.is_dir && self.is_open(&last) {
+                self.push_rows(&last, depth + 1, rows);
             }
         }
     }
@@ -271,11 +450,19 @@ impl Explorer {
         for dir in dirs {
             self.expand(&dir);
         }
-        self.selected = Some(active.to_path_buf());
+        self.sel.set(active.to_path_buf());
         self.scroll_to = Some(active.to_path_buf());
     }
 
     fn start_edit(&mut self, kind: EditKind, target: PathBuf) {
+        self.filter.open = false;
+        self.filter.text.clear();
+        if let Some(root) = self.root.clone() {
+            let parents: Vec<PathBuf> = target.ancestors().skip(1).take_while(|a| *a != root && a.starts_with(&root)).map(Path::to_path_buf).collect();
+            for dir in parents {
+                self.expand(&dir);
+            }
+        }
         let text = match kind {
             EditKind::Rename => target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             _ => {
@@ -307,7 +494,7 @@ impl Explorer {
                     std::fs::create_dir(&path).map_err(|e| e.to_string())?;
                 }
                 cmds.push(Command::RefreshExplorer);
-                self.selected = Some(path);
+                self.sel.set(path);
                 Ok(())
             }
             EditKind::Rename => {
@@ -328,7 +515,7 @@ impl Explorer {
                         self.expand(&new.join(rest));
                     }
                 }
-                self.selected = Some(new.clone());
+                self.sel.set(new.clone());
                 cmds.push(Command::PathChanged(edit.target.clone(), Some(new)));
                 Ok(())
             }
@@ -354,7 +541,7 @@ impl Explorer {
         });
         let outgoing = if opening { vec![] } else { std::mem::take(&mut self.rows) };
         if let Some(path) = &dir {
-            self.selected = Some(path.clone());
+            self.sel.set(path.clone());
             if opening {
                 self.expand(path);
             } else {
@@ -381,18 +568,159 @@ impl Explorer {
         }
     }
 
+    fn extend(&mut self, to: PathBuf) {
+        let order: Vec<PathBuf> = self.rows.iter().map(|r| r.path.clone()).collect();
+        if let Some(row) = self.sel.anchor.as_deref().and_then(|a| self.row_of(a)) {
+            self.sel.anchor = Some(order[row].clone());
+        }
+        let to = self.row_of(&to).map_or(to, |i| order[i].clone());
+        self.sel.range(&order, to);
+    }
+
+    fn select_all(&mut self) {
+        let order: Vec<PathBuf> = self.rows.iter().filter(|r| !r.editing).map(|r| r.path.clone()).collect();
+        self.sel.all(&order);
+    }
+
+    fn go_match(&mut self, forward: bool) {
+        let hits: Vec<usize> = (0..self.rows.len()).filter(|i| !self.rows[*i].hits.is_empty()).collect();
+        let (Some(first), Some(last)) = (hits.first().copied(), hits.last().copied()) else { return };
+        let current = self.sel.cursor.as_deref().and_then(|c| self.row_of(c));
+        let next = match (current, forward) {
+            (Some(c), true) => hits.iter().copied().find(|i| *i > c).unwrap_or(first),
+            (Some(c), false) => hits.iter().rev().copied().find(|i| *i < c).unwrap_or(last),
+            (None, true) => first,
+            (None, false) => last,
+        };
+        let path = self.rows[next].path.clone();
+        self.sel.set(path.clone());
+        self.scroll_to = Some(path);
+    }
+
+    fn clip(&mut self, cut: bool, ctx: &egui::Context) {
+        let paths = ops::top_level(&self.sel.paths);
+        if paths.is_empty() {
+            return;
+        }
+        ctx.copy_text(paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n"));
+        self.clipboard = Some((paths, cut));
+    }
+
+    fn paste(&mut self, ctx: &egui::Context) {
+        let Some((sources, cut)) = self.clipboard.clone() else { return };
+        let dir = self.dir_for_new(self.sel.cursor.as_deref());
+        self.transfer(sources, dir, cut, ctx);
+    }
+
+    fn request_move(&mut self, sources: Vec<PathBuf>, dir: PathBuf, ctx: &egui::Context) {
+        if !self.confirm_drag {
+            return self.transfer(sources, dir, true, ctx);
+        }
+        let (jobs, errors) = ops::plan(&sources, &dir, true);
+        errors.into_iter().for_each(ui::notify);
+        if !jobs.is_empty() {
+            self.confirm_drop = Some((sources, dir));
+        }
+    }
+
+    fn transfer(&mut self, sources: Vec<PathBuf>, dir: PathBuf, cut: bool, ctx: &egui::Context) {
+        let (jobs, errors) = ops::plan(&sources, &dir, cut);
+        errors.into_iter().for_each(ui::notify);
+        if jobs.is_empty() {
+            return;
+        }
+        if Some(&dir) != self.root.as_ref() {
+            self.expand(&dir);
+        }
+        if cut && jobs.iter().any(|j| j.replace) {
+            self.clash = Some(jobs);
+        } else {
+            self.spawn(jobs, cut, ctx);
+        }
+    }
+
+    fn spawn(&mut self, jobs: Vec<Job>, cut: bool, ctx: &egui::Context) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(ops::run(jobs, cut));
+            ctx.request_repaint();
+        });
+        self.work.push(rx);
+    }
+
+    fn poll(&mut self, cmds: &mut Vec<Command>) {
+        let mut finished = vec![];
+        self.work.retain(|rx| match rx.try_recv() {
+            Ok(done) => {
+                finished.push(done);
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => false,
+        });
+        for done in finished {
+            done.errors.into_iter().for_each(ui::notify);
+            if done.cut {
+                self.clipboard = None;
+            }
+            if done.done.is_empty() {
+                continue;
+            }
+            let created: Vec<PathBuf> = done.done.iter().map(|(_, to)| to.clone()).collect();
+            for (from, to) in done.done {
+                if done.cut {
+                    cmds.push(Command::PathChanged(from, Some(to)));
+                }
+            }
+            cmds.push(Command::RefreshExplorer);
+            self.refresh();
+            self.scroll_to = created.last().cloned();
+            self.sel = Selection { anchor: created.first().cloned(), cursor: created.last().cloned(), paths: created };
+        }
+    }
+
+    fn delete(&mut self, cmds: &mut Vec<Command>) {
+        let paths = std::mem::take(&mut self.confirm_delete);
+        match trash::delete_all(&paths) {
+            Ok(()) => {
+                self.sel.clear();
+                cmds.extend(paths.into_iter().map(|p| Command::PathChanged(p, None)));
+            }
+            Err(e) => {
+                self.error = Some(format!("Could not delete {}: {e}", count_text(&paths)));
+                cmds.push(Command::RefreshExplorer);
+            }
+        }
+    }
+
     fn apply(&mut self, action: Action, ui: &Ui, cmds: &mut Vec<Command>) {
         match action {
             Action::Toggle(path) => self.toggle_folders(Some(path), ui.input(|i| i.time)),
+            Action::Expand(path) => self.expand(&path),
             Action::Open(path) => {
-                self.selected = Some(path.clone());
+                self.sel.set(path.clone());
                 self.last_active = Some(path.clone());
                 cmds.push(Command::OpenPath(path));
             }
-            Action::Select(path) => self.selected = Some(path),
+            Action::Select(path) => self.sel.set(path),
+            Action::Pick(path) => self.sel.toggle(path),
+            Action::Extend(path) => self.extend(path),
+            Action::SelectAll => self.select_all(),
             Action::New(kind, dir) => self.start_edit(kind, dir),
             Action::Rename(path) => self.start_edit(EditKind::Rename, path),
-            Action::Delete(path) => self.confirm_delete = Some(path),
+            Action::Delete(paths) => self.confirm_delete = ops::top_level(&paths),
+            Action::Clip(cut) => self.clip(cut, ui.ctx()),
+            Action::Paste => self.paste(ui.ctx()),
+            Action::Drop(paths, dir) => self.request_move(paths, dir, ui.ctx()),
+            Action::Import(files, dir) => self.transfer(files, dir, false, ui.ctx()),
+            Action::Match(forward) => self.go_match(forward),
+            Action::CloseFilter => {
+                self.filter.open = false;
+                self.filter.text.clear();
+                self.focus_tree = true;
+                self.dirty = true;
+            }
             Action::Copy(text) => ui.ctx().copy_text(text),
             Action::Reveal(path) => reveal(&path),
             Action::Compare(cmd) => cmds.push(cmd),
@@ -422,10 +750,15 @@ impl Explorer {
             *action = Some(Action::New(EditKind::NewFolder, dir.clone()));
             ui.close();
         }
-        let target = path.map(Path::to_path_buf).unwrap_or(dir);
+        let many = path.is_some_and(|p| self.sel.is_multiple() && self.sel.contains(p));
+        let targets: Vec<PathBuf> = match path {
+            Some(_) if many => self.sel.paths.clone(),
+            Some(p) => vec![p.to_path_buf()],
+            None => vec![dir],
+        };
         if let Some(path) = path {
             ui.separator();
-            if self.rows.iter().any(|row| row.path == path && !row.is_dir) {
+            if !many && !path.is_dir() {
                 if ui.button("Select for Compare").clicked() {
                     *action = Some(Action::Compare(Command::SelectComparePath(path.to_owned())));
                     ui.close();
@@ -436,63 +769,162 @@ impl Explorer {
                 }
                 ui.separator();
             }
-            if ui.button("Rename...").clicked() {
+            if ui.button("Cut").clicked() {
+                *action = Some(Action::Clip(true));
+                ui.close();
+            }
+            if ui.button("Copy").clicked() {
+                *action = Some(Action::Clip(false));
+                ui.close();
+            }
+        }
+        if self.clipboard.is_some() && ui.button("Paste").clicked() {
+            *action = Some(Action::Paste);
+            ui.close();
+        }
+        if let Some(path) = path {
+            ui.separator();
+            if !many && ui.button("Rename...").clicked() {
                 *action = Some(Action::Rename(path.to_path_buf()));
                 ui.close();
             }
-            if ui.button("Delete").clicked() {
-                *action = Some(Action::Delete(path.to_path_buf()));
+            let label = if many { format!("Delete {} Items", targets.len()) } else { "Delete".to_owned() };
+            if ui.button(label).clicked() {
+                *action = Some(Action::Delete(targets.clone()));
                 ui.close();
             }
         }
         ui.separator();
         if ui.button("Copy Path").clicked() {
-            *action = Some(Action::Copy(target.to_string_lossy().into_owned()));
+            let text = targets.iter().map(|t| t.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n");
+            *action = Some(Action::Copy(text));
             ui.close();
         }
         if ui.button("Copy Relative Path").clicked() {
-            let rel = self.root.as_ref().and_then(|r| target.strip_prefix(r).ok()).unwrap_or(&target);
-            *action = Some(Action::Copy(rel.to_string_lossy().replace('\\', "/")));
+            let rel = |t: &PathBuf| self.root.as_ref().and_then(|r| t.strip_prefix(r).ok()).unwrap_or(t).to_string_lossy().replace('\\', "/");
+            *action = Some(Action::Copy(targets.iter().map(rel).collect::<Vec<_>>().join("\n")));
             ui.close();
         }
         if ui.button("Reveal in File Explorer").clicked() {
-            *action = Some(Action::Reveal(target));
+            *action = Some(Action::Reveal(targets[0].clone()));
             ui.close();
         }
     }
 
     fn keyboard(&mut self, ui: &Ui, action: &mut Option<Action>) {
-        let index = self.selected.as_ref().and_then(|s| self.rows.iter().position(|r| &r.path == s));
-        let pressed = |key| ui.input_mut(|i| i.consume_key(Modifiers::NONE, key));
-        let select = |i: usize| self.rows.get(i).map(|r| Action::Select(r.path.clone()));
-        if pressed(Key::ArrowDown) {
-            *action = select(index.map_or(0, |i| (i + 1).min(self.rows.len().saturating_sub(1))));
-            self.scroll_to = action.as_ref().and_then(|a| if let Action::Select(p) = a { Some(p.clone()) } else { None });
-        } else if pressed(Key::ArrowUp) {
-            *action = select(index.map_or(0, |i| i.saturating_sub(1)));
-            self.scroll_to = action.as_ref().and_then(|a| if let Action::Select(p) = a { Some(p.clone()) } else { None });
-        } else if let Some(i) = index {
+        let (cut, copy, paste, typed) = ui.input_mut(|i| {
+            let mut found = (false, false, false, String::new());
+            i.events.retain(|e| match e {
+                egui::Event::Cut => {
+                    found.0 = true;
+                    false
+                }
+                egui::Event::Copy => {
+                    found.1 = true;
+                    false
+                }
+                egui::Event::Paste(_) => {
+                    found.2 = true;
+                    false
+                }
+                egui::Event::Text(t) if !t.chars().any(char::is_control) => {
+                    found.3.push_str(t);
+                    false
+                }
+                _ => true,
+            });
+            found
+        });
+        if !typed.trim().is_empty() {
+            self.filter.open = true;
+            self.filter.focus = true;
+            self.filter.text.push_str(&typed);
+            self.dirty = true;
+        }
+        let pressed = |modifiers, key| ui.input_mut(|i| i.consume_key(modifiers, key));
+        if cut {
+            *action = Some(Action::Clip(true));
+        } else if copy {
+            *action = Some(Action::Clip(false));
+        } else if paste {
+            *action = Some(Action::Paste);
+        }
+        if pressed(Modifiers::NONE, Key::Escape) {
+            if self.filter.open {
+                *action = Some(Action::CloseFilter);
+            } else {
+                self.clipboard = None;
+            }
+        }
+        if self.filter.open && pressed(Modifiers::SHIFT, Key::F3) {
+            *action = Some(Action::Match(false));
+        } else if self.filter.open && pressed(Modifiers::NONE, Key::F3) {
+            *action = Some(Action::Match(true));
+        }
+        let index = self.sel.cursor.as_deref().and_then(|c| self.row_of(c));
+        let step = |i: Option<usize>, down: bool| match (i, down) {
+            (None, _) => 0,
+            (Some(i), true) => (i + 1).min(self.rows.len().saturating_sub(1)),
+            (Some(i), false) => i.saturating_sub(1),
+        };
+        let at = |i: usize| self.rows.get(i).map(|r| r.path.clone());
+        let moved = if pressed(Modifiers::COMMAND, Key::A) {
+            *action = Some(Action::SelectAll);
+            None
+        } else if pressed(Modifiers::SHIFT, Key::ArrowDown) {
+            let to = at(step(index, true));
+            *action = to.clone().map(Action::Extend);
+            to
+        } else if pressed(Modifiers::SHIFT, Key::ArrowUp) {
+            let to = at(step(index, false));
+            *action = to.clone().map(Action::Extend);
+            to
+        } else if pressed(Modifiers::NONE, Key::ArrowDown) {
+            let to = at(step(index, true));
+            *action = to.clone().map(Action::Select);
+            to
+        } else if pressed(Modifiers::NONE, Key::ArrowUp) {
+            let to = at(step(index, false));
+            *action = to.clone().map(Action::Select);
+            to
+        } else {
+            None
+        };
+        if moved.is_some() {
+            self.scroll_to = moved;
+        } else if let (Some(i), Some(cursor)) = (index, self.sel.cursor.clone()) {
             let row = self.rows[i].clone();
             let open = self.expanded.contains(&row.path);
-            if pressed(Key::ArrowRight) && row.is_dir {
-                *action = if open { select(i + 1) } else { Some(Action::Toggle(row.path)) };
-            } else if pressed(Key::ArrowLeft) {
-                *action = if row.is_dir && open {
+            if pressed(Modifiers::NONE, Key::ArrowRight) && row.is_dir {
+                *action = if open { at(i + 1).map(Action::Select) } else { Some(Action::Toggle(row.path)) };
+            } else if pressed(Modifiers::NONE, Key::ArrowLeft) {
+                *action = if row.is_dir && open && cursor == row.path {
                     Some(Action::Toggle(row.path))
                 } else {
-                    row.path.parent().filter(|p| Some(*p) != self.root.as_deref()).map(|p| Action::Select(p.to_path_buf()))
+                    cursor.parent().filter(|p| Some(*p) != self.root.as_deref()).map(|p| Action::Select(p.to_path_buf()))
                 };
-            } else if pressed(Key::Enter) {
+            } else if pressed(Modifiers::NONE, Key::Enter) {
                 *action = Some(if row.is_dir { Action::Toggle(row.path) } else { Action::Open(row.path) });
-            } else if pressed(Key::F2) {
-                *action = Some(Action::Rename(row.path));
-            } else if pressed(Key::Delete) {
-                *action = Some(Action::Delete(row.path));
+            } else if pressed(Modifiers::NONE, Key::F2) {
+                *action = Some(Action::Rename(cursor));
+            } else if pressed(Modifiers::NONE, Key::Delete) {
+                let paths = if self.sel.paths.is_empty() { vec![cursor] } else { self.sel.paths.clone() };
+                *action = Some(Action::Delete(paths));
             }
         }
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, git: &Git, active: Option<&Path>, cmds: &mut Vec<Command>) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        git: &Git,
+        active: Option<&Path>,
+        settings: &Settings,
+        tabs: &[Vec<OpenTab>],
+        cmds: &mut Vec<Command>,
+    ) {
         ui.spacing_mut().item_spacing.y = 0.0;
         ui::section_header(ui, theme, "Explorer");
         let Some(root) = self.root.clone() else {
@@ -507,6 +939,13 @@ impl Explorer {
             return;
         };
 
+        self.confirm_drag = settings.confirm_drag_and_drop;
+        if self.exclude != settings.files_exclude || self.compact != settings.compact_folders {
+            self.exclude = settings.files_exclude.clone();
+            self.compact = settings.compact_folders;
+            self.refresh();
+        }
+        self.poll(cmds);
         if active != self.last_active.as_deref() {
             self.last_active = active.map(Path::to_path_buf);
             if let Some(active) = active {
@@ -518,8 +957,9 @@ impl Explorer {
         }
 
         let mut action = None;
+        self.open_editors(ui, theme, &root, tabs, cmds);
         self.header(ui, theme, &root, &mut action);
-        self.tree(ui, theme, git, active, &mut action, cmds);
+        self.tree(ui, theme, git, active, &root, &mut action, cmds);
         if let Some(action) = action {
             self.apply(action, ui, cmds);
             ui.ctx().request_repaint();
@@ -534,6 +974,7 @@ impl Explorer {
         let open = ui::anim(ui, resp.id.with("open"), !self.collapsed);
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(rect, 0, ui::mix(theme.panel, theme.bar, 0.5 + 0.5 * h));
+        painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, theme.border));
         ui::caret(&painter, pos2(rect.left() + 12.0, rect.center().y), open, theme.text);
         let name = root.file_name().unwrap_or(root.as_os_str()).to_string_lossy().to_uppercase();
         painter.text(pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, name, FontId::proportional(11.5), theme.text);
@@ -560,12 +1001,14 @@ impl Explorer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn tree(
         &mut self,
         ui: &mut Ui,
         theme: &Theme,
         git: &Git,
         active: Option<&Path>,
+        root: &Path,
         action: &mut Option<Action>,
         cmds: &mut Vec<Command>,
     ) {
@@ -587,11 +1030,19 @@ impl Explorer {
             self.focused = false;
             return;
         }
+        let pointer = ui.ctx().pointer_latest_pos().filter(|p| area.contains(*p) && !self.collapsed);
+        let files: Vec<PathBuf> = match pointer {
+            Some(_) => ui.input_mut(|i| std::mem::take(&mut i.raw.dropped_files)).into_iter().map(|f| f.path().to_path_buf()).collect(),
+            None => vec![],
+        };
         let bg = ui.interact(area, tree_id, if self.collapsed { Sense::hover() } else { Sense::click() });
+        if std::mem::take(&mut self.focus_tree) {
+            bg.request_focus();
+        }
         self.focused = !self.collapsed && bg.has_focus();
         if bg.clicked() {
             bg.request_focus();
-            self.selected = None;
+            self.sel.clear();
         }
         if !self.collapsed {
             bg.context_menu(|ui| self.menu(ui, None, action));
@@ -602,6 +1053,10 @@ impl Explorer {
             });
             self.keyboard(ui, action);
         }
+        let dragging = self.drag.is_some();
+        if dragging && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.drag = None;
+        }
 
         let animation = self.animation.take();
         let closing = animation.as_ref().is_some_and(|a| !a.outgoing.is_empty());
@@ -610,9 +1065,12 @@ impl Explorer {
         let full = [(0..rows.len(), false)];
         let spans = animation.as_ref().map_or(full.as_slice(), |a| a.spans.as_slice());
         let progress = animation.as_ref().map_or(1.0, |a| a.progress(now));
-        let scroll_to = if self.collapsed { None } else { self.scroll_to.take().and_then(|p| rows.iter().position(|r| r.path == p)) };
+        let scroll_to = if self.collapsed { None } else { self.scroll_to.take().and_then(|p| rows.iter().position(|r| r.holds(&p))) };
+        let cut: Vec<PathBuf> = self.clipboard.as_ref().filter(|(_, cut)| *cut).map(|(p, _)| p.clone()).unwrap_or_default();
         let mut commit = false;
         let mut cancel = false;
+        let mut over_row = false;
+        let mut over_dir: Option<PathBuf> = None;
         ui.scope_builder(UiBuilder::new().max_rect(area), |ui| {
             ui.shrink_clip_rect(area);
             ScrollArea::vertical().min_scrolled_height(0.0).auto_shrink(false).show_viewport(ui, |ui, viewport| {
@@ -641,10 +1099,17 @@ impl Explorer {
                         let rect = Rect::from_min_size(origin + vec2(0.0, y), vec2(width, ROW.min(bottom - y)));
                         let id = Id::new(("explorer_row", &row.path));
                         let interactive = !(self.collapsed || closing && *moving);
-                        let resp = ui.interact(rect, id, if interactive { Sense::click() } else { Sense::hover() });
-                        let selected = self.selected.as_deref() == Some(&row.path);
+                        let resp = ui.interact(rect, id, if interactive { Sense::click_and_drag() } else { Sense::hover() });
+                        let selected = self.sel.contains(&row.path) || row.chain.iter().any(|p| self.sel.contains(p));
                         let is_active = active == Some(row.path.as_path());
                         ui::row_bg(ui, theme, rect, id, resp.hovered(), selected || is_active);
+                        let under = interactive && pointer.is_some_and(|p| rect.contains(p));
+                        over_row |= under;
+                        if under && row.is_dir && dragging {
+                            over_dir = Some(row.path.clone());
+                            ui.painter().rect_filled(rect, 0, ui::with_alpha(theme.accent, 0.18));
+                            ui.painter().rect_stroke(rect, 0, Stroke::new(1.0, theme.accent), egui::StrokeKind::Inside);
+                        }
 
                         let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
                         for level in 0..row.depth {
@@ -654,8 +1119,9 @@ impl Explorer {
                         let x = rect.left() + 12.0 + row.depth as f32 * INDENT - (1.0 - fade) * 6.0;
                         let y = rect.center().y;
                         let state = git.state(&row.path);
-                        let color = ui::with_alpha(state_color(theme, state), fade);
-                        let dim = ui::with_alpha(theme.text_dim, fade);
+                        let dimmed = if cut.iter().any(|c| row.path.starts_with(c)) { 0.45 } else { 1.0 };
+                        let color = ui::with_alpha(state_color(theme, state), fade * dimmed);
+                        let dim = ui::with_alpha(theme.text_dim, fade * dimmed);
                         let open = self.expanded.contains(&row.path);
                         if row.is_dir {
                             ui::caret(&painter, pos2(x, y), ui::anim(ui, id.with("caret"), open), dim);
@@ -665,7 +1131,7 @@ impl Explorer {
                             (true, false) => icons::FOLDER,
                             _ => file_icon(&row.name),
                         };
-                        let icon_color = if row.is_dir { ui::with_alpha(theme.accent, fade * 0.85) } else { dim };
+                        let icon_color = if row.is_dir { ui::with_alpha(theme.accent, fade * 0.85 * dimmed) } else { dim };
                         painter.text(pos2(x + 10.0, y), Align2::LEFT_CENTER, icon, FontId::proportional(15.0), icon_color);
 
                         if row.editing && interactive {
@@ -687,7 +1153,26 @@ impl Explorer {
                             continue;
                         }
 
-                        painter.text(pos2(x + 31.0, y), Align2::LEFT_CENTER, &row.name, FontId::proportional(13.0), color);
+                        let galley = painter.layout_no_wrap(row.name.clone(), FontId::proportional(13.0), color);
+                        let left = x + 31.0;
+                        let at = |index: usize| left + galley.pos_from_cursor(CCursor::new(index)).min.x;
+                        let mut spans_x: Vec<(f32, f32)> = vec![];
+                        let mut start = 0;
+                        for part in row.chain.iter().map(|p| name_of(p).chars().count()) {
+                            spans_x.push((at(start), at(start + part)));
+                            start += part + 1;
+                        }
+                        for (p, (a, b)) in row.chain.iter().zip(&spans_x) {
+                            if self.sel.cursor.as_ref() == Some(p) && *p != row.path {
+                                let mark = Rect::from_min_max(pos2(*a - 2.0, y - 8.0), pos2(*b + 2.0, y + 8.0));
+                                painter.rect_filled(mark, 3, ui::with_alpha(theme.accent, 0.25 * fade));
+                            }
+                        }
+                        for &index in &row.hits {
+                            let mark = Rect::from_min_max(pos2(at(index), y - 8.0), pos2(at(index + 1), y + 8.0));
+                            painter.rect_filled(mark, 2, ui::with_alpha(theme.accent, 0.35 * fade));
+                        }
+                        painter.galley(pos2(left, y - galley.size().y / 2.0), galley, color);
                         let badge = state_badge(state);
                         if row.is_dir && !badge.is_empty() {
                             painter.circle_filled(pos2(rect.right() - 14.0, y), 3.0, ui::with_alpha(color, 0.8));
@@ -696,17 +1181,47 @@ impl Explorer {
                         }
 
                         if !interactive { continue; }
+                        let hit = |px: Option<Pos2>| -> PathBuf {
+                            let Some(px) = px else { return row.path.clone() };
+                            row.chain.iter().zip(&spans_x).find(|(_, (_, b))| px.x <= *b + 4.0).map_or(row.path.clone(), |(p, _)| p.clone())
+                        };
+                        if resp.drag_started() {
+                            bg.request_focus();
+                            let hit = hit(resp.interact_pointer_pos());
+                            if !self.sel.contains(&hit) {
+                                self.sel.set(hit);
+                            }
+                            self.drag = Some(ops::top_level(&self.sel.paths));
+                        }
                         if resp.double_clicked() && !row.is_dir {
                             cmds.push(Command::KeepEditor);
                         }
                         if resp.clicked() {
                             bg.request_focus();
-                            *action = Some(if row.is_dir { Action::Toggle(row.path.clone()) } else { Action::Open(row.path.clone()) });
+                            let hit = hit(resp.interact_pointer_pos());
+                            let modifiers = ui.input(|i| i.modifiers);
+                            *action = Some(if modifiers.command {
+                                Action::Pick(hit)
+                            } else if modifiers.shift {
+                                Action::Extend(hit)
+                            } else if hit != row.path {
+                                Action::Select(hit)
+                            } else if row.is_dir {
+                                Action::Toggle(row.path.clone())
+                            } else {
+                                Action::Open(row.path.clone())
+                            });
                         }
                         if resp.secondary_clicked() {
-                            self.selected = Some(row.path.clone());
+                            let hit = hit(resp.interact_pointer_pos());
+                            if !self.sel.contains(&hit) {
+                                self.sel.set(hit);
+                            }
                         }
-                        resp.context_menu(|ui| self.menu(ui, Some(&row.path), action));
+                        resp.context_menu(|ui| {
+                            let target = self.sel.cursor.clone().filter(|c| row.chain.contains(c)).unwrap_or_else(|| row.path.clone());
+                            self.menu(ui, Some(&target), action)
+                        });
                     }
                 }
                 ui.set_min_height(bottom);
@@ -720,126 +1235,13 @@ impl Explorer {
             self.edit = None;
             self.dirty = true;
         }
-    }
-
-    fn overlays(&mut self, ui: &mut Ui, theme: &Theme, cmds: &mut Vec<Command>) {
-        if let Some(error) = self.error.clone() {
-            let rect = Rect::from_min_max(pos2(ui.max_rect().left(), ui.max_rect().bottom() - 30.0), ui.max_rect().max);
-            ui.painter().rect_filled(rect, 0, ui::mix(theme.panel, theme.error, 0.18));
-            ui.scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(8.0, 3.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
-                if ui::icon_button(ui, theme, icons::X, 20.0, false, "Dismiss").clicked() {
-                    self.error = None;
-                }
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    ui.add(egui::Label::new(RichText::new(&error).color(theme.error).size(12.0)).truncate()).on_hover_text(&error);
-                });
-            });
+        if self.filter.open && !self.collapsed {
+            self.filter_box(ui, theme, area, action);
         }
-        if let Some(path) = self.confirm_delete.clone() {
-            let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned();
-            let mut choice = None;
-            let modal = ui::modal(ui.ctx(), "explorer_delete").show(ui.ctx(), |ui| {
-                ui::outline(ui);
-                ui.set_width(340.0);
-                ui.heading("Delete");
-                ui.label(format!("Move \"{name}\" to the recycle bin?"));
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui.button(RichText::new("Move to Recycle Bin").color(theme.deleted)).clicked() {
-                        choice = Some(true);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        choice = Some(false);
-                    }
-                });
-            });
-            if modal.should_close() {
-                choice = Some(false);
-            }
-            if let Some(delete) = choice {
-                self.confirm_delete = None;
-                if delete {
-                    match trash::delete(&path) {
-                        Ok(()) => {
-                            self.selected = None;
-                            cmds.push(Command::PathChanged(path, None));
-                        }
-                        Err(e) => self.error = Some(format!("Could not delete \"{name}\": {e}")),
-                    }
-                }
-            }
+        if !files.is_empty() {
+            *action = Some(Action::Import(files, over_dir.clone().unwrap_or_else(|| root.to_path_buf())));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn closing_rows_are_visual_only_and_reverse_in_place() {
-        let mut explorer = Explorer::new();
-        let root = PathBuf::from("root");
-        let dir = root.join("src");
-        let entry = |parent: &Path, name: &str, is_dir| Entry { path: parent.join(name), name: name.into(), is_dir };
-        explorer.root = Some(root.clone());
-        explorer.children.insert(root.clone(), vec![entry(&root, "src", true), entry(&root, "README", false)]);
-        explorer.children.insert(dir.clone(), vec![entry(&dir, "main.rs", false)]);
-        explorer.expand(&dir);
-        explorer.build();
-
-        explorer.toggle_folders(Some(dir.clone()), 0.0);
-        assert_eq!(explorer.rows.len(), 2);
-        let closing = explorer.animation.as_ref().unwrap();
-        assert_eq!(closing.outgoing[1].path, dir.join("main.rs"));
-        assert_eq!(closing.spans, [(0..1, false), (1..2, true), (2..3, false)]);
-        assert_eq!(closing.progress(FOLDER_TIME), 0.0);
-
-        let halfway = FOLDER_TIME / 2.0;
-        explorer.toggle_folders(Some(dir.clone()), halfway);
-        assert_eq!(explorer.rows.len(), 3);
-        assert_eq!(explorer.animation.as_ref().unwrap().progress(halfway), 0.5);
-        explorer.selected = Some(dir.join("main.rs"));
-        explorer.toggle_folders(None, 2.0 * FOLDER_TIME);
-        assert_eq!(explorer.selected, Some(dir));
-        assert_eq!(explorer.rows.len(), 2);
-        assert!(explorer.expanded.is_empty());
+        self.drag_state(ui, theme, area, pointer, over_row, over_dir, action);
     }
 
-    #[test]
-    fn sorts_loads_lazily_and_keeps_expansion_on_refresh() {
-        let dir = std::env::temp_dir().join(format!("halo-explorer-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src/deep")).unwrap();
-        std::fs::create_dir_all(dir.join(".git")).unwrap();
-        for file in ["b.txt", "A.txt", "src/main.rs", "src/deep/x.rs"] {
-            std::fs::write(dir.join(file), "").unwrap();
-        }
-        let mut explorer = Explorer::new();
-        explorer.set_root(Some(dir.clone()));
-        explorer.build();
-        let names: Vec<&str> = explorer.rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["src", "A.txt", "b.txt"]);
-        assert_eq!(explorer.children.len(), 1);
-
-        explorer.reveal_active(&dir.join("src/deep/x.rs"));
-        std::fs::write(dir.join("src/new.rs"), "").unwrap();
-        explorer.refresh();
-        explorer.build();
-        let names: Vec<&str> = explorer.rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["src", "deep", "x.rs", "main.rs", "new.rs", "A.txt", "b.txt"]);
-
-        let mut cmds = vec![];
-        explorer.start_edit(EditKind::NewFile, dir.clone());
-        explorer.edit.as_mut().unwrap().text = "A.txt".into();
-        explorer.commit_edit(&mut cmds);
-        assert!(explorer.error.is_some() && cmds.is_empty());
-        explorer.edit.as_mut().unwrap().text = "made.txt".into();
-        explorer.commit_edit(&mut cmds);
-        assert!(dir.join("made.txt").is_file());
-        assert_eq!(cmds[0], Command::OpenPath(dir.join("made.txt")));
-
-        assert!(validate("a/b").is_err() && validate("").is_err() && validate("ok.rs").is_ok());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }
