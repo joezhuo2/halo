@@ -784,6 +784,12 @@ impl Halo {
         });
         let sections = [(Outline, has_outline, full.with_min_y(split).with_max_y(lower)), (Timeline, has_timeline, full.with_min_y(lower))];
         for (view, _, region) in sections.into_iter().filter(|s| s.1) {
+            // registered under the header so its click still toggles; only a real drag moves the view
+            let header = Rect::from_min_size(region.min, vec2(region.width(), 24.0));
+            let handle = ui.interact(header, Id::new(("view_drag", view as u8)), Sense::drag());
+            if handle.dragged() && self.dragging.is_none() && ui.input(|i| i.pointer.is_decidedly_dragging()) {
+                self.dragging = Some(view);
+            }
             ui.scope_builder(UiBuilder::new().max_rect(region), |ui| {
                 ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                 match view {
@@ -791,10 +797,6 @@ impl Halo {
                     _ => self.timeline.ui(ui, &self.theme, active, &mut self.session.timeline, &mut self.cmds),
                 }
             });
-            let header = Rect::from_min_size(region.min, vec2(region.width(), 24.0));
-            if ui.interact(header, Id::new(("view_drag", view as u8)), Sense::drag()).drag_started() {
-                self.dragging = Some(view);
-            }
         }
     }
 
@@ -996,6 +998,25 @@ mod tests {
         app.cmds.push(Command::ResetViewLocations);
         run(&ctx, &mut app, 0.9, vec![]);
         assert_eq!(app.session.layout.place(TestResults), Place::Panel);
+    }
+
+    #[test]
+    fn headless_clicking_a_section_header_toggles_it_without_dragging_the_view() {
+        let (ctx, mut app) = headless();
+        run(&ctx, &mut app, 0.0, vec![]);
+        run(&ctx, &mut app, 0.1, vec![]);
+        let open = app.session.outline;
+        let at = ctx.read_response(Id::new(("view_drag", Outline as u8))).unwrap().rect.center();
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        run(&ctx, &mut app, 0.2, vec![egui::Event::PointerMoved(at), button(true)]);
+        assert!(app.dragging.is_none());
+        run(&ctx, &mut app, 0.25, vec![button(false)]);
+        run(&ctx, &mut app, 0.3, vec![]);
+        assert_eq!(app.session.outline, !open);
+        assert!(app.dragging.is_none() && app.session.layout.moved.is_empty());
+        run(&ctx, &mut app, 1.0, vec![button(true)]);
+        run(&ctx, &mut app, 1.1, vec![egui::Event::PointerMoved(at + vec2(0.0, -60.0))]);
+        assert_eq!(app.dragging, Some(Outline));
     }
 
     #[test]
