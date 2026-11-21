@@ -76,19 +76,52 @@ language you want diagnostics and completion in. Each is optional.
 
 - **Multi-cursor editing:** `Ctrl+D` adds the next occurrence, `Ctrl+Alt+Up`
   and `Ctrl+Alt+Down` add cursors above and below.
-- **Find and replace** in the file (`Ctrl+F`, `Ctrl+H`) with match case and
-  whole word, **Go to Line** (`Ctrl+G`) and **Toggle Line Comment** (`Ctrl+/`).
+- **Selections:** `Alt+Click` adds a cursor, `Shift+Alt+drag` selects a box,
+  `Ctrl+Shift+L` selects every occurrence, `Shift+Alt+Right` and
+  `Shift+Alt+Left` grow and shrink the selection, and `Ctrl+U` undoes the
+  last cursor move.
+- **Find and replace** in the file (`Ctrl+F`, `Ctrl+H`) with match case,
+  whole word, regular expressions (`$1` in the replacement), find in
+  selection and preserve case. **Go to Line** is `Ctrl+G`.
+- **Search in files** (`Ctrl+Shift+F`) in the side bar: replace in files,
+  include and exclude globs, a results tree, and the results as a tab whose
+  lines open on a double-click.
+- **Line operations:** move (`Alt+Up`, `Alt+Down`), copy (`Shift+Alt+Up`,
+  `Shift+Alt+Down`), delete (`Ctrl+Shift+K`), join, and insert a line above
+  (`Ctrl+Shift+Enter`) or below (`Ctrl+Enter`). Comments toggle with `Ctrl+/`
+  (line) and `Shift+Alt+A` (block).
+- **Brackets and quotes** close as you type and wrap a selection. Brackets
+  are colored by depth, with indentation guides.
+- **Word wrap** (`Alt+Z`), **code folding** by indentation (the gutter arrows,
+  `Ctrl+Shift+[` and `Ctrl+Shift+]`), **sticky scroll**, rulers and visible
+  whitespace. Each has a switch in Settings.
+- **Snippets** with tab stops from `snippets.json` and from language servers,
+  **word completion** in files without a server, and **Emmet**: `Tab` expands
+  an abbreviation such as `ul>li*3` in HTML, Vue, Svelte and PHP files.
+- **Status bar pickers** for the language, indentation (detect and convert),
+  encoding and line ending of the file.
+- **Links** in the text open with `Ctrl+Click`.
 - **Syntax highlighting** for 68 languages from the bundled grammars, plus
   any `.sublime-syntax` file you add. A minimap sits beside the text.
 - **Tabs:** drag a tab to reorder it, drop it on another group to move it, or
   drop it on the left or right third of an editor to open it side by side.
   Right-click a tab to pin it; pinned tabs stay on the left and are skipped by
-  Close Others, Close All and `Ctrl+W`.
+  Close Others, Close All and `Ctrl+W`. A newly opened file is a preview with
+  an italic title, and the next file you open takes its tab until you edit it
+  or double-click the tab. `Ctrl+Tab` switches between recent files,
+  `Ctrl+Shift+T` reopens a closed one, and `Alt+Left` and `Alt+Right` go back
+  and forward.
 - **Split editor** (`Ctrl+\`) shows one file in several groups.
 - **Merge conflicts** get a bar with Accept Current, Accept Incoming, Accept
   Both and Next.
 - **Auto save** (off by default) saves changed files one second after the
-  last edit.
+  last edit. Saving can trim trailing whitespace and add a final newline.
+- **Hot exit:** unsaved and untitled files come back the next time Halo
+  opens. When a file you changed also changes on disk, a bar offers Compare,
+  Use Disk Version and Overwrite.
+- **Auto update** (on by default): when Halo opens it looks for a newer
+  release, checks its SHA-256, installs it in the background and uses it the
+  next time Halo opens. It needs `curl` on `PATH`.
 
 ### Language servers
 

@@ -1035,7 +1035,7 @@ impl Editors {
                 self.find_doc(path)
             });
             match id.and_then(|id| self.docs.get_mut(&id)) {
-                Some(doc) if doc.buf.rope.to_string() == text => {}
+                Some(doc) if doc.buf.rope == text.as_str() => {}
                 Some(doc) => drop(doc.buf.apply(&mut vec![Sel::caret(0)], vec![(0, doc.buf.len(), text)], Kind::Other, After::Carets)),
                 None => {
                     let mut buf = Document::from_text(&text, backup.title.clone());
@@ -2574,7 +2574,7 @@ end", "word ".repeat(100)))], &settings);
             frame_with(&ctx, editors, vec![button(true)], &settings);
             frame_with(&ctx, editors, vec![button(false)], &settings);
         };
-        let saved = (700..60).step_by(10).chain((60..700).rev().step_by(10)).any(|x| {
+        let saved = (60..700).rev().step_by(10).any(|x| {
             click(&mut editors, x as f32);
             !doc(&editors).0
         });

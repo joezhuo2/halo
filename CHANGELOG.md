@@ -6,6 +6,40 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Word wrap, code folding by indentation, sticky scroll, rulers, visible
+  whitespace, bracket pair colors and indentation guides.
+- Brackets and quotes close as they are typed and wrap a selection.
+- Find and replace: regular expressions, find in selection and preserve case.
+- Search in files in the side bar: replace in files, include and exclude
+  globs, a results tree and the results as a tab.
+- Line operations: move, copy, delete, join, and insert a line above or below.
+  Block comment toggle.
+- Box selection, select all occurrences, expand and shrink selection, and
+  cursor undo.
+- Snippets with tab stops from `snippets.json` and from language servers,
+  word completion in files without a server, and Emmet abbreviations.
+- Status bar pickers for the language, indentation, encoding and line ending.
+- Trim trailing whitespace and insert a final newline on save.
+- Hot exit: unsaved and untitled files are restored after a restart.
+- A bar to compare, reload or overwrite when a changed file changes on disk.
+- Preview tabs, a recent-file switcher on `Ctrl+Tab`, reopen closed editor,
+  and Go Forward.
+- Links in the text open with `Ctrl+Click`.
+- Auto update: Halo installs the latest release in the background when it
+  opens and uses it the next time.
+
+### Changed
+
+- `Ctrl+Shift+F` opens the search view in the side bar. The `%` search in the
+  command bar is still there.
+- A file opened from the explorer or the search bar is a preview until it is
+  edited or its tab is double-clicked.
+- `Ctrl+Tab` switches between recently used files instead of the next tab.
+- Closing Halo with unsaved files no longer asks to save them while hot exit
+  is on.
+
 ## [0.1.1] - 2026-11-20
 
 ### Added

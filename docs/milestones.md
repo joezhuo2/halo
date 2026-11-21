@@ -40,4 +40,13 @@
 ## M5: language servers (0.1.1, done)
 
 - A language server client (`lsp.rs`) and the editor features on top of it (`editor/intel.rs`): diagnostics with the Problems panel and status bar counts, completion, signature help, hover, go to definition and its relatives, peek, find references, reference counts above declarations, rename, code actions, organize imports, formatting, workspace symbols, outline, breadcrumbs, semantic highlighting, inlay hints, and call and type hierarchy.
-- Not built: server code lenses, the quick fix lightbulb, snippet tab stops, incremental document sync, a hierarchy tree with more than one level, `completionItem/resolve` and `codeAction/resolve`, and language servers in WSL folders.
+- Not built: server code lenses, the quick fix lightbulb, incremental document sync, a hierarchy tree with more than one level, `completionItem/resolve` and `codeAction/resolve`, and language servers in WSL folders.
+
+## M6: editing (0.1.2, done)
+
+- Editor: word wrap, folding by indentation, auto-closing pairs, line operations, block comments, box selection, select all occurrences, expand and shrink selection, cursor undo, snippets with tab stops, word completion, Emmet, visible whitespace, rulers, sticky scroll, bracket colors, guides and clickable links.
+- Find: regular expressions, find in selection and preserve case in the file, and a search view with replace in files, globs, a results tree and results in a tab (`find.rs`).
+- Files: status bar pickers for language, indentation, encoding and line ending, trim and final newline on save, hot exit, and a compare, reload or overwrite bar when a changed file changes on disk.
+- Tabs: preview tabs, the recent switcher, reopen closed editor, back and forward.
+- Auto update (`update.rs`): installs the latest release at startup through `curl`, `tar` and the system hash tool. Never run against a real newer release.
+- Not built: folding ranges and selection ranges from language servers, CSS Emmet, keyboard box selection, visual-row Home and End under word wrap, searching unsaved buffers in the search view, pickers in the command list, and encodings beyond UTF-8, UTF-16 and ISO 8859-1.
