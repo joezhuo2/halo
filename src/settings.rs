@@ -33,6 +33,16 @@ pub struct Settings {
     pub associations: BTreeMap<String, String>,
     pub run: BTreeMap<String, String>,
     pub tasks: Vec<Task>,
+    pub lsp: bool,
+    pub servers: BTreeMap<String, String>,
+    pub diagnostics: bool,
+    pub status_problems: bool,
+    pub code_lens: bool,
+    pub inlay_hints: bool,
+    pub semantic_highlighting: bool,
+    pub breadcrumbs: bool,
+    pub format_on_save: bool,
+    pub format_on_paste: bool,
 }
 
 impl Default for Settings {
@@ -68,6 +78,40 @@ impl Default for Settings {
             .map(|(ext, command)| (ext.to_owned(), command.to_owned()))
             .into(),
             tasks: vec![],
+            lsp: true,
+            servers: [
+                ("rs", "rust-analyzer"),
+                ("py", "pyright-langserver --stdio"),
+                ("ts", "typescript-language-server --stdio"),
+                ("tsx", "typescript-language-server --stdio"),
+                ("js", "typescript-language-server --stdio"),
+                ("jsx", "typescript-language-server --stdio"),
+                ("mjs", "typescript-language-server --stdio"),
+                ("cjs", "typescript-language-server --stdio"),
+                ("go", "gopls"),
+                ("c", "clangd"),
+                ("h", "clangd"),
+                ("cpp", "clangd"),
+                ("hpp", "clangd"),
+                ("cc", "clangd"),
+                ("cs", "csharp-ls"),
+                ("java", "jdtls"),
+                ("lua", "lua-language-server"),
+                ("zig", "zls"),
+                ("json", "vscode-json-language-server --stdio"),
+                ("html", "vscode-html-language-server --stdio"),
+                ("css", "vscode-css-language-server --stdio"),
+            ]
+            .map(|(ext, command)| (ext.to_owned(), command.to_owned()))
+            .into(),
+            diagnostics: true,
+            status_problems: true,
+            code_lens: true,
+            inlay_hints: true,
+            semantic_highlighting: true,
+            breadcrumbs: true,
+            format_on_save: false,
+            format_on_paste: false,
         }
     }
 }
@@ -184,6 +228,7 @@ pub struct Session {
     pub panel: bool,
     pub ai: bool,
     pub source_control: bool,
+    pub outline: bool,
 }
 
 impl Default for Session {
@@ -196,6 +241,7 @@ impl Default for Session {
             panel: true,
             ai: false,
             source_control: false,
+            outline: true,
         }
     }
 }
@@ -229,6 +275,8 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{"theme":"light","tasks":[{"name":"build","command":"cargo build"}]}"#).unwrap();
         assert_eq!(settings.theme, "light");
         assert_eq!(settings.tasks[0].command, "cargo build");
+        assert!(settings.lsp && settings.code_lens && !settings.format_on_save);
+        assert_eq!(settings.servers.get("rs").map(String::as_str), Some("rust-analyzer"));
         assert_eq!(settings.run_command(Path::new("a/b.PY"), "x y.py").as_deref(), Some("python \"x y.py\""));
         assert_eq!(settings.run_command(Path::new("notes.txt"), "notes.txt"), None);
     }

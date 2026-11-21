@@ -7,6 +7,7 @@ mod command;
 mod editor;
 mod explorer;
 mod git;
+mod lsp;
 mod scm;
 mod search;
 mod settings;
