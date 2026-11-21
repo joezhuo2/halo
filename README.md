@@ -233,11 +233,13 @@ ISCC /DAppVersion=x.y.z installer\halo.iss
 
 ### Releasing
 
-Releases are built by GitHub Actions. Set `version` in `Cargo.toml`, add the
-section to `CHANGELOG.md`, commit, then push a tag `vx.y.z`.
-[release.yml](.github/workflows/release.yml) builds every platform and
-attaches the files to a GitHub release. The tag must match the `Cargo.toml`
-version.
+Releases are built by GitHub Actions. Set `version` in `Cargo.toml`, add a
+`## [x.y.z] - date` section to `CHANGELOG.md` listing the changes, commit,
+then push a tag `vx.y.z`. [release.yml](.github/workflows/release.yml) builds
+every platform and creates a draft GitHub release with the files attached and
+that changelog section as its notes. Review the draft and publish it. The run
+fails if the tag does not match the `Cargo.toml` version or `CHANGELOG.md` has
+no section for it.
 
 ### Tests
 
