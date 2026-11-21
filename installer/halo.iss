@@ -20,6 +20,7 @@ OutputBaseFilename=halo-{#AppVersion}-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\assets\halo.ico
 UninstallDisplayIcon={app}\halo.exe
 ChangesAssociations=yes
 
