@@ -119,8 +119,8 @@ impl Halo {
             app.update = Some(crate::update::start(ctx));
         }
 
-        let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().or_else(|_| std::path::absolute(&p)).ok()).map(strip_unc);
-        let restore = app.settings.restore_session;
+        let arg = crate::windows::path_arg().and_then(|p| p.canonicalize().or_else(|_| std::path::absolute(&p)).ok()).map(strip_unc);
+        let restore = app.settings.restore_session && !crate::windows::secondary();
         let last = app.session.folder.clone().filter(|f| restore && f.is_dir());
         let arg_is_none = arg.is_none();
         let (folder, files) = match arg {
@@ -171,6 +171,9 @@ impl Halo {
     }
 
     fn save_session(&mut self) {
+        if crate::windows::secondary() {
+            return;
+        }
         let backups = crate::settings::dir().join("backups");
         self.session.files = self.editors.open_paths();
         self.session.pinned = self.editors.pinned_paths();
@@ -239,6 +242,7 @@ impl Halo {
             }
             OpenMerge(path) => self.editors.open_merge(&path, ctx),
             CloseFolder => self.set_folder(None, ctx),
+            NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => self.window_command(&cmd),
             OpenSettings => self.page.open = true,
             OpenSnippets => {
                 crate::editor::write_sample_snippets();
@@ -541,7 +545,7 @@ impl Halo {
             let v = i.viewport();
             (v.close_requested(), v.focused.unwrap_or(true))
         });
-        if close_requested && self.settings.hot_exit {
+        if close_requested && self.settings.hot_exit && !crate::windows::secondary() {
             self.save_session();
         } else if close_requested && !self.exiting && self.editors.any_dirty() {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);

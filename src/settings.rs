@@ -437,7 +437,9 @@ impl Session {
     }
 
     pub fn save(&self) {
-        write(&Self::path(), self);
+        if !crate::windows::secondary() {
+            write(&Self::path(), self);
+        }
     }
 
     pub fn remember(&mut self, folder: &Path) {
