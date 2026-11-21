@@ -1,5 +1,6 @@
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -248,19 +249,38 @@ pub enum Scope {
     Editor,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Binding {
     pub command: Command,
     pub shortcut: KeyboardShortcut,
     pub chord: Option<KeyboardShortcut>,
     pub scope: Scope,
+    pub when: String,
+    pub user: Option<usize>,
+    cond: Option<Arc<crate::when::Expr>>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct Entry {
-    key: String,
-    command: String,
+impl Binding {
+    pub fn active(&self, keys: &Map<String, Value>) -> bool {
+        self.cond.as_ref().is_none_or(|c| c.eval(keys))
+    }
+
+    pub fn keys(&self) -> Vec<KeyboardShortcut> {
+        [Some(self.shortcut), self.chord].into_iter().flatten().collect()
+    }
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Entry {
+    pub key: String,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub when: String,
+    #[serde(flatten)]
+    pub rest: Map<String, Value>,
+}
+
+pub const SEND_TO_SHELL: &str = "!terminalFocus || !config.terminal.integrated.sendKeybindingsToShell";
 
 fn defaults() -> Vec<Binding> {
     use Command::*;
@@ -269,11 +289,12 @@ fn defaults() -> Vec<Binding> {
     let cs = C | Modifiers::SHIFT;
     let ca = C | Modifiers::ALT;
     let key = KeyboardShortcut::new;
-    let g = |m, k, c| Binding { command: c, shortcut: key(m, k), chord: None, scope: Scope::Global };
-    let e = |m, k, c| Binding { command: c, shortcut: key(m, k), chord: None, scope: Scope::Editor };
-    let k = |m, k, c| Binding { command: c, shortcut: key(C, Key::K), chord: Some(key(m, k)), scope: Scope::Global };
+    let bind = |shortcut, chord, scope, command| Binding { command, shortcut, chord, scope, when: String::new(), user: None, cond: None };
+    let g = |m, k, c| bind(key(m, k), None, Scope::Global, c);
+    let e = |m, k, c| bind(key(m, k), None, Scope::Editor, c);
+    let k = |m, k, c| bind(key(C, Key::K), Some(key(m, k)), Scope::Global, c);
     let sa = Modifiers::SHIFT | Modifiers::ALT;
-    vec![
+    let mut list = vec![
         k(C, Key::F, FormatSelection),
         k(C, Key::I, ShowHover),
         g(cs, Key::M, ShowProblems),
@@ -360,7 +381,14 @@ fn defaults() -> Vec<Binding> {
         e(C, Key::G, GoToLine),
         e(C, Key::D, SelectNextOccurrence),
         e(C, Key::Slash, ToggleComment),
-    ]
+    ];
+    let shell = crate::when::parse(SEND_TO_SHELL).ok().map(Arc::new);
+    for b in list.iter_mut().filter(|b| b.scope == Scope::Global && b.shortcut.modifiers == C) {
+        if b.chord.is_some() || [Key::B, Key::J, Key::W, Key::N, Key::O, Key::S].contains(&b.shortcut.logical_key) {
+            (b.when, b.cond) = (SEND_TO_SHELL.to_owned(), shell.clone());
+        }
+    }
+    list
 }
 
 pub fn all() -> Vec<Command> {
@@ -416,25 +444,48 @@ pub fn key_text(shortcut: &KeyboardShortcut) -> String {
     text + &shortcut.logical_key.name().to_lowercase()
 }
 
-fn build(mut bindings: Vec<Binding>, user: &[Entry]) -> Vec<Binding> {
+fn build(mut bindings: Vec<Binding>, user: &[Entry]) -> (Vec<Binding>, Vec<String>) {
     let commands = all();
-    let user: Vec<(Command, &str)> =
-        user.iter().filter_map(|e| Some((commands.iter().find(|c| c.id() == e.command)?.clone(), e.key.as_str()))).collect();
     let editor: Vec<Command> = bindings.iter().filter(|b| b.scope == Scope::Editor).map(|b| b.command.clone()).collect();
-    bindings.retain(|b| !user.iter().any(|(c, _)| *c == b.command));
-    for (command, keys) in user {
-        let mut keys = keys.split_whitespace().map(parse_key);
-        if let (Some(Some(shortcut)), chord) = (keys.next(), keys.next()) {
-            let scope = if editor.contains(&command) { Scope::Editor } else { Scope::Global };
-            bindings.push(Binding { command, shortcut, chord: chord.flatten(), scope });
+    let mut errors = vec![];
+    for (index, entry) in user.iter().enumerate() {
+        let (remove, id) = entry.command.strip_prefix('-').map_or((false, entry.command.as_str()), |id| (true, id));
+        let Some(command) = commands.iter().find(|c| c.id() == id) else { continue };
+        let name = format!("entry {} (\"{}\" for {})", index + 1, entry.key, entry.command);
+        let keys: Option<Vec<KeyboardShortcut>> = entry.key.split_whitespace().map(parse_key).collect();
+        let Some(keys) = keys.filter(|k| k.len() <= 2) else {
+            errors.push(format!("keybindings.json {name}: the key is not understood, so the entry is not used."));
+            continue;
+        };
+        let when = entry.when.trim().to_owned();
+        let cond = match when.is_empty() {
+            true => None,
+            false => match crate::when::parse(&when) {
+                Ok(expr) => Some(Arc::new(expr)),
+                Err(error) => {
+                    errors.push(format!("keybindings.json {name}: the when clause \"{when}\" is not understood ({error}), so the entry is not used."));
+                    continue;
+                }
+            },
+        };
+        let same_keys = |b: &Binding| keys.is_empty() || b.keys() == keys;
+        if remove || keys.is_empty() {
+            bindings.retain(|b| !(b.command == *command && same_keys(b) && (when.is_empty() || b.when == when)));
+            continue;
         }
+        if bindings.iter().any(|b| b.command == *command && same_keys(b) && b.when == when) {
+            continue;
+        }
+        let scope = if editor.contains(command) { Scope::Editor } else { Scope::Global };
+        bindings.push(Binding { command: command.clone(), shortcut: keys[0], chord: keys.get(1).copied(), scope, when, user: Some(index), cond });
     }
     let weight = |b: &Binding| {
         let m = b.shortcut.modifiers;
         b.chord.is_none() as u8 * 4 + 3 - (m.command || m.ctrl) as u8 - m.shift as u8 - m.alt as u8
     };
+    bindings.reverse();
     bindings.sort_by_key(weight);
-    bindings
+    (bindings, errors)
 }
 
 pub fn path() -> PathBuf {
@@ -442,57 +493,64 @@ pub fn path() -> PathBuf {
 }
 
 pub fn write_defaults() {
-    let entries: Vec<Entry> = defaults()
-        .iter()
-        .map(|b| Entry {
-            key: [Some(b.shortcut), b.chord].iter().flatten().map(key_text).collect::<Vec<_>>().join(" "),
-            command: b.command.id(),
-        })
-        .collect();
-    if let Ok(text) = serde_json::to_string_pretty(&entries) {
-        let _ = std::fs::create_dir_all(crate::settings::dir());
-        let _ = std::fs::write(path(), text);
+    let mut text = String::from("// Entries here are added to the default key bindings, and later entries win.\n// \"-command\" removes a default binding. The defaults are:\n");
+    for b in defaults() {
+        let key = b.keys().iter().map(key_text).collect::<Vec<_>>().join(" ");
+        let when = if b.when.is_empty() { String::new() } else { format!(", \"when\": \"{}\"", b.when) };
+        text.push_str(&format!("// {{ \"key\": \"{key}\", \"command\": \"{}\"{when} }},\n", b.command.id()));
+    }
+    text.push_str("[\n]\n");
+    let _ = std::fs::create_dir_all(crate::settings::dir());
+    let _ = std::fs::write(path(), text);
+}
+
+pub fn entries() -> Result<Vec<Entry>, String> {
+    match std::fs::read_to_string(path()) {
+        Ok(text) => crate::jsonc::parse(&text).and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string())),
+        Err(_) => Ok(vec![]),
     }
 }
 
+pub fn write_entries(entries: &[Entry]) {
+    if let Ok(text) = serde_json::to_string_pretty(entries) {
+        let _ = std::fs::create_dir_all(crate::settings::dir());
+        if let Err(error) = std::fs::write(path(), text) {
+            crate::ui::notify(format!("keybindings.json could not be written: {error}"));
+        }
+    }
+    reload();
+}
+
 static BINDINGS: Mutex<Option<Arc<Vec<Binding>>>> = Mutex::new(None);
+static CONTEXT: Mutex<Option<Arc<Map<String, Value>>>> = Mutex::new(None);
+
+pub fn set_context(keys: Map<String, Value>) {
+    *CONTEXT.lock().unwrap() = Some(Arc::new(keys));
+}
+
+pub fn context() -> Arc<Map<String, Value>> {
+    CONTEXT.lock().unwrap().get_or_insert_with(Default::default).clone()
+}
 
 pub fn bindings() -> Arc<Vec<Binding>> {
     BINDINGS
         .lock()
         .unwrap()
         .get_or_insert_with(|| {
-            let user = match std::fs::read_to_string(path()) {
-                Ok(text) if !cfg!(test) => serde_json::from_str(text.trim_start_matches('\u{feff}')).unwrap_or_else(|e| {
-                    crate::ui::notify(format!("keybindings.json could not be read, default keys are in use: {e}"));
-                    vec![]
-                }),
-                _ => vec![],
-            };
-            Arc::new(build(defaults(), &user))
+            let user = if cfg!(test) { Ok(vec![]) } else { entries() };
+            let user = user.unwrap_or_else(|e| {
+                crate::ui::notify(format!("keybindings.json could not be read, default keys are in use: {e}"));
+                vec![]
+            });
+            let (bindings, errors) = build(defaults(), &user);
+            errors.into_iter().for_each(crate::ui::notify);
+            Arc::new(bindings)
         })
         .clone()
 }
 
 pub fn reload() {
     *BINDINGS.lock().unwrap() = None;
-}
-
-pub fn rebind(command: &Command, key: Option<String>) {
-    let mut entries: Vec<Entry> = match std::fs::read_to_string(path()) {
-        Ok(text) => match serde_json::from_str(text.trim_start_matches('\u{feff}')) {
-            Ok(entries) => entries,
-            Err(error) => return crate::ui::notify(format!("keybindings.json could not be read, so it was not changed: {error}")),
-        },
-        Err(_) => vec![],
-    };
-    entries.retain(|e| e.command != command.id());
-    entries.extend(key.map(|key| Entry { key, command: command.id() }));
-    if let Ok(text) = serde_json::to_string_pretty(&entries) {
-        let _ = std::fs::create_dir_all(crate::settings::dir());
-        let _ = std::fs::write(path(), text);
-    }
-    reload();
 }
 
 pub fn shortcut_text(ctx: &egui::Context, command: &Command) -> Option<String> {
@@ -697,20 +755,65 @@ mod tests {
         assert_eq!(parse_key("ctrl+nothing"), None);
         assert_eq!(Command::OpenFolder.id(), "openFolder");
 
-        let entry = |key: &str, command: &str| Entry { key: key.into(), command: command.into() };
-        let user = [entry("ctrl+k ctrl+u", "undo"), entry("", "save"), entry("f9", "noSuchCommand"), entry("alt+p", "goToFile")];
-        let built = build(defaults(), &user);
+        let entry = |key: &str, command: &str| Entry { key: key.into(), command: command.into(), ..Default::default() };
+        let user = [
+            entry("ctrl+k ctrl+u", "undo"),
+            entry("", "save"),
+            entry("f9", "noSuchCommand"),
+            entry("alt+p", "goToFile"),
+            entry("ctrl+z", "-undo"),
+            entry("ctrl+p", "goToFile"),
+        ];
+        let (built, errors) = build(defaults(), &user);
+        assert!(errors.is_empty());
         let of = |c: Command| built.iter().filter(|b| b.command == c).cloned().collect::<Vec<_>>();
         let undo = of(Command::Undo);
         assert_eq!(undo.len(), 1);
         assert_eq!(undo[0].chord, parse_key("ctrl+u"));
-        assert_eq!(undo[0].scope, Scope::Editor);
+        assert_eq!((undo[0].scope, undo[0].user), (Scope::Editor, Some(0)));
         assert!(of(Command::Save).is_empty());
-        assert_eq!(of(Command::GoToFile)[0].shortcut, parse_key("alt+p").unwrap());
+        let go = of(Command::GoToFile);
+        assert_eq!(go.len(), 2);
+        assert_eq!((go[0].shortcut, go[0].user), (parse_key("alt+p").unwrap(), Some(3)));
+        assert_eq!(go[1].user, None);
         assert_eq!(of(Command::Redo).len(), 2);
         let first_single = built.iter().position(|b| b.chord.is_none()).unwrap();
         assert!(built[first_single..].iter().all(|b| b.chord.is_none()));
         let pos = |c: Command| built.iter().position(|b| b.command == c).unwrap();
         assert!(pos(Command::GoToSymbol) < pos(Command::OpenFile));
+        assert!(of(Command::Save).is_empty() && of(Command::SaveAll)[0].when == SEND_TO_SHELL);
+    }
+
+    #[test]
+    fn later_entries_win_by_when_and_bad_entries_are_reported() {
+        let entry = |key: &str, command: &str, when: &str| Entry { key: key.into(), command: command.into(), when: when.into(), ..Default::default() };
+        let user = [
+            entry("ctrl+shift+u", "find", "editorLangId == rust"),
+            entry("ctrl+shift+u", "replace", "editorTextFocus"),
+            entry("ctrl+shift+u", "-replace", "other"),
+            entry("ctrl+nope", "find", ""),
+            entry("ctrl+e", "find", "a &&"),
+            entry("ctrl+b", "-toggleSidebar", ""),
+            entry("ctrl+b", "toggleSidebar", "sideBarVisible"),
+        ];
+        let (built, errors) = build(defaults(), &user);
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].contains("entry 4") && errors[0].contains("key"));
+        assert!(errors[1].contains("entry 5") && errors[1].contains("a &&"));
+        let pick = |keys: serde_json::Value| {
+            let keys = keys.as_object().unwrap().clone();
+            let shortcut = parse_key("ctrl+shift+u").unwrap();
+            built.iter().find(|b| b.shortcut == shortcut && b.active(&keys)).map(|b| b.command.clone())
+        };
+        assert_eq!(pick(serde_json::json!({"editorTextFocus": true, "editorLangId": "rust"})), Some(Command::Replace));
+        assert_eq!(pick(serde_json::json!({"editorLangId": "rust"})), Some(Command::Find));
+        assert_eq!(pick(serde_json::json!({})), None);
+        let sidebar: Vec<_> = built.iter().filter(|b| b.command == Command::ToggleSidebar).collect();
+        assert_eq!(sidebar.len(), 1);
+        assert_eq!((sidebar[0].when.as_str(), sidebar[0].user), ("sideBarVisible", Some(6)));
+        let focus = |terminal: bool, send: bool| serde_json::json!({"terminalFocus": terminal, "config.terminal.integrated.sendKeybindingsToShell": send});
+        let save = built.iter().find(|b| b.command == Command::Save).unwrap();
+        assert!(save.active(focus(false, true).as_object().unwrap()) && save.active(focus(true, false).as_object().unwrap()));
+        assert!(!save.active(focus(true, true).as_object().unwrap()));
     }
 }

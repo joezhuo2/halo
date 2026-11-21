@@ -1671,7 +1671,8 @@ impl Editors {
             ui.memory_mut(|m| {
                 m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
             });
-            for binding in command::bindings().iter().filter(|b| b.scope == Scope::Editor && b.chord.is_none()) {
+            let keys = command::context();
+            for binding in command::bindings().iter().filter(|b| b.scope == Scope::Editor && b.chord.is_none() && b.active(&keys)) {
                 if ui.input_mut(|i| i.consume_shortcut(&binding.shortcut)) {
                     pending.push(binding.command.clone());
                 }

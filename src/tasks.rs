@@ -14,46 +14,6 @@ use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(150);
 
-fn parse_jsonc(text: &str) -> Result<Value, String> {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.trim_start_matches('\u{feff}').chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => {
-                out.push(c);
-                while let Some(s) = chars.next() {
-                    out.push(s);
-                    if s == '\\' {
-                        out.extend(chars.next());
-                    } else if s == '"' {
-                        break;
-                    }
-                }
-            }
-            '/' if chars.peek() == Some(&'/') => while chars.next_if(|&n| n != '\n').is_some() {},
-            '/' if chars.peek() == Some(&'*') => {
-                chars.next();
-                let mut previous = ' ';
-                for n in chars.by_ref() {
-                    if previous == '*' && n == '/' {
-                        break;
-                    }
-                    previous = n;
-                }
-            }
-            '}' | ']' => {
-                let end = out.trim_end().len();
-                if out[..end].ends_with(',') {
-                    out.remove(end - 1);
-                }
-                out.push(c);
-            }
-            _ => out.push(c),
-        }
-    }
-    serde_json::from_str(&out).map_err(|e| e.to_string())
-}
-
 #[derive(Clone, Default)]
 struct Vars {
     workspace: PathBuf,
@@ -548,7 +508,7 @@ fn matcher_of(v: &Value) -> Result<Matcher, String> {
 }
 
 fn defs_from(text: &str, origin: Origin, os: &str) -> (Vec<Def>, Vec<String>) {
-    let doc = match parse_jsonc(text) {
+    let doc = match crate::jsonc::parse(text) {
         Ok(doc) => doc,
         Err(e) => return (vec![], vec![format!("tasks.json could not be read: {e}")]),
     };
@@ -793,7 +753,7 @@ fn launch_args(process: bool, command: &str, args: &[String]) -> (String, Vec<St
 
 fn with_default_build(text: Option<&str>, label: &str, raw: &Value, os: &str) -> Result<String, String> {
     let mut doc = match text {
-        Some(text) => parse_jsonc(text).map_err(|e| format!("tasks.json could not be read, so it was not changed: {e}"))?,
+        Some(text) => crate::jsonc::parse(text).map_err(|e| format!("tasks.json could not be read, so it was not changed: {e}"))?,
         None => json!({"version": "2.0.0", "tasks": []}),
     };
     let object = doc.as_object_mut().ok_or("tasks.json must contain an object.")?;

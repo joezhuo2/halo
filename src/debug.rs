@@ -222,51 +222,8 @@ pub struct Config {
     pub raw: Map<String, Value>,
 }
 
-fn jsonc(text: &str) -> String {
-    fn strings(text: &str, mut other: impl FnMut(&[char], usize, &mut String) -> usize) -> String {
-        let chars: Vec<char> = text.chars().collect();
-        let (mut out, mut i) = (String::with_capacity(text.len()), 0);
-        while i < chars.len() {
-            if chars[i] == '"' {
-                out.push('"');
-                i += 1;
-                while i < chars.len() {
-                    out.push(chars[i]);
-                    i += 1;
-                    match chars[i - 1] {
-                        '\\' if i < chars.len() => {
-                            out.push(chars[i]);
-                            i += 1;
-                        }
-                        '"' => break,
-                        _ => {}
-                    }
-                }
-            } else {
-                i = other(&chars, i, &mut out);
-            }
-        }
-        out
-    }
-    let plain = strings(text.trim_start_matches('\u{feff}'), |chars, i, out| match (chars[i], chars.get(i + 1)) {
-        ('/', Some('/')) => (i..chars.len()).find(|j| chars[*j] == '\n').unwrap_or(chars.len()),
-        ('/', Some('*')) => (i + 2..chars.len()).find(|j| chars[*j] == '*' && chars.get(j + 1) == Some(&'/')).map_or(chars.len(), |j| j + 2),
-        (c, _) => {
-            out.push(c);
-            i + 1
-        }
-    });
-    strings(&plain, |chars, i, out| {
-        let next = chars[i + 1..].iter().find(|c| !c.is_whitespace());
-        if chars[i] != ',' || !matches!(next, Some('}' | ']')) {
-            out.push(chars[i]);
-        }
-        i + 1
-    })
-}
-
 pub fn parse_launch(text: &str) -> Result<Vec<Config>, String> {
-    let value: Value = serde_json::from_str(&jsonc(text)).map_err(|e| format!("launch.json could not be read: {e}"))?;
+    let value = crate::jsonc::parse(text).map_err(|e| format!("launch.json could not be read: {e}"))?;
     let configs = value["configurations"].as_array().into_iter().flatten().filter_map(|item| {
         let raw = item.as_object()?.clone();
         let text = |key: &str| raw.get(key).and_then(Value::as_str).map(str::to_owned);
@@ -1667,7 +1624,6 @@ mod tests {
         assert_eq!(first.raw["env"], json!({"X": "1"}));
         assert_eq!(first.raw["justMyCode"], json!(false));
         assert_eq!(configs[1].raw["debugServer"], json!(4711));
-        assert_eq!(jsonc(r#"{"a": "x\"//y", "b": [1, 2 , ] }"#), r#"{"a": "x\"//y", "b": [1, 2  ] }"#);
         assert!(parse_launch("{ not json").unwrap_err().starts_with("launch.json could not be read"));
         assert!(parse_launch("{}").unwrap().is_empty());
     }

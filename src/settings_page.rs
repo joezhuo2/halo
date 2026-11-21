@@ -393,6 +393,20 @@ fn languages_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut Settin
     }
 }
 
+fn rebind(cmd: &Command, key: Option<Option<KeyboardShortcut>>) {
+    let mut entries = match command::entries() {
+        Ok(entries) => entries,
+        Err(error) => return ui::notify(format!("keybindings.json could not be read, so it was not changed: {error}")),
+    };
+    crate::shortcuts::reset(&mut entries, cmd);
+    match key {
+        Some(Some(key)) => crate::shortcuts::add(&mut entries, cmd, &[key]),
+        Some(None) => entries.push(command::Entry { key: String::new(), command: cmd.id(), ..Default::default() }),
+        None => {}
+    }
+    command::write_entries(&entries);
+}
+
 fn keys_tab(ui: &mut Ui, theme: &Theme, page: &mut SettingsPage, cmds: &mut Vec<Command>) -> bool {
     let ctx = ui.ctx().clone();
     if let Some(cmd) = page.recording.clone() {
@@ -407,7 +421,7 @@ fn keys_tab(ui: &mut Ui, theme: &Theme, page: &mut SettingsPage, cmds: &mut Vec<
         if let Some(shortcut) = pressed {
             page.recording = None;
             if shortcut.logical_key != Key::Escape || shortcut.modifiers.any() {
-                command::rebind(&cmd, Some(command::key_text(&shortcut)));
+                rebind(&cmd, Some(Some(shortcut)));
             }
         }
     }
@@ -445,10 +459,10 @@ fn keys_tab(ui: &mut Ui, theme: &Theme, page: &mut SettingsPage, cmds: &mut Vec<
             }
             ui.horizontal(|ui| {
                 if ui::icon_button(ui, theme, icons::X, 24.0, false, "Remove this key").clicked() {
-                    command::rebind(&cmd, Some(String::new()));
+                    rebind(&cmd, Some(None));
                 }
                 if ui::icon_button(ui, theme, icons::ARROW_COUNTER_CLOCKWISE, 24.0, false, "Reset to the default key").clicked() {
-                    command::rebind(&cmd, None);
+                    rebind(&cmd, None);
                 }
             });
             ui.end_row();
