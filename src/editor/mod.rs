@@ -5,6 +5,7 @@ mod emmet;
 mod highlight;
 mod intel;
 mod merge;
+mod merge_view;
 mod snippet;
 
 use crate::command::{self, Command, Scope};
@@ -88,6 +89,7 @@ struct Tab {
     trail: Vec<Vec<Sel>>,
     seen: (u64, Vec<Sel>),
     diff: Option<Box<diff_view::DiffTab>>,
+    merge: Option<Box<merge_view::MergeTab>>,
 }
 
 #[derive(Default)]
@@ -230,6 +232,7 @@ pub struct Editors {
     pub history: crate::history::Recorder,
     disk_jobs: Vec<(u64, bool)>,
     diffs: diff_view::Diffs,
+    merges: merge_view::Merges,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -546,6 +549,7 @@ impl Editors {
             history: Default::default(),
             disk_jobs: vec![],
             diffs: Default::default(),
+            merges: Default::default(),
         }
     }
 
@@ -838,7 +842,7 @@ impl Editors {
             }
             _ => {}
         }
-        if self.diff_exec(cmd, ctx) {
+        if self.merge_exec(cmd, ctx) || self.diff_exec(cmd, ctx) {
             self.last_input = ctx.input(|i| i.time);
             return true;
         }
@@ -1292,6 +1296,7 @@ impl Editors {
         self.tidy = (settings.trim_trailing_whitespace, settings.insert_final_newline);
         self.history.context = settings.local_history.then(|| ui.ctx().clone());
         self.poll_diffs(ui.ctx());
+        self.poll_merges();
         self.process(settings, ui.ctx());
         let rect = ui.available_rect_before_wrap();
         let count = self.groups.len();
@@ -1322,7 +1327,7 @@ impl Editors {
             }
         }
         self.after_views();
-        if self.take_git_refresh() {
+        if self.take_git_refresh() | self.take_merge_refresh() {
             cmds.push(Command::RefreshExplorer);
         }
         for (id, compare) in std::mem::take(&mut self.disk_jobs) {
@@ -1384,6 +1389,7 @@ impl Editors {
             }
         }
         self.dialogs(ui.ctx());
+        self.merge_dialog(ui.ctx());
         if self.groups.len() > 1 && self.closing.is_none() {
             let before = self.groups.len();
             let mut index = 0;
@@ -1463,7 +1469,7 @@ impl Editors {
                 let faces: Vec<_> = group.tabs.iter().map(|tab| {
                     let buf = &self.docs[&tab.doc].buf;
                     let dirty = buf.is_dirty();
-                    let title = tab.diff.as_ref().map_or(&buf.title, |d| &d.title).clone();
+                    let title = tab.diff.as_ref().map(|d| &d.title).or(tab.merge.as_ref().map(|m| &m.title)).unwrap_or(&buf.title).clone();
                     let mut name = LayoutJob::simple_singleline(title, FontId::proportional(13.0), Color32::PLACEHOLDER);
                     name.sections[0].format.italics = tab.preview && !dirty;
                     TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned }

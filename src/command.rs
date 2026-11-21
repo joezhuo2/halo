@@ -111,6 +111,17 @@ pub enum Command {
     StageSelectedRanges,
     RevertSelectedRanges,
     UnstageSelectedRanges,
+    MergeOpen,
+    OpenMerge(PathBuf),
+    MergeAcceptIncoming,
+    MergeAcceptCurrent,
+    MergeAcceptBoth,
+    MergeAcceptAllIncoming,
+    MergeAcceptAllCurrent,
+    MergeNextConflict,
+    MergePrevConflict,
+    MergeToggleBase,
+    MergeComplete,
 
     GoToDefinition,
     PeekDefinition,
@@ -411,6 +422,8 @@ pub fn all() -> Vec<Command> {
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
         OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, GitSync, ToggleInlineBlame, OpenLineChanges,
         StageHunk, RevertHunk, UnstageHunk, StageSelectedRanges, RevertSelectedRanges, UnstageSelectedRanges,
+        MergeOpen, MergeAcceptIncoming, MergeAcceptCurrent, MergeAcceptBoth, MergeAcceptAllIncoming, MergeAcceptAllCurrent,
+        MergeNextConflict, MergePrevConflict, MergeToggleBase, MergeComplete,
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.push(About);
@@ -564,7 +577,9 @@ impl Command {
             NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
             OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) | StageHunk | RevertHunk
-            | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges => "Source Control",
+            | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges | MergeOpen | OpenMerge(_)
+            | MergeAcceptIncoming | MergeAcceptCurrent | MergeAcceptBoth | MergeAcceptAllIncoming | MergeAcceptAllCurrent
+            | MergeNextConflict | MergePrevConflict | MergeToggleBase | MergeComplete => "Source Control",
             About => "Help",
         }
     }
@@ -671,6 +686,16 @@ impl Command {
             StageSelectedRanges => "Stage Selected Ranges",
             RevertSelectedRanges => "Revert Selected Ranges",
             UnstageSelectedRanges => "Unstage Selected Ranges",
+            MergeOpen | OpenMerge(_) => "Merge Editor: Open",
+            MergeAcceptIncoming => "Merge Editor: Accept Incoming",
+            MergeAcceptCurrent => "Merge Editor: Accept Current",
+            MergeAcceptBoth => "Merge Editor: Accept Both",
+            MergeAcceptAllIncoming => "Merge Editor: Accept All Incoming",
+            MergeAcceptAllCurrent => "Merge Editor: Accept All Current",
+            MergeNextConflict => "Merge Editor: Go to Next Unresolved Conflict",
+            MergePrevConflict => "Merge Editor: Go to Previous Unresolved Conflict",
+            MergeToggleBase => "Merge Editor: Show Base",
+            MergeComplete => "Merge Editor: Complete Merge",
             GoToDefinition => "Go to Definition",
             PeekDefinition => "Peek Definition",
             GoToDeclaration => "Go to Declaration",
