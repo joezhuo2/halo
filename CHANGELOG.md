@@ -81,6 +81,12 @@ Covered by tests; not yet checked by hand in the running app.
 - **Secondary side bar** (`Ctrl+Alt+B`) holding the AI view. Views can move
   between the side bars and the panel with "View: Move View..." or by
   dragging.
+- **Multi-root workspaces**: add several folders to a workspace, save it as
+  a `.code-workspace` file and open it again. The Explorer shows each folder
+  as a root; quick open, find and replace in files, Source Control, tasks,
+  launch configurations and language servers cover every folder. Settings
+  gain a Folder layer, and `${workspaceFolder:name}` works in tasks and
+  launch configurations.
 - **Command line**: `halo [options] [paths...]` with `file:line[:column]`,
   `--goto`, `--diff`, `--new-window`, `--reuse-window`, `--wait`, `--add`,
   `-` for standard input, `--help` and `--version`. A second `halo` hands its
