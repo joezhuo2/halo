@@ -86,3 +86,21 @@ Confirmed by the owner on 2026-11-20 through 24 multiple-choice questions. Where
 - The settings page is a dialog over the window, not an editor tab. Lists and maps (terminal profiles, run commands, tasks, associations) are edited in `settings.json`.
 - Run types the command into a shell terminal that is reused for later runs, so the shell stays open after the program ends. The Debug Console shows the last 500 lines of that terminal as text.
 - The frost blue ring stays as the in-app logo for now. The taskbar shows egui's default icon; the owner will supply an icon (asked 2026-11-20).
+
+## Decisions made while building the IDE features (after 0.1.3)
+
+The owner asked for these on 2026-11-20 as items 24 to 49 of the list of VS Code features Halo lacked. They were built by parallel workers, each on its own branch, and merged into `m7-ide`.
+
+- Decision 33 is lifted: Halo has a debugger. It speaks the Debug Adapter Protocol to adapters found on `PATH` (set in `debug_adapters`); none is bundled. `F5` debugs when the folder has a `launch.json` and runs the file otherwise.
+- Decision 35 is extended: settings are layered (defaults, user, workspace `.vscode/settings.json`, language blocks), accept VS Code key names, and the settings page is built from one table of settings.
+- `keybindings.json` now follows VS Code: entries add to the defaults, `-command` removes one, and entries take `when` clauses. This replaces the per-command replacement from milestone 3.
+- The diff, merge, hunk staging and gutter peek features share one dependency-free line diff (`src/editor/diff.rs`). Staging a hunk builds a patch and runs `git apply --cached`.
+- The merge editor reads the three index stages and writes its result into the real document, so undo returns to the conflict markers.
+- Tasks run in Halo terminal tabs, and problem matchers read the terminal's text. Tests and debugging build on the same pieces.
+- Test providers (cargo, pytest, go, jest, vitest) call the tools on `PATH` and parse their output; nothing is bundled.
+- Files load on a background thread. A tab can be a document, a diff, a merge, a Markdown preview, an image or a terminal.
+- Dependencies added, each for one job: `resvg` (SVG and PNG icons of imported icon themes), `image` (image tabs), `pulldown-cmark` (Markdown preview), `polling` (already in the tree; needed to wrap the terminal's reader for shell integration).
+- Shell integration injects a startup script per shell and reads OSC 633 sequences; Halo parses the terminal output itself to do so.
+- Imported VS Code themes and icon themes are copied into the config folder, so they survive the source being removed. Font-glyph icon themes and `.tmTheme` files are refused with a notice.
+- Notifications have a severity; `ui::notify` counts as a warning. Logs go to named channels in the Output panel.
+- Local history keeps up to 50 versions per file under the config folder and skips files over 1 MB.
