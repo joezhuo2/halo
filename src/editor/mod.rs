@@ -613,6 +613,11 @@ impl Editors {
         Some(terminal)
     }
 
+    pub fn terminal_tabs(&self) -> Vec<(usize, usize, bool, &crate::terminal::Terminal)> {
+        let tabs = self.groups.iter().enumerate().flat_map(|(g, group)| group.tabs.iter().enumerate().map(move |(t, tab)| (g, t, g == self.active && t == group.active, tab.doc)));
+        tabs.filter_map(|(g, t, active, doc)| Some((g, t, active, self.terminals.get(&doc)?))).collect()
+    }
+
     pub fn terminal_focused(&self) -> bool {
         self.focused && self.active_tab().is_some_and(|(g, t)| self.terminals.contains_key(&self.groups[g].tabs[t].doc))
     }

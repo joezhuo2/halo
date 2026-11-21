@@ -4,6 +4,7 @@ use crate::settings::{Settings, ShellProfile};
 use crate::shell_integration::{Integration, Record, Tap};
 use crate::terminal_find::FindBar;
 use crate::terminal_links::{Link, Target};
+use crate::terminal_restore::{Place, Saved};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use alacritty_terminal::event::{Event as TermEvent, EventListener, WindowSize};
@@ -448,6 +449,15 @@ impl Terminal {
 
     pub fn recent(&self) -> Vec<String> {
         self.integration.lock().unwrap().recent()
+    }
+
+    pub fn persist(&self, limit: usize) -> Option<Saved> {
+        if self.task.is_some() || !self.is_alive() {
+            return None;
+        }
+        let text = crate::terminal_restore::serialize(&mut self.term.lock(), limit);
+        let title = self.shared.title.lock().unwrap().clone().unwrap_or_default();
+        Some(Saved { profile: self.profile.clone(), cwd: self.cwd(), label: self.label.clone(), title, color: self.color, recent: self.recent(), text, ..Default::default() })
     }
 
     pub fn scroll_to_command(&self, forward: bool) {
@@ -1184,6 +1194,11 @@ impl BottomPanel {
 
     pub fn recent(&mut self) -> Vec<String> {
         self.active_pane().map(|p| p.recent()).unwrap_or_default()
+    }
+
+    pub fn persisted(&self, limit: usize) -> Vec<Saved> {
+        let panes = self.groups.iter().enumerate().flat_map(|(g, group)| group.panes.iter().enumerate().map(move |(p, pane)| (g, p, group.active == p, pane)));
+        panes.filter_map(|(g, p, active, pane)| Some(Saved { place: Place::Panel(g, p), active: active && g == self.active, ..pane.persist(limit)? })).collect()
     }
 
     pub fn create(&mut self, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) -> Result<Terminal, String> {

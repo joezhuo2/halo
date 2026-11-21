@@ -4,6 +4,103 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor, StdSyncHandler};
+use crate::editor::Editors;
+use crate::settings::{Settings, ShellProfile};
+use crate::terminal::BottomPanel;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+pub const MARKER: &str = "History restored";
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Place {
+    Panel(usize, usize),
+    Editor(usize, usize),
+}
+
+impl Default for Place {
+    fn default() -> Self {
+        Place::Panel(0, 0)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct Saved {
+    pub place: Place,
+    pub active: bool,
+    pub profile: Option<ShellProfile>,
+    pub cwd: Option<PathBuf>,
+    pub label: Option<String>,
+    pub title: String,
+    pub color: Option<usize>,
+    pub recent: Vec<String>,
+    pub text: String,
+}
+
+static ARMED: AtomicBool = AtomicBool::new(false);
+static WRITTEN: Mutex<Option<HashMap<PathBuf, String>>> = Mutex::new(None);
+
+fn base() -> PathBuf {
+    crate::settings::dir().join("terminals")
+}
+
+pub fn folder_dir(base: &Path, folder: Option<&Path>) -> PathBuf {
+    let hash = |f: &Path| f.to_string_lossy().bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    base.join(folder.map_or("none".to_owned(), |f| format!("{:016x}", hash(f))))
+}
+
+pub fn collect(panel: &BottomPanel, editors: &Editors, limit: usize) -> Vec<Saved> {
+    let mut all = panel.persisted(limit);
+    for (g, t, active, terminal) in editors.terminal_tabs() {
+        all.extend(terminal.persist(limit).map(|saved| Saved { place: Place::Editor(g, t), active, ..saved }));
+    }
+    all
+}
+
+pub fn write_all(dir: &Path, saved: &[Saved]) {
+    let mut written = WRITTEN.lock().unwrap();
+    let written = written.get_or_insert_default();
+    if !saved.is_empty() && let Err(error) = std::fs::create_dir_all(dir) {
+        return crate::output::log("Terminal", format!("Terminal sessions could not be saved in {}: {error}", dir.display()));
+    }
+    for (index, item) in saved.iter().enumerate() {
+        let (path, text) = (dir.join(format!("{index}.json")), serde_json::to_string(item).unwrap_or_default());
+        if written.get(&path) != Some(&text) {
+            match std::fs::write(&path, &text) {
+                Ok(()) => drop(written.insert(path, text)),
+                Err(error) => crate::output::log("Terminal", format!("{} could not be written: {error}", path.display())),
+            }
+        }
+    }
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let index = entry.path().file_stem().and_then(|s| s.to_str()?.parse::<usize>().ok());
+        if index.is_none_or(|i| i >= saved.len()) {
+            written.remove(&entry.path());
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    if saved.is_empty() {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
+pub fn save_in(base: &Path, panel: &BottomPanel, editors: &Editors, settings: &Settings, folder: Option<&Path>) {
+    let saved = match settings.terminal_persistent_sessions {
+        true => collect(panel, editors, settings.terminal_persistent_scrollback),
+        false => vec![],
+    };
+    write_all(&folder_dir(base, folder), &saved);
+}
+
+pub fn save(panel: &BottomPanel, editors: &Editors, settings: &Settings, folder: Option<&Path>) {
+    if ARMED.load(Ordering::Relaxed) {
+        save_in(&base(), panel, editors, settings, folder);
+    }
+}
 
 const STYLES: [(Flags, u8); 7] =
     [(Flags::BOLD, 1), (Flags::DIM, 2), (Flags::ITALIC, 3), (Flags::UNDERLINE, 4), (Flags::INVERSE, 7), (Flags::HIDDEN, 8), (Flags::STRIKEOUT, 9)];
@@ -149,5 +246,22 @@ mod tests {
         assert!(full.mode().contains(TermMode::ALT_SCREEN));
         assert_eq!(find(&full, 'f').c, 'f');
         assert_eq!(serialize(&mut term(""), 1000), "");
+    }
+
+    #[test]
+    fn writes_one_file_per_terminal_and_removes_the_rest() {
+        let base = std::env::temp_dir().join(format!("halo-persist-write-{}", std::process::id()));
+        let dir = folder_dir(&base, Some(Path::new(r"C:\work\halo")));
+        assert_eq!(dir, folder_dir(&base, Some(Path::new(r"C:\work\halo"))));
+        assert_ne!(dir, folder_dir(&base, None));
+        let item = |text: &str, place| Saved { text: text.into(), place, ..Default::default() };
+        write_all(&dir, &[item("a", Place::Panel(0, 0)), item("b", Place::Editor(1, 2))]);
+        let back: Saved = serde_json::from_str(&std::fs::read_to_string(dir.join("1.json")).unwrap()).unwrap();
+        assert_eq!((back.text.as_str(), back.place), ("b", Place::Editor(1, 2)));
+        write_all(&dir, &[item("c", Place::Panel(0, 0))]);
+        assert!(!dir.join("1.json").exists() && std::fs::read_to_string(dir.join("0.json")).unwrap().contains("\"c\""));
+        write_all(&dir, &[]);
+        assert!(!dir.exists());
+        let _ = std::fs::remove_dir_all(base);
     }
 }
