@@ -2,7 +2,16 @@ use crate::app::Halo;
 use crate::command::Command;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use eframe::egui::{Align, Color32, CornerRadius, FontId, Frame, Layout, Panel, Response, Sense, Ui, vec2};
+use crate::editor::Encoding;
+use eframe::egui::{self, Align, Color32, CornerRadius, FontId, Frame, Layout, Panel, Response, RichText, ScrollArea, Sense, Ui, vec2};
+
+enum Pick {
+    Language(String),
+    Indent(Option<(bool, usize)>),
+    Convert(bool),
+    Encoding(Encoding, bool),
+    Eol(bool),
+}
 
 const HEIGHT: f32 = 24.0;
 
@@ -64,7 +73,69 @@ impl Halo {
                             self.cmds.push(Command::ToggleTheme);
                         }
                         if let Some(status) = self.editors.status() {
-                            item(ui, &theme, &status.language, false, "Language");
+                            let mut pick = None;
+                            let language = item(ui, &theme, &status.language, false, "Select language mode");
+                            egui::Popup::menu(&language).show(|ui| {
+                                ui::menu_pad(ui);
+                                ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                                    for name in std::iter::once("Plain Text").chain(crate::editor::languages().iter().map(|l| l.0.as_str())) {
+                                        if ui.button(name).clicked() {
+                                            pick = Some(Pick::Language(name.to_owned()));
+                                        }
+                                    }
+                                });
+                            });
+                            let fallback = (self.settings.insert_spaces, self.settings.tab_size);
+                            let (spaces, size) = status.indent.map_or(fallback, |(spaces, size)| (spaces, if size == 0 { fallback.1 } else { size }));
+                            let label = format!("{}: {size}", if spaces { "Spaces" } else { "Tab Size" });
+                            let indent = item(ui, &theme, &label, false, "Select indentation");
+                            egui::Popup::menu(&indent).show(|ui| {
+                                ui::menu_pad(ui);
+                                for (spaces, size) in [(true, 2), (true, 4), (true, 8), (false, 2), (false, 4), (false, 8)] {
+                                    let label = format!("Indent Using {}: {size}", if spaces { "Spaces" } else { "Tabs" });
+                                    if ui.button(label).clicked() {
+                                        pick = Some(Pick::Indent(Some((spaces, size))));
+                                    }
+                                }
+                                ui.separator();
+                                if ui.button("Detect Indentation from Content").clicked() {
+                                    pick = Some(Pick::Indent(None));
+                                }
+                                for (label, spaces) in [("Convert Indentation to Spaces", true), ("Convert Indentation to Tabs", false)] {
+                                    if ui.button(label).clicked() {
+                                        pick = Some(Pick::Convert(spaces));
+                                    }
+                                }
+                            });
+                            let encoding = item(ui, &theme, status.encoding, false, "Select encoding");
+                            egui::Popup::menu(&encoding).show(|ui| {
+                                ui::menu_pad(ui);
+                                for (reopen, title) in [(true, "Reopen with Encoding"), (false, "Save with Encoding")] {
+                                    ui.label(RichText::new(title).size(11.0).color(theme.text_dim));
+                                    for encoding in Encoding::ALL {
+                                        if ui.button(encoding.label()).clicked() {
+                                            pick = Some(Pick::Encoding(encoding, reopen));
+                                        }
+                                    }
+                                }
+                            });
+                            let eol = item(ui, &theme, if status.crlf { "CRLF" } else { "LF" }, false, "Select end of line sequence");
+                            egui::Popup::menu(&eol).show(|ui| {
+                                ui::menu_pad(ui);
+                                for (label, crlf) in [("LF", false), ("CRLF", true)] {
+                                    if ui.button(label).clicked() {
+                                        pick = Some(Pick::Eol(crlf));
+                                    }
+                                }
+                            });
+                            match pick {
+                                Some(Pick::Language(name)) => self.editors.set_language(&name),
+                                Some(Pick::Indent(indent)) => self.editors.set_indent(indent),
+                                Some(Pick::Convert(spaces)) => self.editors.convert_indent(spaces, &self.settings),
+                                Some(Pick::Encoding(encoding, reopen)) => self.editors.set_encoding(encoding, reopen),
+                                Some(Pick::Eol(crlf)) => self.editors.set_eol(crlf),
+                                None => {}
+                            }
                             let mut position = format!("Ln {}, Col {}", status.line, status.column);
                             if status.cursors > 1 {
                                 position = format!("{} cursors", status.cursors);

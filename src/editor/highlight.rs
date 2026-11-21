@@ -170,6 +170,16 @@ impl Highlighter {
         }
     }
 
+    pub fn named(name: &str, rope: &Rope) -> Self {
+        let syntax = syntaxes().find_syntax_by_name(name).filter(|s| s.name != "Plain Text" && rope.len_bytes() <= MAX_FILE);
+        Self { syntax, ..Self::new(None, &Rope::new()) }.labelled()
+    }
+
+    fn labelled(mut self) -> Self {
+        self.language = self.syntax.map_or("Plain Text", |s| s.name.as_str()).to_owned();
+        self
+    }
+
     pub fn invalidate(&mut self, line: usize) {
         self.checkpoints.truncate(line / STEP + 1);
         self.cache.retain(|l, _| *l < line);

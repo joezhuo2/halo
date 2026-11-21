@@ -1,5 +1,4 @@
 use ropey::Rope;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -115,7 +114,8 @@ pub struct Document {
     pub path: Option<PathBuf>,
     pub title: String,
     pub crlf: bool,
-    bom: bool,
+    pub encoding: Encoding,
+    pub indent: Option<(bool, usize)>,
     pub version: u64,
     saved: u64,
     undo: Vec<Transaction>,
@@ -123,6 +123,71 @@ pub struct Document {
     pub dirty_from: Option<usize>,
     pub note: Option<String>,
     pub read_only: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Encoding {
+    Utf8,
+    Utf8Bom,
+    Utf16Le,
+    Utf16Be,
+    Latin1,
+}
+
+impl Encoding {
+    pub const ALL: [Self; 5] = [Self::Utf8, Self::Utf8Bom, Self::Utf16Le, Self::Utf16Be, Self::Latin1];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Utf8 => "UTF-8",
+            Self::Utf8Bom => "UTF-8 with BOM",
+            Self::Utf16Le => "UTF-16 LE",
+            Self::Utf16Be => "UTF-16 BE",
+            Self::Latin1 => "Western (ISO 8859-1)",
+        }
+    }
+
+    fn detect(bytes: &[u8]) -> Self {
+        match bytes {
+            [0xEF, 0xBB, 0xBF, ..] => Self::Utf8Bom,
+            [0xFF, 0xFE, ..] => Self::Utf16Le,
+            [0xFE, 0xFF, ..] => Self::Utf16Be,
+            _ => Self::Utf8,
+        }
+    }
+
+    fn decode(self, bytes: &[u8]) -> (String, bool) {
+        let little = self == Self::Utf16Le;
+        match self {
+            Self::Utf8 | Self::Utf8Bom => {
+                let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+                match std::str::from_utf8(bytes) {
+                    Ok(text) => (text.to_owned(), false),
+                    Err(_) => (String::from_utf8_lossy(bytes).into_owned(), true),
+                }
+            }
+            Self::Utf16Le | Self::Utf16Be => {
+                let bytes = bytes.strip_prefix(if little { &[0xFF, 0xFE] } else { &[0xFE, 0xFF] }).unwrap_or(bytes);
+                let unit = |pair: &[u8]| if little { u16::from_le_bytes([pair[0], pair[1]]) } else { u16::from_be_bytes([pair[0], pair[1]]) };
+                let units: Vec<u16> = bytes.chunks_exact(2).map(unit).collect();
+                match String::from_utf16(&units) {
+                    Ok(text) => (text, bytes.len() % 2 == 1),
+                    Err(_) => (String::from_utf16_lossy(&units), true),
+                }
+            }
+            Self::Latin1 => (bytes.iter().map(|b| *b as char).collect(), false),
+        }
+    }
+
+    fn encode(self, text: &str) -> Vec<u8> {
+        match self {
+            Self::Utf8 => text.as_bytes().to_vec(),
+            Self::Utf8Bom => [&[0xEF, 0xBB, 0xBF][..], text.as_bytes()].concat(),
+            Self::Utf16Le => [0xFF, 0xFE].into_iter().chain(text.encode_utf16().flat_map(u16::to_le_bytes)).collect(),
+            Self::Utf16Be => [0xFE, 0xFF].into_iter().chain(text.encode_utf16().flat_map(u16::to_be_bytes)).collect(),
+            Self::Latin1 => text.chars().map(|c| u8::try_from(c as u32).unwrap_or(b'?')).collect(),
+        }
+    }
 }
 
 pub struct Pattern {
@@ -233,7 +298,8 @@ impl Document {
             path: None,
             title,
             crlf: cfg!(windows),
-            bom: false,
+            encoding: Encoding::Utf8,
+            indent: None,
             version,
             saved: version,
             undo: vec![],
@@ -245,23 +311,22 @@ impl Document {
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
+        Self::load_as(path, None)
+    }
+
+    pub fn load_as(path: &Path, encoding: Option<Encoding>) -> Result<Self, String> {
         let name = title_of(path);
         let size = std::fs::metadata(path).map_err(|e| format!("Cannot open {name}: {e}"))?.len();
         if size > 50 * 1024 * 1024 {
             return Err(format!("{name} is larger than 50 MB and was not opened."));
         }
         let bytes = std::fs::read(path).map_err(|e| format!("Cannot open {name}: {e}"))?;
-        if bytes.iter().take(8192).any(|b| *b == 0) {
+        let encoding = encoding.unwrap_or_else(|| Encoding::detect(&bytes));
+        let wide = matches!(encoding, Encoding::Utf16Le | Encoding::Utf16Be);
+        if !wide && bytes.iter().take(8192).any(|b| *b == 0) {
             return Err(format!("{name} looks like a binary file and was not opened."));
         }
-        let (mut text, lossy) = match String::from_utf8(bytes) {
-            Ok(text) => (text, false),
-            Err(e) => (String::from_utf8_lossy(e.as_bytes()).into_owned(), true),
-        };
-        let bom = text.starts_with('\u{feff}');
-        if bom {
-            text.remove(0);
-        }
+        let (mut text, lossy) = encoding.decode(&bytes);
         let crlf = text.contains("\r\n");
         if crlf {
             text = text.replace("\r\n", "\n");
@@ -269,30 +334,21 @@ impl Document {
         let mut doc = Self::from_text(&text, name);
         doc.path = Some(path.to_path_buf());
         doc.crlf = crlf;
-        doc.bom = bom;
+        doc.encoding = encoding;
+        doc.indent = doc.detect_indent();
         if lossy {
-            doc.note = Some("This file is not valid UTF-8; invalid bytes were replaced.".into());
+            doc.note = Some(format!("This file is not valid {}; invalid bytes were replaced.", encoding.label()));
         }
         Ok(doc)
     }
 
     pub fn save(&mut self) -> Result<(), String> {
         let Some(path) = self.path.clone() else { return Err("No file name.".into()) };
-        let write = || -> std::io::Result<()> {
-            let mut out = std::io::BufWriter::new(std::fs::File::create(&path)?);
-            if self.bom {
-                out.write_all("\u{feff}".as_bytes())?;
-            }
-            for chunk in self.rope.chunks() {
-                if self.crlf {
-                    out.write_all(chunk.replace('\n', "\r\n").as_bytes())?;
-                } else {
-                    out.write_all(chunk.as_bytes())?;
-                }
-            }
-            out.flush()
-        };
-        write().map_err(|e| format!("Cannot save {}: {e}", title_of(&path)))?;
+        let mut text = self.rope.to_string();
+        if self.crlf {
+            text = text.replace('\n', "\r\n");
+        }
+        std::fs::write(&path, self.encoding.encode(&text)).map_err(|e| format!("Cannot save {}: {e}", title_of(&path)))?;
         self.saved = self.version;
         self.title = title_of(&path);
         Ok(())
@@ -348,6 +404,39 @@ impl Document {
             text.pop();
         }
         text
+    }
+
+    pub fn detect_indent(&self) -> Option<(bool, usize)> {
+        let (mut tabs, mut widths) = (0, [0usize; 9]);
+        for line in self.rope.lines().take(2000) {
+            match line.get_char(0) {
+                Some('\t') => tabs += 1,
+                Some(' ') => widths[line.chars().take(8).take_while(|c| *c == ' ').count()] += 1,
+                _ => {}
+            }
+        }
+        let spaced: usize = widths[2..].iter().sum();
+        match (2..9).find(|width| widths[*width] > 0) {
+            _ if tabs > spaced => Some((false, 0)),
+            Some(width) => Some((true, width)),
+            None => None,
+        }
+    }
+
+    pub fn convert_indent(&mut self, sels: &mut Vec<Sel>, spaces: bool, size: usize) -> bool {
+        let size = size.max(1);
+        let mut edits: EditList = vec![];
+        for line in 0..self.lines() {
+            let lead: String = self.rope.line(line).chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            let width = lead.chars().fold(0, |width, c| if c == '\t' { (width / size + 1) * size } else { width + 1 });
+            let fresh = if spaces { " ".repeat(width) } else { "\t".repeat(width / size) + &" ".repeat(width % size) };
+            if fresh != lead {
+                let start = self.line_start(line);
+                edits.push((start, start + lead.chars().count(), fresh));
+            }
+        }
+        self.indent = Some((spaces, size));
+        self.apply(sels, edits, Kind::Other, After::Map)
     }
 
     pub fn foldable(&self, line: usize) -> bool {
@@ -1481,6 +1570,34 @@ mod tests {
         let mut sels = vec![Sel::caret(0)];
         assert!(d.tidy(&mut sels, true, false));
         assert_eq!(d.rope.to_string(), "a\n\tb\n\nc\n");
+    }
+
+    #[test]
+    fn detects_and_converts_indentation_and_round_trips_encodings() {
+        assert_eq!(doc("a\n  b\n    c\n").detect_indent(), Some((true, 2)));
+        assert_eq!(doc("a\n\tb\n\t\tc\n    d").detect_indent(), Some((false, 0)));
+        assert_eq!(doc("a\nb").detect_indent(), None);
+        let mut d = doc("a\n\tb\n\t  c\n");
+        let mut sels = vec![Sel::caret(3)];
+        d.convert_indent(&mut sels, true, 4);
+        assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("a\n    b\n      c\n", 6));
+        d.convert_indent(&mut sels, false, 4);
+        assert_eq!(d.rope.to_string(), "a\n\tb\n\t  c\n");
+
+        let path = std::env::temp_dir().join(format!("halo-encoding-test-{}.txt", std::process::id()));
+        std::fs::write(&path, [0xFF, 0xFE, b'h', 0, 0xE9, 0, b'\r', 0, b'\n', 0]).unwrap();
+        let mut d = Document::load(&path).unwrap();
+        assert_eq!((d.rope.to_string().as_str(), d.encoding, d.crlf), ("h\u{e9}\n", Encoding::Utf16Le, true));
+        d.encoding = Encoding::Latin1;
+        d.crlf = false;
+        d.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), [b'h', 0xE9, b'\n']);
+        assert!(Document::load(&path).unwrap().note.is_some());
+        assert_eq!(Document::load_as(&path, Some(Encoding::Latin1)).unwrap().rope.to_string(), "h\u{e9}\n");
+        for encoding in Encoding::ALL {
+            assert_eq!(encoding.decode(&encoding.encode("a\u{e9}")), ("a\u{e9}".to_owned(), false));
+        }
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

@@ -28,7 +28,7 @@ pub fn configure(settings: &Settings) {
     highlight::configure(&settings.grammars, &settings.associations);
 }
 
-pub use buffer::Pattern;
+pub use buffer::{Encoding, Pattern};
 pub use snippet::{path as snippets_path, reload as reload_snippets, write_sample as write_sample_snippets};
 pub use highlight::languages;
 
@@ -41,6 +41,17 @@ pub struct EditorStatus {
     pub selected: usize,
     pub cursors: usize,
     pub language: String,
+    pub encoding: &'static str,
+    pub crlf: bool,
+    pub indent: Option<(bool, usize)>,
+}
+
+fn indent_unit(buf: &Document, settings: &Settings) -> (bool, usize, String) {
+    let (spaces, size) = match buf.indent {
+        Some((spaces, size)) => (spaces, if size == 0 { settings.tab_size } else { size }),
+        None => (settings.insert_spaces, settings.tab_size),
+    };
+    (spaces, size, if spaces { " ".repeat(size) } else { "\t".to_owned() })
 }
 
 struct Doc {
@@ -333,7 +344,7 @@ fn handle_event(
     wrap: Option<usize>,
     folds: &[(usize, usize)],
 ) -> bool {
-    let unit = if settings.insert_spaces { " ".repeat(settings.tab_size) } else { "\t".to_owned() };
+    let (spaces, size, unit) = indent_unit(buf, settings);
     let sels = &mut tab.sels;
     match event {
         Event::Text(text) => {
@@ -379,8 +390,8 @@ fn handle_event(
             }
             match key {
                 Key::Enter => buf.newline(sels, &unit),
-                Key::Tab if modifiers.shift => buf.outdent(sels, settings.tab_size),
-                Key::Tab => buf.tab(sels, settings.tab_size, settings.insert_spaces),
+                Key::Tab if modifiers.shift => buf.outdent(sels, size),
+                Key::Tab => buf.tab(sels, size, spaces),
                 Key::Backspace => buf.backspace(sels, word, settings.auto_close),
                 Key::Delete => buf.delete(sels, word),
                 Key::Escape => {
@@ -763,10 +774,9 @@ impl Editors {
             | EmmetExpand | SelectAllOccurrences | ExpandSelection | ShrinkSelection | CursorUndo | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
-                let unit = if settings.insert_spaces { " ".repeat(settings.tab_size) } else { "\t".to_owned() };
                 self.with_active(|buf, tab| {
                     if cmd == EmmetExpand {
-                        emmet_expand(buf, tab, &unit, false);
+                        emmet_expand(buf, tab, &indent_unit(buf, settings).2, false);
                     }
                     let sels = &mut tab.sels;
                     match cmd {
@@ -878,7 +888,68 @@ impl Editors {
             selected: tab.sels.iter().map(|s| s.end() - s.start()).sum(),
             cursors: tab.sels.len(),
             language: doc.hl.language.clone(),
+            encoding: doc.buf.encoding.label(),
+            crlf: doc.buf.crlf,
+            indent: doc.buf.indent,
         })
+    }
+
+    fn active_doc(&mut self) -> Option<(&mut Doc, &mut Tab)> {
+        let (g, t) = self.active_tab()?;
+        let tab = &mut self.groups[g].tabs[t];
+        Some((self.docs.get_mut(&tab.doc).filter(|doc| !doc.buf.read_only)?, tab))
+    }
+
+    pub fn set_eol(&mut self, crlf: bool) {
+        if let Some((doc, _)) = self.active_doc().filter(|(doc, _)| doc.buf.crlf != crlf) {
+            doc.buf.crlf = crlf;
+            doc.buf.mark_dirty();
+        }
+    }
+
+    pub fn set_language(&mut self, name: &str) {
+        if let Some((doc, _)) = self.active_doc() {
+            doc.hl = Highlighter::named(name, &doc.buf.rope);
+        }
+    }
+
+    pub fn set_indent(&mut self, indent: Option<(bool, usize)>) {
+        if let Some((doc, _)) = self.active_doc() {
+            doc.buf.indent = indent.or_else(|| doc.buf.detect_indent());
+        }
+    }
+
+    pub fn convert_indent(&mut self, spaces: bool, settings: &Settings) {
+        if let Some((doc, tab)) = self.active_doc() {
+            let size = indent_unit(&doc.buf, settings).1;
+            doc.buf.convert_indent(&mut tab.sels, spaces, size);
+        }
+    }
+
+    pub fn set_encoding(&mut self, encoding: Encoding, reopen: bool) {
+        let Some((doc, tab)) = self.active_doc() else { return };
+        let banner = match (reopen, doc.buf.path.clone()) {
+            (false, _) if doc.buf.encoding == encoding => None,
+            (false, _) => {
+                doc.buf.encoding = encoding;
+                doc.buf.mark_dirty();
+                None
+            }
+            (true, None) => None,
+            (true, Some(_)) if doc.buf.is_dirty() => Some("Save the file before reopening it with another encoding.".to_owned()),
+            (true, Some(path)) => match Document::load_as(&path, Some(encoding)) {
+                Ok(buf) => {
+                    doc.hl = Highlighter::new(Some(&path), &buf.rope);
+                    doc.max_cols = (0, 0);
+                    doc.folds.clear();
+                    tab.sels = vec![Sel::caret(0)];
+                    doc.buf = buf;
+                    doc.buf.note.clone()
+                }
+                Err(error) => Some(error),
+            },
+        };
+        self.banner = banner.or(self.banner.take());
     }
 
     pub fn has_focus(&self) -> bool {
@@ -1358,7 +1429,7 @@ impl Editors {
             }
             let page = ((text_rect.height() / line_h) as usize).saturating_sub(2).max(1);
             let mut events = ui.input(|i| i.events.clone());
-            let unit = if settings.insert_spaces { " ".repeat(settings.tab_size) } else { "\t".to_owned() };
+            let unit = indent_unit(buf, settings).2;
             self.intel.unit = unit.clone();
             self.popup_keys(&mut events, doc_id, buf, tab);
             let (mut typed, mut pasted) = (None, None);
