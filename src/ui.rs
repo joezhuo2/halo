@@ -4,6 +4,7 @@ use crate::theme::Theme;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Id, Rect, Response, Sense, Ui, Vec2};
 
 pub use egui_phosphor::regular as icons;
+pub use eframe::egui::accesskit::Role;
 
 pub const ANIM: f32 = 0.14;
 pub const FIELD: egui::Margin = egui::Margin::symmetric(8, 5);
@@ -127,6 +128,44 @@ pub fn row_bg(ui: &Ui, theme: &Theme, rect: Rect, id: Id, hovered: bool, selecte
         ui.painter().rect_filled(rect, CornerRadius::ZERO, color);
     }
     state_border(ui.painter(), theme, rect, hovered, selected);
+    focus_ring(ui, theme, rect, id);
+}
+
+pub fn focus_ring(ui: &Ui, theme: &Theme, rect: Rect, id: Id) {
+    crate::a11y::mark(ui, id);
+    if ui.memory(|m| m.has_focus(id)) {
+        ui.painter().rect_stroke(rect.shrink(0.5), CornerRadius::same(2), egui::Stroke::new(1.0, theme.accent), egui::StrokeKind::Inside);
+    }
+}
+
+pub fn access(ui: &Ui, id: Id, role: Role, name: &str, state: impl FnOnce(&mut egui::accesskit::Node)) {
+    ui.ctx().accesskit_node_builder(id, |node| {
+        node.set_role(role);
+        node.set_label(name);
+        state(node);
+    });
+}
+
+pub fn item(ui: &Ui, resp: &Response, role: Role, name: &str, selected: bool) {
+    access(ui, resp.id, role, name, |n| n.set_selected(selected));
+}
+
+pub fn list_item(ui: &Ui, resp: &Response, name: &str, selected: bool, (index, count): (usize, usize)) {
+    access(ui, resp.id, Role::ListItem, name, |n| {
+        n.set_selected(selected);
+        n.set_position_in_set(index + 1);
+        n.set_size_of_set(count);
+    });
+}
+
+pub fn tree_item(ui: &Ui, resp: &Response, name: &str, selected: bool, depth: usize, expanded: Option<bool>) {
+    access(ui, resp.id, Role::TreeItem, name, |n| {
+        n.set_selected(selected);
+        n.set_level(depth + 1);
+        if let Some(open) = expanded {
+            n.set_expanded(open);
+        }
+    });
 }
 
 pub fn state_border(painter: &egui::Painter, theme: &Theme, rect: Rect, hovered: bool, selected: bool) {
@@ -152,6 +191,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: &str, size: f32, active: bo
             mix(Color32::TRANSPARENT, theme.hover, h),
         );
         state_border(ui.painter(), theme, rect.shrink(1.0), resp.hovered() || resp.has_focus(), active);
+        focus_ring(ui, theme, rect.shrink(1.0), resp.id);
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
@@ -160,6 +200,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: &str, size: f32, active: bo
             mix(mix(theme.text_dim, theme.text, h), theme.accent, a),
         );
     }
+    access(ui, resp.id, Role::Button, tip, |_| {});
     if tip.is_empty() { resp } else { resp.on_hover_text(tip) }
 }
 
@@ -173,6 +214,8 @@ pub fn tabs(ui: &mut Ui, theme: &Theme, id: Id, labels: &[&str], active: &mut us
         }
         let a = anim(ui, resp.id.with("active"), *active == index);
         let h = anim(ui, resp.id.with("hover"), resp.hovered());
+        item(ui, &resp, Role::Tab, label, *active == index);
+        focus_ring(ui, theme, r, resp.id);
         ui.painter().galley(r.center() - galley.size() / 2.0, galley, mix(theme.text_dim, theme.text, a.max(h)));
         if *active == index {
             underline = Some(r);
@@ -316,6 +359,7 @@ pub fn checkbox(ui: &mut Ui, theme: &Theme, value: &mut bool, text: impl Into<eg
     }
     let edge = mix(mix(theme.border, theme.text_dim, 0.4), theme.accent, border);
     painter.rect_stroke(bx, s / 4.0, egui::Stroke::new(1.5, edge), egui::StrokeKind::Inside);
+    crate::a11y::mark(ui, resp.id);
     if resp.has_focus() {
         painter.rect_stroke(bx.expand(2.0), s / 4.0 + 2.0, egui::Stroke::new(1.0, theme.accent), egui::StrokeKind::Outside);
     }
@@ -346,6 +390,7 @@ pub fn section(ui: &mut Ui, theme: &Theme, title: &str, open: &mut bool) -> Resp
         *open ^= true;
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::CollapsingHeader, ui.is_enabled(), title));
+    access(ui, resp.id, Role::Button, title, |n| n.set_expanded(*open));
     let h = anim(ui, resp.id.with("hover"), ui.rect_contains_pointer(rect));
     let t = anim(ui, resp.id.with("open"), *open);
     let painter = ui.painter().with_clip_rect(rect);
@@ -353,6 +398,7 @@ pub fn section(ui: &mut Ui, theme: &Theme, title: &str, open: &mut bool) -> Resp
     painter.hline(rect.x_range(), rect.top() + 0.5, egui::Stroke::new(1.0, theme.border));
     caret(&painter, egui::pos2(rect.left() + 12.0, rect.center().y), t, theme.text);
     painter.text(egui::pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, title, FontId::proportional(11.5), theme.text);
+    focus_ring(ui, theme, rect, resp.id);
     resp
 }
 
