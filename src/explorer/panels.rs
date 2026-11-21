@@ -227,7 +227,7 @@ impl Explorer {
         }
     }
 
-    pub(super) fn overlays(&mut self, ui: &mut Ui, theme: &Theme, cmds: &mut Vec<Command>) {
+    pub(super) fn overlays(&mut self, ui: &mut Ui, theme: &Theme) {
         if let Some(error) = self.error.clone() {
             let rect = Rect::from_min_max(pos2(ui.max_rect().left(), ui.max_rect().bottom() - 30.0), ui.max_rect().max);
             ui.painter().rect_filled(rect, 0, ui::mix(theme.panel, theme.error, 0.18));
@@ -242,11 +242,11 @@ impl Explorer {
         }
         let ctx = ui.ctx().clone();
         if !self.confirm_delete.is_empty() && !self.confirm {
-            self.delete(cmds);
+            self.delete(&ctx);
         } else if !self.confirm_delete.is_empty() {
             let text = format!("Move {} to the recycle bin?", count_text(&self.confirm_delete));
             match confirm(&ctx, "explorer_delete", "Delete", &text, RichText::new("Move to Recycle Bin").color(theme.deleted)) {
-                Some(true) => self.delete(cmds),
+                Some(true) => self.delete(&ctx),
                 Some(false) => self.confirm_delete.clear(),
                 None => {}
             }

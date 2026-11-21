@@ -140,7 +140,15 @@ fn move_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 pub struct Done {
     pub cut: bool,
     pub done: Vec<(PathBuf, PathBuf)>,
+    pub removed: Vec<PathBuf>,
     pub errors: Vec<String>,
+}
+
+pub fn trash(paths: Vec<PathBuf>, label: String) -> Done {
+    match trash::delete_all(&paths) {
+        Ok(()) => Done { removed: paths, ..Done::default() },
+        Err(e) => Done { errors: vec![format!("Could not delete {label}: {e}")], ..Done::default() },
+    }
 }
 
 pub fn run(jobs: Vec<Job>, cut: bool) -> Done {

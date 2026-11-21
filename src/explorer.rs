@@ -756,10 +756,14 @@ impl Explorer {
     }
 
     fn spawn(&mut self, jobs: Vec<Job>, cut: bool, ctx: &egui::Context) {
+        self.background(ctx, move || ops::run(jobs, cut));
+    }
+
+    fn background(&mut self, ctx: &egui::Context, work: impl FnOnce() -> Done + Send + 'static) {
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(ops::run(jobs, cut));
+            let _ = tx.send(work());
             ctx.request_repaint();
         });
         self.work.push(rx);
@@ -780,6 +784,11 @@ impl Explorer {
             if done.cut {
                 self.clipboard = None;
             }
+            if !done.removed.is_empty() {
+                self.sel.paths.retain(|p| !done.removed.iter().any(|r| p.starts_with(r)));
+                cmds.extend(done.removed.into_iter().map(|p| Command::PathChanged(p, None)));
+                continue;
+            }
             if done.done.is_empty() {
                 continue;
             }
@@ -796,18 +805,10 @@ impl Explorer {
         }
     }
 
-    fn delete(&mut self, cmds: &mut Vec<Command>) {
+    fn delete(&mut self, ctx: &egui::Context) {
         let paths = std::mem::take(&mut self.confirm_delete);
-        match trash::delete_all(&paths) {
-            Ok(()) => {
-                self.sel.clear();
-                cmds.extend(paths.into_iter().map(|p| Command::PathChanged(p, None)));
-            }
-            Err(e) => {
-                self.error = Some(format!("Could not delete {}: {e}", count_text(&paths)));
-                cmds.push(Command::RefreshExplorer);
-            }
-        }
+        let label = count_text(&paths);
+        self.background(ctx, move || ops::trash(paths, label));
     }
 
     fn apply(&mut self, action: Action, ui: &Ui, cmds: &mut Vec<Command>) {
@@ -1123,7 +1124,7 @@ impl Explorer {
             self.apply(action, ui, cmds);
             ui.ctx().request_repaint();
         }
-        self.overlays(ui, theme, cmds);
+        self.overlays(ui, theme);
     }
 
     fn header(&mut self, ui: &mut Ui, theme: &Theme, root: &Path, action: &mut Option<Action>) {
