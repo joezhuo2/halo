@@ -762,7 +762,7 @@ impl eframe::App for Halo {
             ctx.send_viewport_cmd(ViewportCommand::Icon(Some(std::sync::Arc::new(egui::IconData { rgba, width: 128, height: 128 }))));
         }
         command::set_context(self.when_keys(&ctx));
-        self.page.keys(&ctx);
+        self.page.find_key(&ctx);
         if !self.page.keys.recording() {
             self.global_shortcuts(&ctx);
         }

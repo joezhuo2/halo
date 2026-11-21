@@ -284,7 +284,7 @@ impl View {
 }
 
 impl SettingsPage {
-    pub fn keys(&mut self, ctx: &egui::Context) {
+    pub fn find_key(&mut self, ctx: &egui::Context) {
         if self.open && self.tab != 6 && ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::F))) {
             self.focus = true;
         }
