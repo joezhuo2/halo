@@ -138,6 +138,9 @@ impl Halo {
             ui.set_min_width(230.0);
             ui::menu_pad(ui);
             self.menu_item(ui, RunFile);
+            for command in [RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask, OpenTasksJson] {
+                self.menu_item(ui, command);
+            }
             ui.separator();
             let tasks: Vec<String> = self.settings.tasks.iter().map(|t| t.name.clone()).collect();
             for name in tasks {

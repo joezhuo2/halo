@@ -33,6 +33,8 @@ impl Halo {
 
                     if self.settings.status_problems {
                         let (errors, warnings) = if self.settings.diagnostics { self.editors.lsp.counts() } else { (0, 0) };
+                        let (task_errors, task_warnings) = self.tasks.counts();
+                        let (errors, warnings) = (errors + task_errors, warnings + task_warnings);
                         let problems = format!("{} {errors}   {} {warnings}", icons::X_CIRCLE, icons::WARNING);
                         let tip = match errors + warnings {
                             0 => "No problems".to_owned(),
@@ -40,6 +42,14 @@ impl Halo {
                         };
                         if item(ui, &theme, &problems, false, &tip).clicked() {
                             self.cmds.push(Command::ShowProblems);
+                        }
+                    }
+
+                    let running = self.tasks.running_count();
+                    if running > 0 {
+                        let tip = "Running tasks (click to list)";
+                        if item(ui, &theme, &format!("{} {running}", icons::GEAR_SIX), true, tip).clicked() {
+                            self.cmds.push(Command::ShowRunningTasks);
                         }
                     }
 
