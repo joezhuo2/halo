@@ -4,6 +4,8 @@ mod diff_view;
 mod emmet;
 mod highlight;
 mod intel;
+mod open_tabs;
+pub use open_tabs::OpenTab;
 mod snippet;
 
 use crate::command::{self, Command, Scope};

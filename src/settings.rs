@@ -59,6 +59,9 @@ pub struct Settings {
     pub diff_side_by_side: bool,
     pub hot_exit: bool,
     pub auto_update: bool,
+    pub files_exclude: Vec<String>,
+    pub compact_folders: bool,
+    pub confirm_drag_and_drop: bool,
 }
 
 impl Default for Settings {
@@ -154,6 +157,9 @@ impl Default for Settings {
             diff_side_by_side: true,
             hot_exit: true,
             auto_update: true,
+            files_exclude: ["**/.git", "**/.svn", "**/.hg", "**/.DS_Store", "**/Thumbs.db"].map(str::to_owned).into(),
+            compact_folders: true,
+            confirm_drag_and_drop: true,
         }
     }
 }

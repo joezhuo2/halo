@@ -340,6 +340,20 @@ impl Halo {
                 self.scm.start(op, target, &mut self.git, ctx, &mut self.cmds);
             }
             GitSync => self.git.sync(),
+            CutFiles | CopyFiles | PasteFiles => {
+                self.explorer.exec(&cmd, ctx);
+            }
+            FilterExplorer | FocusOpenEditors => {
+                (self.session.sidebar, self.session.debug_view, self.session.search, self.session.source_control) = (true, false, false, false);
+                if cmd == FilterExplorer {
+                    self.explorer.open_filter();
+                } else {
+                    self.explorer.focus_open_editors();
+                }
+            }
+            ShowTab(group, tab) => self.editors.show_tab(group, tab),
+            CloseTab(group, tab) => self.editors.close_open_tab(group, tab),
+            CloseAllEditors => self.editors.close_all_tabs(),
             RefreshExplorer => {
                 self.explorer.refresh();
                 self.git.refresh(ctx);
@@ -360,6 +374,7 @@ impl Halo {
             other if self.exec_compare(&other, ctx) => {}
             other => {
                 let _ = match self.zone {
+                    Zone::Explorer if self.explorer.exec(&other, ctx) => true,
                     Zone::Ai => {
                         self.ai.exec(&other, ctx)
                             || self.editors.exec(&other, &self.settings, ctx)
@@ -507,7 +522,8 @@ impl Halo {
                 let split = (lower - size(outline_t, 0.4 - 0.1 * timeline_t)).max(full.top() + 80.0).min(lower - 24.0);
                 ui.scope_builder(UiBuilder::new().max_rect(full.with_max_y(split)), |ui| {
                     ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                    self.explorer.ui(ui, &self.theme, &self.git, active.as_deref(), &mut self.cmds);
+                    let tabs = self.editors.open_tabs();
+                    self.explorer.ui(ui, &self.theme, &self.git, active.as_deref(), &self.settings, &tabs, &mut self.cmds);
                 });
                 ui.scope_builder(UiBuilder::new().max_rect(full.with_min_y(split).with_max_y(lower)), |ui| {
                     ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
@@ -558,13 +574,34 @@ impl Halo {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(self.theme.bg))
             .show(ui, |ui| {
+                let area = ui.max_rect();
                 if self.editors.is_empty() {
                     self.welcome(ui);
                 } else {
                     self.editors.ai_open = self.session.ai;
                     self.editors.ui(ui, &self.theme, &self.settings, &self.git, &mut self.cmds);
                 }
+                self.drop_files(ui, area);
             });
+    }
+
+    fn drop_files(&mut self, ui: &mut Ui, area: egui::Rect) {
+        let ctx = ui.ctx().clone();
+        let pointer = ctx.pointer_latest_pos();
+        if self.explorer.dragging() && pointer.is_some_and(|p| area.contains(p)) {
+            ui.painter().rect_stroke(area, 0, Stroke::new(1.0, self.theme.accent), StrokeKind::Inside);
+        }
+        let mut files = vec![];
+        if let Some((paths, _)) = self.explorer.take_drop().filter(|(_, pos)| area.contains(*pos)) {
+            files.extend(paths);
+        }
+        if pointer.is_none_or(|p| area.contains(p)) {
+            let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
+            files.extend(dropped.into_iter().map(|f| f.path().to_path_buf()));
+        }
+        for file in files.iter().filter(|f| f.is_file()) {
+            self.editors.open_kept(file);
+        }
     }
 
     fn welcome(&mut self, ui: &mut Ui) {
