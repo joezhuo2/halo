@@ -90,6 +90,7 @@ pub const SETTINGS: &[Meta] = &[
     m("code_lens", 0, ED, "Code Lens", "Show reference counts above declarations. Click one to list the places.", Kind::Toggle),
     m("inlay_hints", 0, ED, "Inlay Hints", "Show inferred types and parameter names inside the line.", Kind::Toggle),
     m("semantic_highlighting", 0, ED, "Semantic Highlighting", "Color types, functions and constants as the language server reports them.", Kind::Toggle),
+    m("suggest_rows", 0, ED, "Suggestion Rows", "The number of suggestions the completion list shows before it scrolls.", Kind::Int(1, 20)),
     m("inline_blame", 0, ED, "Inline Blame", "Show the commit beside the caret line.", Kind::Toggle),
     m("local_history", 0, ED, "Local History", "Keep up to 50 saved versions of each file in the Timeline.", Kind::Toggle),
     m("format_on_save", 0, ED, "Format On Save", "Format the file with its language server when it is saved by hand.", Kind::Toggle),

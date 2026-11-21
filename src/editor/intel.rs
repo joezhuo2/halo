@@ -185,18 +185,20 @@ fn list_popup(
     ctx: &egui::Context,
     theme: &Theme,
     id: &str,
-    at: Pos2,
+    (at, line_h): (Pos2, f32),
     rows: &[(&str, &str, &str)],
-    selected: usize,
+    (selected, max_rows): (usize, usize),
     reveal: bool,
     font: &FontId,
 ) -> (Option<usize>, Rect) {
     let mut clicked = None;
+    let height = 22.0 * rows.len().clamp(1, max_rows) as f32;
+    let at = if at.y + height + 2.0 > ctx.content_rect().bottom() { at - vec2(0.0, line_h + height + 6.0) } else { at };
     let area = Area::new(Id::new(id)).order(Order::Foreground).fixed_pos(at).show(ctx, |ui| {
         popup_frame(theme).show(ui, |ui| {
             ui.set_width(460.0);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            ScrollArea::vertical().max_height(22.0 * 10.0).show(ui, |ui| {
+            ScrollArea::vertical().min_scrolled_height(height).max_height(height).show(ui, |ui| {
                 for (index, (icon, label, detail)) in rows.iter().enumerate() {
                     let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                     ui::row_bg(ui, theme, r, row.id, row.hovered(), index == selected);
@@ -362,6 +364,7 @@ pub(super) struct Hover {
     asked: bool,
     pinned: bool,
     blocks: Vec<(u8, String)>,
+    drawn: usize,
 }
 
 pub(super) struct Peek {
@@ -897,7 +900,7 @@ impl Editors {
             ShowHover => {
                 let word = buf.word_at(head);
                 let blocks = problem_blocks(&self.lsp, &path, to_lsp(buf, word.0), to_lsp(buf, word.1));
-                self.intel.hover = Some(Hover { group: g, doc: id, word, since: 0.0, asked: true, pinned: true, blocks });
+                self.intel.hover = Some(Hover { group: g, doc: id, word, since: 0.0, asked: true, pinned: true, blocks, drawn: 0 });
                 ("textDocument/hover", here, Want::Hover { doc: id, word })
             }
             RenameSymbol => {
@@ -1064,12 +1067,15 @@ impl Editors {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn track_hover(&mut self, over: Option<(usize, usize)>, g: usize, id: u64, buf: &Document, lang: &mut Lang, now: f64, ctx: &egui::Context) {
         let on_popup = self.intel.hover_rect.is_some_and(|r| ctx.pointer_latest_pos().is_some_and(|p| r.expand(4.0).contains(p)));
+        if !on_popup && ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::MouseWheel { .. }))) {
+            self.intel.hover = None;
+        }
         match self.intel.hover.as_ref().map(|h| ((h.group, h.doc) == (g, id), h.word, h.pinned)) {
             Some((false, ..)) if over.is_none() => return,
             Some((true, word, pinned)) if Some(word) == over || on_popup || (pinned && over.is_none()) => {}
             None if over.is_none() => return,
             _ => {
-                self.intel.hover = over.map(|word| Hover { group: g, doc: id, word, since: now, asked: false, pinned: false, blocks: vec![] });
+                self.intel.hover = over.map(|word| Hover { group: g, doc: id, word, since: now, asked: false, pinned: false, blocks: vec![], drawn: 0 });
                 self.intel.hover_rect = None;
                 ctx.request_repaint_after(Duration::from_millis(450));
             }
@@ -1088,13 +1094,18 @@ impl Editors {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn hover_ui(&mut self, ctx: &egui::Context, theme: &Theme, font: &FontId, g: usize, id: u64, at: Option<Pos2>, line_h: f32) {
-        let Some(hover) = self.intel.hover.as_ref().filter(|h| (h.group, h.doc) == (g, id) && !h.blocks.is_empty()) else { return };
+        let Some(hover) = self.intel.hover.as_mut().filter(|h| (h.group, h.doc) == (g, id) && !h.blocks.is_empty()) else { return };
         let Some(at) = at else { return };
         let (pivot, pos) = match at.y > ctx.content_rect().center().y {
             true => (Align2::LEFT_BOTTOM, at - vec2(0.0, 2.0)),
             false => (Align2::LEFT_TOP, at + vec2(0.0, line_h + 2.0)),
         };
-        let area = Area::new(Id::new("hover_info")).order(Order::Foreground).pivot(pivot).fixed_pos(pos).show(ctx, |ui| {
+        let changed = std::mem::replace(&mut hover.drawn, hover.blocks.len()) != hover.blocks.len();
+        if changed {
+            ctx.request_discard("hover content changed");
+        }
+        let hover = &*hover;
+        let area = Area::new(Id::new("hover_info")).order(Order::Foreground).pivot(pivot).fixed_pos(pos).sizing_pass(changed).show(ctx, |ui| {
             popup_frame(theme).inner_margin(8.0).show(ui, |ui| {
                 ui.set_max_width(580.0);
                 ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
@@ -1158,7 +1169,7 @@ impl Editors {
                 .map(|index| &popup.items[*index])
                 .map(|item| (lsp::completion_icon(item.kind), item.label.as_str(), item.detail.as_str()))
                 .collect();
-            let (clicked, rect) = list_popup(&ctx, theme, "suggest", at, &rows, popup.selected, reveal, font);
+            let (clicked, rect) = list_popup(&ctx, theme, "suggest", (at, line_h), &rows, (popup.selected, self.config.suggest_rows.clamp(1, 20)), reveal, font);
             if let Some(index) = clicked {
                 popup.selected = index;
                 accept = true;
@@ -1173,7 +1184,7 @@ impl Editors {
         if let (Some(popup), Some(at)) = (self.intel.actions.as_mut(), below) {
             let reveal = std::mem::take(&mut popup.reveal);
             let rows: Vec<(&str, &str, &str)> = popup.items.iter().map(|item| (icons::LIGHTBULB, item.0.as_str(), "")).collect();
-            let (clicked, rect) = list_popup(&ctx, theme, "code_actions", at, &rows, popup.selected, reveal, &FontId::proportional(12.5));
+            let (clicked, rect) = list_popup(&ctx, theme, "code_actions", (at, line_h), &rows, (popup.selected, 10), reveal, &FontId::proportional(12.5));
             let chosen = clicked.and_then(|index| popup.items.get(index)).map(|item| item.1.clone());
             self.intel.rects.push(rect);
             if let Some(action) = chosen {
@@ -1443,5 +1454,98 @@ mod tests {
         let spans: Vec<(String, &str)> = found.iter().map(|(from, to, url)| (text.chars().skip(*from).take(to - from).collect(), url.as_str())).collect();
         assert_eq!(spans, vec![("the dócs".into(), "https://a.io/x"), ("https://b.io".into(), "https://b.io"), ("https://c.io".into(), "https://c.io")]);
         assert!(hover_links("plain [text]").1.is_empty());
+    }
+
+    fn run(ctx: &egui::Context, editors: &mut Editors, settings: &Settings, events: Vec<Event>, t: f64) {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 600.0))), events, focused: true, time: Some(t), ..Default::default() };
+        ctx.run_ui(input, |ui| editors.ui(ui, &Theme::dark(), settings, &crate::git::Git::new(), &mut vec![])).textures_delta.clear();
+    }
+
+    fn editor_with_lines(ctx: &egui::Context, settings: &Settings) -> Editors {
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, settings, ctx);
+        run(ctx, &mut editors, settings, vec![], 1.0);
+        run(ctx, &mut editors, settings, vec![], 1.0);
+        let body: String = (0..60).map(|i| format!("int unused_variable_{i} = 1;\n")).collect();
+        run(ctx, &mut editors, settings, vec![Event::Paste(body)], 1.0);
+        editors
+    }
+
+    #[test]
+    fn hover_stays_up_while_diagnostic_and_server_parts_arrive() {
+        let (ctx, settings) = (egui::Context::default(), Settings::default());
+        let mut editors = editor_with_lines(&ctx, &settings);
+        let mut t = 2.0;
+        for y in [70.0, 330.0, 345.0] {
+            let pointer = pos2(150.0, y);
+            editors.intel.hover = None;
+            let mut since = None;
+            for frame in 0..80 {
+                t += 0.05;
+                run(&ctx, &mut editors, &settings, if frame == 0 { vec![Event::PointerMoved(pointer)] } else { vec![] }, t);
+                let Some(hover) = editors.intel.hover.as_mut() else { panic!("the hover closed at frame {frame} for y {y}") };
+                if hover.asked && hover.blocks.is_empty() {
+                    hover.blocks = vec![(3, "unused variable 'x'  clang(-Wunused-variable)".into())];
+                }
+                if frame == 40 {
+                    hover.blocks.extend([(1, "int unused_variable_1 = 1".into()), (0, "Type: int\nmore\nlines".into())]);
+                }
+                if hover.asked {
+                    assert_eq!(*since.get_or_insert(hover.since), hover.since, "the hover was rebuilt and asked again");
+                }
+            }
+            let rect = editors.intel.hover_rect.unwrap();
+            assert!(rect.height() > 60.0 && !rect.contains(pointer), "{rect:?} {pointer:?}");
+        }
+        run(&ctx, &mut editors, &settings, vec![Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: vec2(0.0, -1.0), phase: egui::TouchPhase::Move, modifiers: Default::default() }], t + 0.05);
+        assert!(editors.intel.hover.as_ref().is_none_or(|h| !h.asked));
+    }
+
+    #[test]
+    fn edits_reach_the_language_server_in_the_frame_they_are_typed() {
+        let (ctx, settings) = (egui::Context::default(), Settings { lsp: false, ..Settings::default() });
+        let path = std::env::temp_dir().join(format!("halo-sync-test-{}.cpp", std::process::id()));
+        std::fs::write(&path, "int x;\n").unwrap();
+        let mut editors = Editors::new();
+        editors.open(&path);
+        editors.finish_loads();
+        run(&ctx, &mut editors, &settings, vec![], 1.0);
+        run(&ctx, &mut editors, &settings, vec![], 1.0);
+        let start = editors.docs.values().next().unwrap().buf.version;
+        run(&ctx, &mut editors, &settings, vec![Event::Text("y".into())], 1.1);
+        let doc = editors.docs.values().next().unwrap();
+        assert!(doc.buf.version != start && doc.lang.synced == doc.buf.version);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn suggestion_list_shows_the_configured_number_of_rows() {
+        let ctx = egui::Context::default();
+        let mut settings = Settings::default();
+        assert_eq!(settings.suggest_rows, 5);
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        run(&ctx, &mut editors, &settings, vec![], 1.0);
+        let item = |i: usize| {
+            let label = format!("item{i:02}");
+            Completion { label: label.clone(), detail: String::new(), kind: 1, filter: label.clone(), sort: label.clone(), text: label, range: None, extra: vec![], snippet: false }
+        };
+        let height = |editors: &mut Editors, settings: &Settings, count: usize| {
+            let doc = editors.groups[0].tabs[0].doc;
+            let items = (0..count).map(item).collect();
+            editors.intel.suggest = Some(Suggest { doc, start: 0, items, shown: vec![], selected: 0, prefix: None, incomplete: false, dot: true, reveal: true });
+            run(&ctx, editors, settings, vec![], 3.0);
+            run(&ctx, editors, settings, vec![], 3.0);
+            editors.intel.rects[0].height()
+        };
+        let two = height(&mut editors, &settings, 2);
+        let five = height(&mut editors, &settings, 30);
+        assert_eq!(five - two, 3.0 * 22.0);
+        settings.suggest_rows = 8;
+        assert_eq!(height(&mut editors, &settings, 30) - five, 3.0 * 22.0);
+        settings.suggest_rows = 99;
+        assert_eq!(height(&mut editors, &settings, 30) - five, 15.0 * 22.0);
+        let old: Settings = serde_json::from_str(r#"{"theme":"light"}"#).unwrap();
+        assert_eq!(old.suggest_rows, 5);
     }
 }
