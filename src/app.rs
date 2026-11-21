@@ -428,7 +428,7 @@ impl Halo {
                 }
                 let full = ui.available_rect_before_wrap();
                 let symbols = self.editors.outline();
-                let height = if self.session.outline && symbols.is_some() { (full.height() * 0.4).max(24.0) } else { 24.0 };
+                let height = if self.session.outline { (full.height() * 0.4).max(24.0) } else { 24.0 };
                 let split = full.bottom() - height;
                 ui.scope_builder(UiBuilder::new().max_rect(full.with_max_y(split)), |ui| {
                     ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
@@ -436,7 +436,8 @@ impl Halo {
                 });
                 ui.scope_builder(UiBuilder::new().max_rect(full.with_min_y(split)), |ui| {
                     ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                    outline(ui, &self.theme, symbols, self.editors.outline_loading(), &mut self.session.outline, &mut self.cmds);
+                    let active = !self.editors.is_empty();
+                    outline(ui, &self.theme, symbols, active, self.editors.outline_loading(), &mut self.session.outline, &mut self.cmds);
                 });
             });
         self.session.sidebar = open;
@@ -719,22 +720,28 @@ fn strip_unc(path: PathBuf) -> PathBuf {
     }
 }
 
-fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>, loading: bool, open: &mut bool, cmds: &mut Vec<Command>) {
+pub fn note(ui: &mut Ui, theme: &Theme, text: &str) {
+    Frame::new().inner_margin(egui::Margin::symmetric(14, 5)).show(ui, |ui| {
+        ui.add(egui::Label::new(RichText::new(text).size(12.0).color(theme.text_dim)).truncate());
+    });
+}
+
+fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>, active: bool, loading: bool, open: &mut bool, cmds: &mut Vec<Command>) {
     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
-    let painter = ui.painter().with_clip_rect(rect);
-    painter.rect_filled(rect, CornerRadius::ZERO, ui::mix(theme.panel, theme.bar, 0.5));
-    painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, theme.border));
-    let caret = if *open && symbols.is_some() { icons::CARET_DOWN } else { icons::CARET_RIGHT };
-    painter.text(pos2(rect.left() + 12.0, rect.center().y), Align2::CENTER_CENTER, caret, FontId::proportional(10.0), theme.text);
-    painter.text(pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, "OUTLINE", FontId::proportional(11.5), theme.text);
+    let rect = ui::section(ui, theme, "OUTLINE", open).on_hover_text("Symbols of the active file, from its language server").rect;
     if loading {
         ui::spinner(ui, pos2(rect.right() - 14.0, rect.center().y), 5.0, theme.text_dim);
     }
-    if resp.on_hover_text("Symbols of the active file, from its language server").clicked() {
-        *open ^= true;
+    if !*open {
+        return;
     }
-    let Some((symbols, line)) = symbols.filter(|_| *open) else { return };
+    let Some((symbols, line)) = symbols else {
+        return match (active, loading) {
+            (false, _) => note(ui, theme, "No active editor."),
+            (true, true) => ui::skeleton(ui, theme, 4),
+            _ => note(ui, theme, "No symbols found in this file."),
+        };
+    };
     let current = symbols.iter().rposition(|s| s.line <= line && line <= s.end_line);
     ScrollArea::vertical().id_salt("outline").auto_shrink(false).show(ui, |ui| {
         for (index, symbol) in symbols.iter().enumerate() {
