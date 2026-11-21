@@ -487,23 +487,45 @@ impl Session {
         read(&Self::path()).unwrap_or_default()
     }
 
-    pub fn save(&self) {
-        if !crate::windows::secondary() {
-            write(&Self::path(), self);
+    pub fn save(&mut self) {
+        if crate::windows::secondary() {
+            return;
+        }
+        if Self::shares_recent() {
+            let disk = Self::load();
+            (self.recent, self.recent_files) = (disk.recent, disk.recent_files);
+        }
+        write(&Self::path(), self);
+    }
+
+    fn shares_recent() -> bool {
+        !cfg!(test) && std::env::var_os("HALO_COMMANDS").is_none()
+    }
+
+    // every window writes its recents straight to disk so the jump list and other windows see them
+    fn update_recent(&mut self, update: impl Fn(&mut Session)) {
+        update(self);
+        if Self::shares_recent() {
+            let mut disk = Self::load();
+            update(&mut disk);
+            (self.recent, self.recent_files) = (disk.recent.clone(), disk.recent_files.clone());
+            write(&Self::path(), &disk);
         }
     }
 
     pub fn remember(&mut self, folder: &Path) {
-        self.recent.retain(|p| p != folder);
-        self.recent.insert(0, folder.to_path_buf());
-        self.recent.truncate(10);
+        self.update_recent(|s| push_recent(&mut s.recent, folder));
     }
 
     pub fn remember_file(&mut self, file: &Path) {
-        self.recent_files.retain(|p| p != file);
-        self.recent_files.insert(0, file.to_path_buf());
-        self.recent_files.truncate(10);
+        self.update_recent(|s| push_recent(&mut s.recent_files, file));
     }
+}
+
+fn push_recent(list: &mut Vec<PathBuf>, path: &Path) {
+    list.retain(|p| p != path);
+    list.insert(0, path.to_path_buf());
+    list.truncate(10);
 }
 
 #[cfg(test)]

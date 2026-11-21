@@ -852,7 +852,7 @@ impl Halo {
         }
         if self.jump.as_ref().is_none_or(|(folders, files)| *folders != self.session.recent || *files != self.session.recent_files) {
             let jump = (self.session.recent.clone(), self.session.recent_files.clone());
-            if !crate::windows::secondary() && std::env::var_os("HALO_COMMANDS").is_none() && !cfg!(test) {
+            if std::env::var_os("HALO_COMMANDS").is_none() && !cfg!(test) {
                 crate::jumplist::update(jump.0.clone(), jump.1.clone());
             }
             self.jump = Some(jump);
