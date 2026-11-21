@@ -39,6 +39,7 @@ enum Action {
     Pr(Vec<String>),
     ReviewPr(u64, bool),
     NewPr,
+    LoadMore,
 }
 
 pub struct Scm {
@@ -216,6 +217,7 @@ impl Scm {
                 git.show(&hash);
                 self.commit = Some(hash);
             }
+            Some(Action::LoadMore) => git.load_more_log(),
             None => {}
         }
     }
@@ -577,6 +579,9 @@ fn graph(
                 cmds.push(Command::OpenDiff(format!("{name} ({short})"), args.map(str::to_owned).to_vec()));
             }
         }
+    }
+    if ui::list_end(ui, theme, git.log_loading()) && action.is_none() {
+        *action = Some(Action::LoadMore);
     }
 }
 

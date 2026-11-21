@@ -419,6 +419,13 @@ pub fn skeleton(ui: &mut Ui, theme: &Theme, rows: usize) {
     }
 }
 
+pub fn list_end(ui: &mut Ui, theme: &Theme, loading: bool) -> bool {
+    if loading {
+        skeleton(ui, theme, 2);
+    }
+    !loading && ui.min_rect().bottom() <= ui.clip_rect().bottom() + 200.0
+}
+
 pub fn checkbox(ui: &mut Ui, theme: &Theme, value: &mut bool, text: impl Into<egui::WidgetText>) -> Response {
     let galley = text.into().into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button);
     let label = if galley.is_empty() { 0.0 } else { 8.0 + galley.size().x };

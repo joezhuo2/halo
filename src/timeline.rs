@@ -35,6 +35,9 @@ impl Item {
     }
 }
 
+const FIRST: usize = 10;
+const PAGE: usize = 30;
+
 type Loaded = (Option<PathBuf>, Vec<Item>);
 
 #[derive(Default)]
@@ -42,8 +45,14 @@ pub struct Timeline {
     loaded: bool,
     path: Option<PathBuf>,
     entries: Option<Loaded>,
-    rx: Option<Receiver<Loaded>>,
+    rx: Option<Receiver<(Loaded, bool)>>,
+    more: bool,
     delete: Option<PathBuf>,
+}
+
+fn fetch(dir: &Path, name: &str, skip: usize, count: usize) -> Result<Vec<Entry>, String> {
+    let (skip, n) = (format!("--skip={skip}"), count.to_string());
+    crate::git::exec(dir, &["log", "--follow", "--name-only", &skip, "-n", &n, FORMAT, "--", name]).map(|text| parse(&text))
 }
 
 pub fn parse(text: &str) -> Vec<Entry> {
@@ -77,7 +86,7 @@ impl Timeline {
     }
 
     fn load(&mut self, path: Option<&Path>, ctx: &egui::Context, delete: Option<PathBuf>) {
-        (self.loaded, self.path, self.entries, self.rx) = (true, path.map(Path::to_path_buf), Some((None, vec![])), None);
+        (self.loaded, self.path, self.entries, self.rx, self.more) = (true, path.map(Path::to_path_buf), Some((None, vec![])), None, false);
         let Some((file, dir, name)) = path.and_then(|p| Some((p.to_path_buf(), p.parent()?.to_path_buf(), p.file_name()?.to_string_lossy().into_owned()))) else { return };
         let (tx, rx) = channel();
         (self.entries, self.rx) = (None, Some(rx));
@@ -86,12 +95,44 @@ impl Timeline {
             if let Some(Err(e)) = delete.map(std::fs::remove_file) {
                 ui::notify(format!("Could not delete the saved version: {e}"));
             }
-            let log = crate::git::exec(&dir, &["log", "--follow", "--name-only", "-n", "200", FORMAT, "--", &name]);
+            let log = fetch(&dir, &name, 0, FIRST);
             let saves = history::snapshots(&file).unwrap_or_default();
+            let more = log.as_ref().is_ok_and(|log| log.len() >= FIRST);
             let repo = log.is_ok().then_some(dir);
-            let _ = tx.send((repo, merge(log.map(|text| parse(&text)).unwrap_or_default(), saves)));
+            let _ = tx.send(((repo, merge(log.unwrap_or_default(), saves)), more));
             ctx.request_repaint();
         });
+    }
+
+    fn load_more(&mut self, ctx: &egui::Context) {
+        let Some((Some(dir), items)) = self.entries.as_ref().filter(|_| self.more && self.rx.is_none()) else { return };
+        let Some(name) = self.path.as_deref().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()) else { return };
+        let (dir, skip) = (dir.clone(), items.iter().filter(|item| matches!(item, Item::Commit(_))).count());
+        let (tx, rx) = channel();
+        self.rx = Some(rx);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let log = fetch(&dir, &name, skip, PAGE).unwrap_or_default();
+            let more = log.len() >= PAGE;
+            let _ = tx.send(((Some(dir), log.into_iter().map(Item::Commit).collect()), more));
+            ctx.request_repaint();
+        });
+    }
+
+    fn receive(&mut self, ((repo, page), more): (Loaded, bool)) {
+        let (_, items) = self.entries.get_or_insert((repo, vec![]));
+        items.extend(page);
+        items.sort_by_key(|item| std::cmp::Reverse(item.time()));
+        (self.rx, self.more) = (None, more);
+    }
+
+    fn shown(&self) -> &[Item] {
+        let items = self.entries.as_ref().map_or(&[][..], |(_, items)| items);
+        let oldest = items.iter().filter(|item| matches!(item, Item::Commit(_))).map(Item::time).min();
+        match oldest.filter(|_| self.more) {
+            Some(oldest) => &items[..items.partition_point(|item| item.time() >= oldest)],
+            None => items,
+        }
     }
 
     pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, active: Option<&Path>, open: &mut bool, cmds: &mut Vec<Command>) {
@@ -108,16 +149,18 @@ impl Timeline {
                 self.load(active, ui.ctx(), None);
             }
         }
-        if let Some(entries) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            (self.entries, self.rx) = (Some(entries), None);
+        if let Some(page) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.receive(page);
         }
         let Some(file) = active else { return note(ui, theme, "No active editor.") };
-        let Some((repo, items)) = &self.entries else { return ui::skeleton(ui, theme, 4) };
+        let Some((repo, _)) = &self.entries else { return ui::skeleton(ui, theme, 4) };
+        let items = self.shown();
         if items.is_empty() {
             return note(ui, theme, if repo.is_some() { "No commits changed this file yet." } else { "This file is not in a Git repository." });
         }
         let name = history::name(file);
         let mut delete = None;
+        let mut end = false;
         ScrollArea::vertical().id_salt("timeline").auto_shrink(false).show(ui, |ui| {
             for item in items {
                 let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
@@ -174,7 +217,11 @@ impl Timeline {
                     }
                 });
             }
+            end = ui::list_end(ui, theme, self.rx.is_some());
         });
+        if end {
+            self.load_more(ui.ctx());
+        }
         self.delete = delete.or(self.delete.take());
     }
 
@@ -234,5 +281,75 @@ mod tests {
         let times: Vec<u64> = items.iter().map(Item::time).collect();
         assert_eq!(times, [1796000000, 1795000000, 1794000000, 1793000000]);
         assert_eq!(items[0], Item::Saved(1796000000, "t".into()));
+    }
+
+    fn commit(time: u64) -> Entry {
+        Entry { hash: format!("h{time}"), author: "a".into(), ago: String::new(), date: String::new(), time, subject: format!("c{time}"), name: "f".into() }
+    }
+
+    #[test]
+    fn pages_keep_the_merged_order() {
+        let mut t = Timeline::default();
+        let saves = vec![(95_000_000_000, "s95".into()), (50_000_000_000, "s50".into())];
+        t.receive(((Some("repo".into()), merge((91..=100).rev().map(commit).collect(), saves)), true));
+        let times = |t: &Timeline| t.shown().iter().map(Item::time).collect::<Vec<_>>();
+        assert_eq!(times(&t), [100, 99, 98, 97, 96, 95, 95, 94, 93, 92, 91]);
+        t.receive(((Some("repo".into()), (60..=90).rev().map(|n| Item::Commit(commit(n))).collect()), true));
+        assert_eq!((t.shown().len(), t.shown().last().map(Item::time)), (42, Some(60)));
+        t.receive(((Some("repo".into()), vec![Item::Commit(commit(40))]), false));
+        assert_eq!(times(&t)[41..], [60, 50, 40]);
+        assert!(t.rx.is_none() && !t.more);
+        t.load(None, &egui::Context::default(), None);
+        assert_eq!((t.shown().len(), t.more), (0, false));
+    }
+
+    #[test]
+    fn follows_a_file_page_by_page() {
+        let dir = std::env::temp_dir().join(format!("halo-timeline-page-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| crate::git::exec(&dir, args).unwrap();
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        for n in 0..25 {
+            std::fs::write(dir.join("a.txt"), n.to_string()).unwrap();
+            git(&["add", "a.txt"]);
+            git(&["commit", "-q", "-m", &format!("c{n}")]);
+        }
+        let subjects = |log: Vec<Entry>| log.into_iter().map(|e| e.subject).collect::<Vec<_>>();
+        let first = subjects(fetch(&dir, "a.txt", 0, FIRST).unwrap());
+        assert_eq!(first, (15..25).rev().map(|n| format!("c{n}")).collect::<Vec<_>>());
+        let next = subjects(fetch(&dir, "a.txt", FIRST, PAGE).unwrap());
+        assert_eq!(next, (0..15).rev().map(|n| format!("c{n}")).collect::<Vec<_>>());
+        assert!(next.len() < PAGE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn headless_scrolling_to_the_end_requests_the_next_page() {
+        use egui::{Event, MouseWheelUnit, RawInput};
+        let mut t = Timeline { loaded: true, path: Some("missing/a.txt".into()), more: true, ..Default::default() };
+        t.entries = Some((Some("missing".into()), (1..=30).rev().map(|n| Item::Commit(commit(n))).collect()));
+        let (ctx, theme) = (egui::Context::default(), Theme::dark());
+        let mut time = 0.0;
+        let mut run = |t: &mut Timeline, events: Vec<Event>| {
+            time += 0.1;
+            let input = RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 260.0))), time: Some(time), events, ..Default::default() };
+            ctx.run_ui(input, |ui| t.ui(ui, &theme, Some(Path::new("missing/a.txt")), &mut true, &mut vec![])).textures_delta.clear();
+        };
+        run(&mut t, vec![]);
+        run(&mut t, vec![]);
+        assert!(t.rx.is_none());
+        let mut requested = false;
+        for _ in 0..20 {
+            let wheel = Event::MouseWheel { unit: MouseWheelUnit::Point, delta: vec2(0.0, -400.0), modifiers: Default::default(), phase: egui::TouchPhase::Move };
+            run(&mut t, vec![Event::PointerMoved(pos2(150.0, 150.0)), wheel]);
+            if t.rx.is_some() {
+                requested = true;
+                break;
+            }
+        }
+        assert!(requested);
     }
 }

@@ -1034,8 +1034,8 @@ pub(crate) fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol
         };
     };
     let current = symbols.iter().rposition(|s| s.line <= line && line <= s.end_line);
-    ScrollArea::vertical().id_salt("outline").auto_shrink(false).show(ui, |ui| {
-        for (index, symbol) in symbols.iter().enumerate() {
+    ScrollArea::vertical().id_salt("outline").auto_shrink(false).show_rows(ui, 22.0, symbols.len(), |ui, range| {
+        for (index, symbol) in symbols.iter().enumerate().skip(range.start).take(range.len()) {
             let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
             ui::row_bg(ui, theme, r, row.id, row.hovered(), current == Some(index));
             ui::tree_item(ui, &row, &symbol.name, current == Some(index), symbol.depth, None);

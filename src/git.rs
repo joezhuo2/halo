@@ -86,6 +86,7 @@ struct Status {
     tracking: Option<(usize, usize)>,
     branches: Vec<String>,
     log: Vec<Commit>,
+    more: bool,
     staged: Vec<Change>,
     unstaged: Vec<Change>,
     files: HashMap<String, FileState>,
@@ -101,6 +102,7 @@ enum Msg {
     Files(String, Vec<Change>),
     Text(String, String),
     Prs(PathBuf, Result<Vec<Pr>, String>),
+    Page(u64, Vec<Commit>),
 }
 
 pub struct Git {
@@ -126,6 +128,8 @@ pub struct Git {
     busy: bool,
     error: Option<String>,
     diffs: RefCell<HashMap<PathBuf, (Option<LineChanges>, bool)>>,
+    page: u64,
+    paging: bool,
 }
 
 pub fn run(dir: &Path, args: &[&str]) -> Option<String> {
@@ -292,6 +296,11 @@ fn parse_log(text: &str) -> Vec<Commit> {
             })
         })
         .collect();
+    lay_out(&mut commits);
+    commits
+}
+
+fn lay_out(commits: &mut [Commit]) {
     let mut lanes: Vec<Option<String>> = vec![];
     let free = |lanes: &mut Vec<Option<String>>| {
         lanes.iter().position(Option::is_none).unwrap_or_else(|| {
@@ -299,7 +308,8 @@ fn parse_log(text: &str) -> Vec<Commit> {
             lanes.len() - 1
         })
     };
-    for commit in &mut commits {
+    for commit in commits {
+        commit.down.clear();
         let waiting: Vec<usize> = (0..lanes.len()).filter(|i| lanes[*i].as_deref() == Some(&commit.hash)).collect();
         commit.col = waiting.first().copied().unwrap_or_else(|| free(&mut lanes));
         commit.through = (0..lanes.len()).filter(|i| lanes[*i].is_some() && !waiting.contains(i)).collect();
@@ -316,7 +326,15 @@ fn parse_log(text: &str) -> Vec<Commit> {
             commit.down.push(lane);
         }
     }
-    commits
+}
+
+const LOG_FIRST: usize = 10;
+const LOG_PAGE: usize = 30;
+
+fn log_page(root: &Path, upstream: bool, skip: usize, count: usize) -> Vec<Commit> {
+    let (skip, count) = (format!("--skip={skip}"), count.to_string());
+    let log = ["log", "--topo-order", &skip, "-n", &count, LOG_FORMAT, "HEAD", "@{upstream}"];
+    parse_log(&run(root, &log[..7 + upstream as usize]).or_else(|| run(root, &log[..7])).unwrap_or_default())
 }
 
 fn parse_name_status(text: &str) -> Vec<Change> {
@@ -363,15 +381,14 @@ fn find_repos(folder: &Path) -> (Vec<PathBuf>, bool) {
     (repos, own)
 }
 
-fn load_status(root: &Path, details: bool) -> Option<Status> {
+fn load_status(root: &Path, details: bool, count: usize) -> Option<Status> {
     let top = crate::wsl::local(root, run(root, &["rev-parse", "--show-toplevel"])?.trim());
     let text = run(root, &["--no-optional-locks", "status", "--porcelain=v1", "-z", "--branch", "--ignored"])?;
     let (branch, tracking, entries) = parse_status(&text);
     let branches = run(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]).unwrap_or_default();
     let branches = branches.lines().map(str::to_owned).collect();
-    let log = ["log", "--topo-order", "-n", "200", LOG_FORMAT, "HEAD", "@{upstream}"];
-    let log = run(root, &log[..5 + tracking.map_or(1, |_| 2)]).or_else(|| run(root, &log[..6])).unwrap_or_default();
-    let log = parse_log(&log);
+    let log = log_page(root, tracking.is_some(), 0, count);
+    let more = log.len() >= count;
     let branch = branch
         .or_else(|| run(root, &["rev-parse", "--short", "HEAD"]).map(|s| s.trim().to_owned()))
         .unwrap_or_default();
@@ -403,7 +420,7 @@ fn load_status(root: &Path, details: bool) -> Option<Status> {
         files.insert(full, state);
     }
     let details = details.then(|| ops::load(&top));
-    Some(Status { details, top, branch, tracking, branches, log, staged, unstaged, files, folders })
+    Some(Status { details, top, branch, tracking, branches, log, more, staged, unstaged, files, folders })
 }
 
 impl Git {
@@ -432,6 +449,8 @@ impl Git {
             busy: false,
             error: None,
             diffs: RefCell::new(HashMap::new()),
+            page: 0,
+            paging: false,
         }
     }
 
@@ -469,6 +488,7 @@ impl Git {
     pub fn select(&mut self, root: Option<PathBuf>, ctx: &egui::Context) {
         self.root = root;
         self.status = None;
+        (self.page, self.paging) = (self.page + 1, false);
         self.repo_name = None;
         self.shown = None;
         self.prs = None;
@@ -506,6 +526,24 @@ impl Git {
 
     pub fn log(&self) -> &[Commit] {
         self.status.as_ref().map(|s| s.log.as_slice()).unwrap_or_default()
+    }
+
+    pub fn log_loading(&self) -> bool {
+        self.paging
+    }
+
+    pub fn load_more_log(&mut self) {
+        let (Some(status), Some(ctx)) = (&self.status, &self.ctx) else { return };
+        if !status.more || self.paging {
+            return;
+        }
+        self.paging = true;
+        let (top, upstream, skip, page) = (status.top.clone(), status.tracking.is_some(), status.log.len(), self.page);
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Page(page, log_page(&top, upstream, skip, LOG_PAGE)));
+            ctx.request_repaint();
+        });
     }
 
     pub fn files(&self, hash: &str) -> Option<&[Change]> {
@@ -589,9 +627,10 @@ impl Git {
         }
         self.running = true;
         let details = self.details_requested;
+        let count = self.log().len().max(LOG_FIRST);
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let status = load_status(&root, details);
+            let status = load_status(&root, details, count);
             let _ = tx.send(Msg::Status(root, status));
             ctx.request_repaint();
         });
@@ -610,6 +649,7 @@ impl Git {
                             .and_then(|s| s.top.file_name())
                             .map(|n| n.to_string_lossy().into_owned());
                         self.status = status;
+                        (self.page, self.paging) = (self.page + 1, false);
                         // keep the old marks on screen until the new diff arrives so the gutter does not flash
                         self.diffs.borrow_mut().values_mut().for_each(|d| d.1 = false);
                     }
@@ -636,6 +676,15 @@ impl Git {
                         self.followed = None;
                     }
                 }
+                Msg::Page(page, commits) if page == self.page => {
+                    self.paging = false;
+                    if let Some(status) = &mut self.status {
+                        status.more = commits.len() >= LOG_PAGE;
+                        status.log.extend(commits);
+                        lay_out(&mut status.log);
+                    }
+                }
+                Msg::Page(..) => {}
                 Msg::Files(hash, files) => self.shown = Some((hash, files)),
                 Msg::Text(title, text) => self.texts.push((title, text)),
                 Msg::Prs(top, prs) => {
@@ -915,13 +964,13 @@ mod tests {
         std::fs::create_dir_all(dir.join("out")).unwrap();
         std::fs::write(dir.join("out/o.bin"), "x").unwrap();
 
-        let status = load_status(&dir.join("sub"), false).unwrap();
+        let status = load_status(&dir.join("sub"), false, 10).unwrap();
         assert_eq!(status.branch, "trunk");
         let paths = |list: &[Change]| list.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
         assert!(status.staged.is_empty());
         assert_eq!(paths(&status.unstaged), ["sub/a.txt", "new.txt"]);
         git(&["add", "-A", "--", "new.txt"]);
-        let staged = load_status(&dir, false).unwrap();
+        let staged = load_status(&dir, false, 10).unwrap();
         assert_eq!(staged.staged, [Change { path: "new.txt".into(), state: FileState::Added }]);
         assert_eq!(paths(&staged.unstaged), ["sub/a.txt"]);
         git(&["reset", "-q", "--", "new.txt"]);
@@ -938,7 +987,40 @@ mod tests {
         assert_eq!(parse_diff(&diff), vec![(1, LineChange::Modified), (2, LineChange::Modified)]);
         let marked = mark_staged(parse_diff(&diff), &[(2, LineChange::Modified)]);
         assert_eq!(marked, vec![(1, LineChange::Modified, true), (2, LineChange::Modified, false)]);
-        assert!(load_status(&std::env::temp_dir(), false).is_none() || std::env::temp_dir().join(".git").exists());
+        assert!(load_status(&std::env::temp_dir(), false, 10).is_none() || std::env::temp_dir().join(".git").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pages_the_commit_log() {
+        let dir = std::env::temp_dir().join(format!("halo-git-page-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| exec(&dir, args).unwrap();
+        git(&["init", "-q", "-b", "trunk"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        for n in 0..25 {
+            git(&["commit", "-q", "--allow-empty", "-m", &format!("c{n}")]);
+        }
+        let subjects = |log: &[Commit]| log.iter().map(|c| c.subject.clone()).collect::<Vec<_>>();
+        let names = |range: std::ops::Range<usize>| range.rev().map(|n| format!("c{n}")).collect::<Vec<_>>();
+        let status = load_status(&dir, false, LOG_FIRST).unwrap();
+        assert_eq!((subjects(&status.log), status.more), (names(15..25), true));
+        let next = log_page(&dir, false, LOG_FIRST, LOG_PAGE);
+        assert_eq!(subjects(&next), names(0..15));
+
+        let mut g = Git::new();
+        (g.status, g.page, g.paging) = (Some(status), 5, true);
+        g.tx.send(Msg::Page(4, next.clone())).unwrap();
+        g.poll();
+        assert_eq!((g.log().len(), g.paging), (10, true));
+        g.tx.send(Msg::Page(5, next)).unwrap();
+        g.poll();
+        assert_eq!((subjects(g.log()), g.paging), (names(0..25), false));
+        assert!(!g.status.as_ref().unwrap().more && g.log().iter().all(|c| c.col == 0 && c.through.is_empty()));
+        g.select(None, &egui::Context::default());
+        assert!(g.log().is_empty() && g.page == 6);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
