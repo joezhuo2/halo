@@ -15,6 +15,7 @@ mod find;
 mod git;
 mod glob;
 mod history;
+mod ipc;
 mod jsonc;
 mod layers;
 mod icon_theme;
@@ -46,7 +47,7 @@ mod wsl;
 use eframe::egui;
 
 fn main() -> eframe::Result {
-    let _args = match cli::parse(std::env::args().skip(1), &|p| p.exists()) {
+    let mut args = match cli::parse(std::env::args().skip(1), &|p| p.exists()) {
         Ok(cli::Parsed::Run(args)) => args,
         Ok(cli::Parsed::Help) => exit(cli::HELP, 0),
         Ok(cli::Parsed::Version) => exit(&cli::version(), 0),
@@ -55,7 +56,13 @@ fn main() -> eframe::Result {
             exit(cli::HELP, 2)
         }
     };
+    cli::resolve(&mut args);
     let test = std::env::var_os("HALO_COMMANDS").is_some();
+    let dir = settings::dir();
+    if !test && !args.new_window && ipc::send(&dir, &args).is_ok() {
+        return Ok(());
+    }
+    let server = if test { None } else { ipc::listen(&dir).ok().flatten() };
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Halo")
         .with_app_id("halo")
@@ -74,7 +81,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Halo",
         options,
-        Box::new(|cc| Ok(Box::new(app::Halo::new(cc)))),
+        Box::new(|cc| Ok(Box::new(app::Halo::new(cc, args, server)))),
     )
 }
 

@@ -63,10 +63,12 @@ pub struct Halo {
     pub updated: Option<String>,
     pub debug: crate::debug::Debug,
     pub testing: crate::testing::Testing,
+    pub inbox: Option<std::sync::mpsc::Receiver<crate::ipc::Request>>,
+    pub waits: Vec<crate::ipc::Wait>,
 }
 
 impl Halo {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, mut args: crate::cli::Args, server: Option<crate::ipc::Server>) -> Self {
         let ctx = &cc.egui_ctx;
         let settings = Settings::load();
         ctx.set_fonts(crate::theme::fonts(&settings.font_family, &settings.terminal_font_family));
@@ -113,20 +115,22 @@ impl Halo {
             updated: None,
             debug: Default::default(),
             testing: Default::default(),
+            inbox: None,
+            waits: vec![],
         };
         app.editors.config = app.settings.clone();
         if app.settings.auto_update && !cfg!(debug_assertions) && std::env::var_os("HALO_COMMANDS").is_none() {
             app.update = Some(crate::update::start(ctx));
         }
 
-        let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().or_else(|_| std::path::absolute(&p)).ok()).map(strip_unc);
+        let arg = args.paths.iter().position(|t| t.path.is_dir()).map(|i| args.paths.remove(i).path);
         let restore = app.settings.restore_session;
         let last = app.session.folder.clone().filter(|f| restore && f.is_dir());
-        let arg_is_none = arg.is_none();
+        let arg_is_none = arg.is_none() && args.paths.is_empty() && args.add.is_empty() && args.diff.is_none() && args.stdin.is_none();
         let (folder, files) = match arg {
-            Some(path) if path.is_dir() => (Some(path), vec![]),
-            Some(path) => (last, vec![path]),
-            None => (last, if restore { app.session.files.clone() } else { vec![] }),
+            Some(path) => (Some(path), vec![]),
+            None if arg_is_none && restore => (last, app.session.files.clone()),
+            None => (last, vec![]),
         };
         let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
         app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
@@ -141,6 +145,9 @@ impl Halo {
             }
         }
         app.editors.restore(&app.session.backups);
+        app.open_args(args, None, ctx);
+        let wake = ctx.clone();
+        app.inbox = server.map(|server| crate::ipc::serve(server, move || wake.request_repaint()));
         app
     }
 
@@ -823,6 +830,7 @@ impl eframe::App for Halo {
             self.timeline.reload();
         }
         self.poll_compare(&ctx);
+        self.poll_ipc(&ctx);
         self.poll_imports();
         if self.accounts.poll() {
             self.git.refresh_prs();
