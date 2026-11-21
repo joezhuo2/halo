@@ -177,6 +177,7 @@ impl Halo {
         self.reload_settings(ctx);
         self.explorer.set_roots(workspace.roots(), workspace.names(), workspace.name().filter(|_| workspace.is_multi()));
         self.editors.set_root(folder.clone());
+        self.editors.lsp.set_folders(workspace.roots().into_iter().zip(workspace.names()).collect());
         self.git.set_roots(workspace.roots(), ctx);
         self.session.folder = folder;
         self.session.workspace = workspace;
