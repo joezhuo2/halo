@@ -104,7 +104,7 @@ impl Halo {
         app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
         app.set_folder(folder, ctx);
         for file in files.iter().filter(|f| f.is_file()) {
-            app.editors.open(file);
+            app.editors.open_kept(file);
         }
         app
     }

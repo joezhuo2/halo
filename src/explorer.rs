@@ -604,6 +604,9 @@ impl Explorer {
                         painter.text(pos2(rect.right() - 14.0, y), Align2::CENTER_CENTER, badge, FontId::proportional(11.5), color);
                     }
 
+                    if resp.double_clicked() && !row.is_dir {
+                        cmds.push(Command::KeepEditor);
+                    }
                     if resp.clicked() {
                         bg.request_focus();
                         *action = Some(if row.is_dir { Action::Toggle(row.path.clone()) } else { Action::Open(row.path.clone()) });

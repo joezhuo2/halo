@@ -340,6 +340,7 @@ pub(super) struct Intel {
     saving: Option<(u64, f64)>,
     saved: bool,
     history: Vec<(PathBuf, usize)>,
+    future: Vec<(PathBuf, usize)>,
     rects: Vec<Rect>,
     last_rects: Vec<Rect>,
     pub queued: Vec<Queued>,
@@ -638,22 +639,24 @@ impl Editors {
         self.docs.iter().find(|(_, d)| d.buf.path.as_deref().is_some_and(|p| lsp::key(p) == wanted)).map(|(id, _)| *id)
     }
 
-    fn remember(&mut self) {
-        let Some((g, t)) = self.active_tab() else { return };
+    fn here(&self) -> Option<(PathBuf, usize)> {
+        let (g, t) = self.active_tab()?;
         let tab = &self.groups[g].tabs[t];
-        if let Some(path) = self.docs.get(&tab.doc).and_then(|d| d.buf.path.clone()) {
-            self.intel.history.push((path, tab.sels.first().map_or(0, |s| s.head)));
-            if self.intel.history.len() > 60 {
-                self.intel.history.remove(0);
-            }
+        Some((self.docs.get(&tab.doc)?.buf.path.clone()?, tab.sels.first().map_or(0, |s| s.head)))
+    }
+
+    pub(super) fn remember(&mut self) {
+        let Some(here) = self.here() else { return };
+        self.intel.future.clear();
+        if self.intel.history.last() != Some(&here) {
+            self.intel.history.push(here);
+            let extra = self.intel.history.len().saturating_sub(60);
+            self.intel.history.drain(..extra);
         }
     }
 
     fn show_path(&mut self, path: &Path) {
-        match self.find_doc(path) {
-            Some(id) => self.show_doc(id),
-            None => self.open(path),
-        }
+        self.open_as(path, true);
     }
 
     fn jump(&mut self, path: &Path, at: Pos, record: bool) {
@@ -764,8 +767,12 @@ impl Editors {
 
     pub(super) fn intel_exec(&mut self, cmd: &Command, settings: &Settings, ctx: &egui::Context) -> bool {
         use Command::*;
-        if *cmd == GoBack {
-            if let Some((path, pos)) = self.intel.history.pop() {
+        if matches!(cmd, GoBack | GoForward) {
+            let here = self.here();
+            let intel = &mut self.intel;
+            let (from, to) = if *cmd == GoBack { (&mut intel.history, &mut intel.future) } else { (&mut intel.future, &mut intel.history) };
+            if let Some((path, pos)) = from.pop() {
+                to.extend(here);
                 self.show_path(&path);
                 self.with_active(|_, tab| tab.sels = vec![Sel::caret(pos)]);
             }

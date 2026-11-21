@@ -61,6 +61,7 @@ struct Tab {
     drag_anchor: Option<usize>,
     pinned: bool,
     rows: (u64, Vec<u32>),
+    preview: bool,
     box_anchor: Option<usize>,
     snippet: Option<snippet::Session>,
     grown: Vec<(Vec<Sel>, Vec<Sel>)>,
@@ -72,6 +73,7 @@ struct Tab {
 struct Group {
     tabs: Vec<Tab>,
     active: usize,
+    recent: Vec<u64>,
 }
 
 #[derive(Default)]
@@ -94,6 +96,7 @@ struct Find {
 enum TabAction {
     Activate(usize),
     Close(usize),
+    Keep(usize),
     CloseOthers(usize),
     CloseAll,
     CopyPath(usize),
@@ -126,6 +129,8 @@ pub struct Editors {
     pub lsp: Lsp,
     root: Option<PathBuf>,
     intel: Intel,
+    closed: Vec<PathBuf>,
+    switcher: Option<(usize, usize)>,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -412,6 +417,8 @@ impl Editors {
             lsp: Lsp::default(),
             root: None,
             intel: Intel::default(),
+            closed: vec![],
+            switcher: None,
         }
     }
 
@@ -451,6 +458,17 @@ impl Editors {
     }
 
     pub fn open(&mut self, path: &Path) {
+        if self.active_path().as_deref() != Some(path) {
+            self.remember();
+        }
+        self.open_as(path, true);
+    }
+
+    pub fn open_kept(&mut self, path: &Path) {
+        self.open_as(path, false);
+    }
+
+    fn open_as(&mut self, path: &Path, preview: bool) {
         self.active = self.active.min(self.groups.len() - 1);
         if let Some(id) = self.find_doc(path) {
             return self.show_doc(id);
@@ -458,10 +476,46 @@ impl Editors {
         match Document::load(path) {
             Ok(buf) => {
                 let id = self.insert_doc(buf);
-                self.add_tab(id, vec![Sel::caret(0)]);
+                self.place(id, preview);
             }
             Err(error) => self.banner = Some(error),
         }
+    }
+
+    fn place(&mut self, id: u64, preview: bool) {
+        let group = &mut self.groups[self.active];
+        let clean = |tab: &Tab| tab.preview && !self.docs.get(&tab.doc).is_some_and(|d| d.buf.is_dirty());
+        let Some(at) = group.tabs.iter().position(clean).filter(|_| preview) else {
+            self.add_tab(id, vec![Sel::caret(0)]);
+            self.groups[self.active].tabs.last_mut().into_iter().for_each(|tab| tab.preview = preview);
+            return;
+        };
+        let fresh = Tab { doc: id, sels: vec![Sel::caret(0)], preview: true, ..Default::default() };
+        let old = std::mem::replace(&mut group.tabs[at], fresh).doc;
+        group.active = at;
+        self.want_focus = true;
+        self.drop_doc(old);
+    }
+
+    fn drop_doc(&mut self, doc: u64) {
+        if self.references(doc) == 0
+            && let Some(path) = self.docs.remove(&doc).and_then(|d| d.buf.path)
+        {
+            self.lsp.close(&path);
+            self.closed.retain(|p| *p != path);
+            self.closed.push(path);
+            let extra = self.closed.len().saturating_sub(30);
+            self.closed.drain(..extra);
+        }
+    }
+
+    fn recent_order(&self, g: usize) -> Vec<u64> {
+        let Some(group) = self.groups.get(g) else { return vec![] };
+        let open = |doc: &u64| group.tabs.iter().any(|tab| tab.doc == *doc);
+        let mut order: Vec<u64> = group.recent.iter().copied().filter(open).collect();
+        let rest: Vec<u64> = group.tabs.iter().map(|tab| tab.doc).filter(|doc| !order.contains(doc)).collect();
+        order.extend(rest);
+        order
     }
 
     fn show_doc(&mut self, id: u64) {
@@ -471,7 +525,7 @@ impl Editors {
                 group.active = t;
                 self.want_focus = true;
             }
-            None => self.add_tab(id, vec![Sel::caret(0)]),
+            None => self.place(id, true),
         }
     }
 
@@ -527,11 +581,7 @@ impl Editors {
         if group.active >= t && group.active > 0 {
             group.active -= 1;
         }
-        if self.references(doc) == 0
-            && let Some(path) = self.docs.remove(&doc).and_then(|d| d.buf.path)
-        {
-            self.lsp.close(&path);
-        }
+        self.drop_doc(doc);
         self.want_focus = true;
     }
 
@@ -627,6 +677,15 @@ impl Editors {
                 self.add_tab(id, vec![Sel::caret(0)]);
                 return true;
             }
+            ReopenClosed => {
+                while let Some(path) = self.closed.pop() {
+                    if path.is_file() && self.find_doc(&path).is_none() {
+                        self.open_kept(&path);
+                        break;
+                    }
+                }
+                return true;
+            }
             SaveAll => {
                 let ids: Vec<u64> = self.docs.iter().filter(|(_, d)| d.buf.is_dirty() && d.buf.path.is_some()).map(|(id, _)| *id).collect();
                 for id in ids {
@@ -662,10 +721,12 @@ impl Editors {
                 self.add_tab(doc_id, sels);
             }
             NextEditor | PrevEditor => {
-                let group = &mut self.groups[g];
-                let count = group.tabs.len();
-                group.active = if *cmd == NextEditor { (t + 1) % count } else { (t + count - 1) % count };
+                let count = self.recent_order(g).len().max(1);
+                let at = self.switcher.filter(|open| open.0 == g).map_or(0, |open| open.1);
+                self.switcher = Some((g, if *cmd == NextEditor { (at + 1) % count } else { (at + count - 1) % count }));
+                refocus = false;
             }
+            KeepEditor => self.groups[g].tabs[t].preview = false,
             Find | Replace => {
                 self.open_find(*cmd == Replace);
                 refocus = false;
@@ -682,6 +743,9 @@ impl Editors {
                 }
             }
             GoTo(line, column) => {
+                if self.groups[g].tabs[t].sels.first().is_some_and(|s| s.head > 0) {
+                    self.remember();
+                }
                 let (line, column) = (*line, *column);
                 self.with_active(|buf, tab| {
                     let line = line.clamp(1, buf.lines()) - 1;
@@ -927,6 +991,31 @@ impl Editors {
             }
         }
         self.after_views();
+        if let Some((g, at)) = self.switcher {
+            let order = self.recent_order(g);
+            if order.is_empty() || !ui.input(|i| i.modifiers.command || i.modifiers.ctrl) {
+                let doc = order.get(at.min(order.len().saturating_sub(1)));
+                if let Some(t) = doc.and_then(|doc| self.groups[g].tabs.iter().position(|tab| tab.doc == *doc)) {
+                    self.groups[g].active = t;
+                    self.active = g;
+                }
+                self.switcher = None;
+                self.want_focus = true;
+            } else {
+                let top = pos2(rect.left() + (g as f32 + 0.5) * width, rect.top() + 70.0);
+                egui::Area::new(Id::new("editor_switcher")).order(egui::Order::Foreground).pivot(Align2::CENTER_TOP).fixed_pos(top).show(ui.ctx(), |ui| {
+                    egui::Frame::new().fill(theme.raised).stroke(Stroke::new(1.0, theme.accent)).corner_radius(CornerRadius::same(6)).inner_margin(4.0).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                        for (index, doc) in order.iter().enumerate() {
+                            let (r, row) = ui.allocate_exact_size(vec2(320.0, 24.0), Sense::hover());
+                            ui::row_bg(ui, theme, r, row.id, false, index == at);
+                            let title = self.docs.get(doc).map(|d| d.buf.title.as_str()).unwrap_or_default();
+                            ui.painter().with_clip_rect(r).text(r.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(13.0), theme.text);
+                        }
+                    });
+                });
+            }
+        }
         if let Some((g, t)) = self.drag {
             let ctx = ui.ctx();
             ctx.set_cursor_icon(CursorIcon::Grabbing);
@@ -984,6 +1073,11 @@ impl Editors {
             self.groups[g].active = t;
             let mut tab = std::mem::take(&mut self.groups[g].tabs[t]);
             let doc_id = tab.doc;
+            let recent = &mut self.groups[g].recent;
+            if self.switcher.is_none() && recent.first() != Some(&doc_id) {
+                recent.retain(|doc| *doc != doc_id);
+                recent.insert(0, doc_id);
+            }
             if let Some(mut doc) = self.docs.remove(&doc_id) {
                 self.view(ui, g, body, theme, settings, git, pending, &mut doc, &mut tab);
                 self.docs.insert(doc_id, doc);
@@ -1006,10 +1100,10 @@ impl Editors {
     fn tab_strip(&mut self, ui: &mut Ui, g: usize, strip: Rect, theme: &Theme, pending: &mut Vec<Command>) {
         ui.painter().rect_filled(strip, CornerRadius::ZERO, theme.panel);
         ui.painter().hline(strip.x_range(), strip.bottom() - 0.5, Stroke::new(1.0, theme.border));
-        let infos: Vec<(String, bool, Option<PathBuf>, bool)> = self.groups[g]
+        let infos: Vec<(String, bool, Option<PathBuf>, bool, bool)> = self.groups[g]
             .tabs
             .iter()
-            .filter_map(|t| self.docs.get(&t.doc).map(|d| (d.buf.title.clone(), d.buf.is_dirty(), d.buf.path.clone(), t.pinned)))
+            .filter_map(|t| self.docs.get(&t.doc).map(|d| (d.buf.title.clone(), d.buf.is_dirty(), d.buf.path.clone(), t.pinned, t.preview)))
             .collect();
         let active = self.groups[g].active;
         let active_group = g == self.active;
@@ -1024,9 +1118,11 @@ impl Editors {
             ScrollArea::horizontal().id_salt(("editor_tabs", g)).scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    for (t, (title, dirty, path, pinned)) in infos.iter().enumerate() {
+                    for (t, (title, dirty, path, pinned, preview)) in infos.iter().enumerate() {
                         let pinned = *pinned;
-                        let galley = ui.painter().layout_no_wrap(title.clone(), FontId::proportional(13.0), Color32::PLACEHOLDER);
+                        let mut name = LayoutJob::simple_singleline(title.clone(), FontId::proportional(13.0), Color32::PLACEHOLDER);
+                        name.sections[0].format.italics = *preview && !*dirty;
+                        let galley = ui.painter().layout_job(name);
                         let (r, resp) = ui.allocate_exact_size(vec2(galley.size().x + 66.0, TAB_H), Sense::click_and_drag());
                         if resp.drag_started_by(PointerButton::Primary) {
                             self.drag = Some((g, t));
@@ -1076,6 +1172,9 @@ impl Editors {
                                 _ => TabAction::Activate(t),
                             });
                         }
+                        if resp.double_clicked() && !over_close {
+                            action = Some(TabAction::Keep(t));
+                        }
                         if resp.middle_clicked() && !pinned {
                             action = Some(TabAction::Close(t));
                         }
@@ -1122,6 +1221,12 @@ impl Editors {
                 self.want_focus = true;
             }
             Some(TabAction::Close(t)) => self.request_close(g, t),
+            Some(TabAction::Keep(t)) => {
+                self.groups[g].tabs[t].preview = false;
+                self.groups[g].active = t;
+                self.active = g;
+                self.want_focus = true;
+            }
             Some(TabAction::CloseOthers(keep)) => {
                 for t in (0..self.groups[g].tabs.len()).rev().filter(|t| *t != keep) {
                     if self.groups[g].tabs[t].pinned {
@@ -1146,6 +1251,7 @@ impl Editors {
             }
             Some(TabAction::Pin(t)) => {
                 let tab = &mut self.groups[g].tabs[t];
+                tab.preview = false;
                 tab.pinned ^= true;
                 let at = if tab.pinned { usize::MAX } else { 0 };
                 self.place_tab((g, t), g, at);
@@ -1283,6 +1389,7 @@ impl Editors {
             self.refresh_matches(doc_id, buf, tab);
         }
         folds.retain(|f| !tab.sels.iter().any(|s| (f.0 + 1..=f.1).contains(&buf.line_of(s.head))));
+        tab.preview &= !buf.is_dirty();
 
         let total = buf.lines();
         if max_cols.0 != buf.version {
@@ -2069,6 +2176,54 @@ end", "word ".repeat(100)))], &settings);
         assert!(tab.sels[0].head > 0 && tab.sels[0].head < 500);
         frame_with(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default()); rows[1] as usize], &settings);
         assert_eq!(editors.status().unwrap().line, 2);
+    }
+
+    #[test]
+    fn previews_replace_each_other_and_history_moves_both_ways() {
+        let ctx = egui::Context::default();
+        let settings = Settings { lsp: false, ..Settings::default() };
+        let dir = std::env::temp_dir().join(format!("halo-preview-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str| dir.join(name);
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(file(name), format!("{name}\nsecond\n")).unwrap();
+        }
+        let mut editors = Editors::new();
+        let titles = |e: &Editors| e.groups[0].tabs.iter().map(|t| (e.docs[&t.doc].buf.title.clone(), t.preview)).collect::<Vec<_>>();
+        editors.open(&file("a.txt"));
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        editors.open(&file("b.txt"));
+        assert_eq!(titles(&editors), vec![("b.txt".to_owned(), true)]);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![Event::Text("x".into())], &settings);
+        editors.open(&file("c.txt"));
+        assert_eq!(titles(&editors), vec![("b.txt".to_owned(), false), ("c.txt".to_owned(), true)]);
+        editors.exec(&Command::KeepEditor, &settings, &ctx);
+        editors.open(&file("a.txt"));
+        assert_eq!(titles(&editors).len(), 3);
+
+        editors.exec(&Command::GoBack, &settings, &ctx);
+        assert_eq!(editors.active_path(), Some(file("c.txt")));
+        editors.exec(&Command::GoBack, &settings, &ctx);
+        assert_eq!(editors.active_path(), Some(file("b.txt")));
+        editors.exec(&Command::GoForward, &settings, &ctx);
+        assert_eq!(editors.active_path(), Some(file("c.txt")));
+
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        editors.exec(&Command::NextEditor, &settings, &ctx);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        assert_eq!(editors.active_path(), Some(file("b.txt")));
+        editors.exec(&Command::CloseEditor, &settings, &ctx);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        editors.closing = None;
+        editors.exec(&Command::NextEditor, &settings, &ctx);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        let before = editors.active_path().unwrap();
+        editors.exec(&Command::CloseEditor, &settings, &ctx);
+        assert_eq!(titles(&editors).len(), 2);
+        editors.exec(&Command::ReopenClosed, &settings, &ctx);
+        assert_eq!((titles(&editors).len(), editors.active_path()), (3, Some(before)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
