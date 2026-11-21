@@ -55,6 +55,7 @@ pub struct Halo {
     exiting: bool,
     focused: bool,
     pub chord: Option<egui::KeyboardShortcut>,
+    auto_save_focus: (bool, bool),
     theme_fade: Option<(f64, egui::Color32)>,
     icon_dark: Option<bool>,
     update: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
@@ -100,6 +101,7 @@ impl Halo {
             exiting: false,
             focused: true,
             chord: None,
+            auto_save_focus: (false, true),
             theme_fade: None,
             icon_dark: None,
             update: None,
@@ -709,13 +711,16 @@ impl eframe::App for Halo {
         if self.page.recording.is_none() {
             self.global_shortcuts(&ctx);
         }
-        if self.settings.auto_save {
-            if self.editors.auto_save_due(ctx.input(|i| i.time)) {
-                self.editors.exec(&Command::SaveAll, &self.settings, &ctx);
-                self.git.refresh(&ctx);
-            } else if self.editors.any_dirty() {
-                ctx.request_repaint_after(std::time::Duration::from_secs(1));
-            }
+        let delay = self.settings.auto_save_delay as f64 / 1000.0;
+        let focus = (self.editors.has_focus() && self.focused, self.focused);
+        let now = ctx.input(|i| i.time);
+        let save = auto_save(&self.settings.auto_save, || self.editors.auto_save_due(now, delay), self.auto_save_focus, focus);
+        self.auto_save_focus = focus;
+        if save && self.editors.any_dirty() {
+            self.editors.exec(&Command::SaveAll, &self.settings, &ctx);
+            self.git.refresh(&ctx);
+        } else if self.settings.auto_save == "afterDelay" && self.editors.any_dirty() {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(delay.max(0.05)));
         }
 
         self.titlebar(ui);
@@ -769,6 +774,15 @@ impl eframe::App for Halo {
 
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         self.save_session();
+    }
+}
+
+fn auto_save(mode: &str, due: impl FnOnce() -> bool, was: (bool, bool), now: (bool, bool)) -> bool {
+    match mode {
+        "afterDelay" => due(),
+        "onFocusChange" => was.0 && !now.0,
+        "onWindowChange" => was.1 && !now.1,
+        _ => false,
     }
 }
 
@@ -857,5 +871,19 @@ fn resize_edges(ctx: &egui::Context, window: egui::Rect) {
     ctx.set_cursor_icon(cursor);
     if ctx.input(|i| i.pointer.primary_pressed()) {
         ctx.send_viewport_cmd(ViewportCommand::BeginResize(direction));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn auto_save_follows_the_mode() {
+        let save = |mode: &str, was, now| super::auto_save(mode, || true, was, now);
+        assert!(save("afterDelay", (true, true), (true, true)));
+        assert!(!super::auto_save("afterDelay", || false, (true, true), (true, true)));
+        assert!(save("onFocusChange", (true, true), (false, true)) && save("onFocusChange", (true, true), (false, false)));
+        assert!(!save("onFocusChange", (false, true), (false, true)) && !save("onFocusChange", (true, true), (true, true)));
+        assert!(save("onWindowChange", (true, true), (true, false)) && !save("onWindowChange", (true, true), (false, true)));
+        assert!(!save("off", (true, true), (false, false)));
     }
 }

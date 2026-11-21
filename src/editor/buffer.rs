@@ -616,15 +616,19 @@ impl Document {
         self.apply(sels, edits, if typed { Kind::Type } else { Kind::Other }, After::Carets)
     }
 
-    pub fn type_char(&mut self, sels: &mut Vec<Sel>, c: char) -> bool {
+    pub fn type_char(&mut self, sels: &mut Vec<Sel>, c: char, pairs: bool, surround: bool) -> bool {
         let at = |pos: usize| self.rope.get_char(pos);
         // shortcut: any matching closer is typed over, upgrade to tracking the inserted ones if that swallows wanted input
-        if PAIRS.iter().any(|p| p.1 == c) && sels.iter().all(|s| s.is_empty() && at(s.head) == Some(c)) {
+        if pairs && PAIRS.iter().any(|p| p.1 == c) && sels.iter().all(|s| s.is_empty() && at(s.head) == Some(c)) {
             sels.iter_mut().for_each(|s| *s = Sel::caret(s.head + 1));
             return true;
         }
         let Some(close) = PAIRS.iter().find(|p| p.0 == c).map(|p| p.1) else { return self.insert_text(sels, &c.to_string()) };
-        if sels.iter().all(|s| !s.is_empty()) {
+        let selected = sels.iter().all(|s| !s.is_empty());
+        if (selected && !surround) || (!selected && !pairs) {
+            return self.insert_text(sels, &c.to_string());
+        }
+        if selected {
             let edits = sels.iter().flat_map(|s| [(s.start(), s.start(), c.to_string()), (s.end(), s.end(), close.to_string())]).collect();
             let changed = self.apply(sels, edits, Kind::Other, After::Map);
             for s in sels.iter_mut().filter(|_| changed) {
@@ -657,7 +661,8 @@ impl Document {
         changed
     }
 
-    pub fn newline(&mut self, sels: &mut Vec<Sel>, unit: &str) -> bool {
+    pub fn newline(&mut self, sels: &mut Vec<Sel>, unit: &str, auto: &str) -> bool {
+        let (keep, smart) = (auto != "none", !matches!(auto, "none" | "keep"));
         let mut back = vec![];
         let edits: EditList = sels
             .iter()
@@ -665,11 +670,11 @@ impl Document {
                 let (start, end) = (s.start(), s.end());
                 let line = self.line_of(start);
                 let column = start - self.line_start(line);
-                let indent: String = self.rope.line(line).chars().take(column).take_while(|c| *c == ' ' || *c == '\t').collect();
+                let indent: String = self.rope.line(line).chars().take(column * keep as usize).take_while(|c| *c == ' ' || *c == '\t').collect();
                 let prev = (start > 0).then(|| self.rope.char(start - 1));
                 let next = (end < self.len()).then(|| self.rope.char(end));
-                let opens = matches!(prev, Some('{' | '(' | '[' | ':'));
-                let closes = matches!((prev, next), (Some('{'), Some('}')) | (Some('('), Some(')')) | (Some('['), Some(']')));
+                let opens = smart && matches!(prev, Some('{' | '(' | '[' | ':'));
+                let closes = smart && matches!((prev, next), (Some('{'), Some('}')) | (Some('('), Some(')')) | (Some('['), Some(']')));
                 let mut text = format!("\n{indent}");
                 if opens {
                     text.push_str(unit);
@@ -964,7 +969,7 @@ impl Document {
     }
 
     // shortcut: whitespace right before a caret is kept so auto save does not eat what is being typed
-    pub fn tidy(&mut self, sels: &mut Vec<Sel>, trim: bool, newline: bool) -> bool {
+    pub fn tidy(&mut self, sels: &mut Vec<Sel>, trim: bool, newline: bool, final_newlines: bool) -> bool {
         let mut edits: EditList = vec![];
         for line in (0..self.lines()).filter(|_| trim) {
             let end = self.line_end(line);
@@ -977,6 +982,11 @@ impl Document {
         let open = newline && self.len() > 0 && self.rope.char(self.len() - 1) != '\n';
         if open {
             edits.push((self.len(), self.len(), "\n".to_owned()));
+        }
+        let len = self.len();
+        let extra = (0..len).rev().take_while(|&i| self.rope.char(i) == '\n').count().saturating_sub(1);
+        if final_newlines && extra > 0 && !sels.iter().any(|s| s.head > len - extra) {
+            edits.push((len - extra, len, String::new()));
         }
         let changed = self.apply(sels, edits, Kind::Other, After::Map);
         let len = self.len();
@@ -1411,9 +1421,17 @@ mod tests {
 
         let mut n = doc("    if x {}");
         let mut sels = vec![Sel::caret(10)];
-        n.newline(&mut sels, "    ");
+        n.newline(&mut sels, "    ", "full");
         assert_eq!(n.rope.to_string(), "    if x {\n        \n    }");
         assert_eq!(sels[0].head, 19);
+        let mut k = doc("    if x {}");
+        let mut sels = vec![Sel::caret(10)];
+        k.newline(&mut sels, "    ", "keep");
+        assert_eq!(k.rope.to_string(), "    if x {\n    }");
+        let mut sels = vec![Sel::caret(10)];
+        let mut none = doc("    if x {}");
+        none.newline(&mut sels, "    ", "none");
+        assert_eq!((none.rope.to_string().as_str(), sels[0].head), ("    if x {\n}", 11));
     }
 
     #[test]
@@ -1477,22 +1495,32 @@ mod tests {
         let mut d = doc("");
         let mut sels = vec![Sel::caret(0)];
         for c in "f(\"a".chars() {
-            d.type_char(&mut sels, c);
+            d.type_char(&mut sels, c, true, true);
         }
         assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("f(\"a\")", 4));
-        d.type_char(&mut sels, '"');
-        d.type_char(&mut sels, ')');
+        d.type_char(&mut sels, '"', true, true);
+        d.type_char(&mut sels, ')', true, true);
         assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("f(\"a\")", 6));
         d.undo(&mut sels);
         assert_eq!(d.rope.to_string(), "");
 
         let mut d = doc("don word x()");
         let mut sels = vec![Sel::caret(3)];
-        d.type_char(&mut sels, '\'');
+        d.type_char(&mut sels, '\'', true, true);
         assert_eq!(d.rope.to_string(), "don' word x()");
         let mut sels = vec![Sel::new(5, 9)];
-        d.type_char(&mut sels, '[');
+        d.type_char(&mut sels, '[', true, true);
         assert_eq!((d.rope.to_string().as_str(), sels[0].start(), sels[0].end()), ("don' [word] x()", 6, 10));
+        let mut plain = doc("ab");
+        let mut sels = vec![Sel::caret(1)];
+        plain.type_char(&mut sels, '(', false, true);
+        assert_eq!(plain.rope.to_string(), "a(b");
+        let mut sels = vec![Sel::new(0, 1)];
+        plain.type_char(&mut sels, '"', true, false);
+        assert_eq!(plain.rope.to_string(), "\"(b");
+        let mut sels = vec![Sel::new(2, 3)];
+        plain.type_char(&mut sels, '[', false, true);
+        assert_eq!(plain.rope.to_string(), "\"([b]");
         let mut sels = vec![Sel::caret(14)];
         d.backspace(&mut sels, false, true);
         assert_eq!(d.rope.to_string(), "don' [word] x");
@@ -1573,12 +1601,19 @@ mod tests {
     fn tidies_trailing_whitespace_and_the_final_newline() {
         let mut d = doc("a  \n\tb \t\n  \nc ");
         let mut sels = vec![Sel::caret(14)];
-        assert!(d.tidy(&mut sels, true, true));
+        assert!(d.tidy(&mut sels, true, true, false));
         assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("a\n\tb\n\nc \n", 8));
-        assert!(!d.tidy(&mut sels, true, true));
+        assert!(!d.tidy(&mut sels, true, true, false));
         let mut sels = vec![Sel::caret(0)];
-        assert!(d.tidy(&mut sels, true, false));
+        assert!(d.tidy(&mut sels, true, false, false));
         assert_eq!(d.rope.to_string(), "a\n\tb\n\nc\n");
+        let mut f = doc("a\n\n\n");
+        let mut sels = vec![Sel::caret(4)];
+        assert!(!f.tidy(&mut sels, false, true, true));
+        let mut sels = vec![Sel::caret(0)];
+        assert!(f.tidy(&mut sels, false, true, true));
+        assert_eq!(f.rope.to_string(), "a\n");
+        assert!(!f.tidy(&mut sels, false, false, true));
     }
 
     #[test]

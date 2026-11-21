@@ -451,7 +451,10 @@ fn handle_event(
         Event::Text(text) => {
             let mut chars = text.chars();
             match (chars.next(), chars.next()) {
-                (Some(c), None) if settings.auto_close => buf.type_char(sels, c),
+                (Some(c), None) => {
+                    let pairs = if matches!(c, '"' | '\'' | '`') { settings.auto_close_quotes } else { settings.auto_close };
+                    buf.type_char(sels, c, pairs, settings.auto_surround)
+                }
                 _ => buf.insert_text(sels, text),
             };
         }
@@ -490,7 +493,7 @@ fn handle_event(
                 return true;
             }
             match key {
-                Key::Enter => buf.newline(sels, &unit),
+                Key::Enter => buf.newline(sels, &unit, &settings.auto_indent),
                 Key::Tab if modifiers.shift => buf.outdent(sels, size),
                 Key::Tab => buf.tab(sels, size, spaces),
                 Key::Backspace => buf.backspace(sels, word, settings.auto_close),
@@ -767,10 +770,10 @@ impl Editors {
         }
         doc.stale = false;
         let tidy = self.config.of(doc.buf.path.as_deref());
-        let (trim, newline) = (tidy.trim_trailing_whitespace, tidy.insert_final_newline);
+        let (trim, newline, final_newlines) = (tidy.trim_trailing_whitespace, tidy.insert_final_newline, tidy.trim_final_newlines);
         let mut none = vec![];
         let sels = self.groups.iter_mut().flat_map(|group| &mut group.tabs).find(|tab| tab.doc == id).map_or(&mut none, |tab| &mut tab.sels);
-        doc.buf.tidy(sels, trim, newline);
+        doc.buf.tidy(sels, trim, newline, final_newlines);
         match doc.buf.save() {
             Ok(bytes) => {
                 doc.blame.refresh();
@@ -807,7 +810,13 @@ impl Editors {
         match cmd {
             NewFile => {
                 self.untitled += 1;
-                let id = self.insert_doc(Document::from_text("", format!("Untitled-{}", self.untitled)));
+                let mut buf = Document::from_text("", format!("Untitled-{}", self.untitled));
+                buf.crlf = match settings.eol.as_str() {
+                    "\r\n" => true,
+                    "\n" => false,
+                    _ => buf.crlf,
+                };
+                let id = self.insert_doc(buf);
                 self.add_tab(id, vec![Sel::caret(0)]);
                 return true;
             }
@@ -1132,8 +1141,8 @@ impl Editors {
         doc.lang.symbols.iter().map(|s| (s.line, format!("{}{}", "  ".repeat(s.depth), s.name))).collect()
     }
 
-    pub fn auto_save_due(&mut self, now: f64) -> bool {
-        let due = now - self.last_input > 1.0 && self.docs.values().any(|d| d.buf.is_dirty() && d.buf.path.is_some());
+    pub fn auto_save_due(&mut self, now: f64, delay: f64) -> bool {
+        let due = now - self.last_input > delay && self.docs.values().any(|d| d.buf.is_dirty() && d.buf.path.is_some());
         if due {
             self.last_input = now;
         }
@@ -3308,5 +3317,30 @@ fn xb() {}
         editors.reload_clean();
         assert_eq!(text(&editors), "1\nx");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn auto_save_waits_for_the_delay_and_editing_settings_apply() {
+        let path = std::env::temp_dir().join(format!("halo-autosave-test-{}.txt", std::process::id()));
+        std::fs::write(&path, "a").unwrap();
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        editors.open(&path);
+        assert!(!editors.auto_save_due(100.0, 1.0));
+        editors.docs.values_mut().for_each(|d| d.buf.mark_dirty());
+        editors.last_input = 10.0;
+        assert!(!editors.auto_save_due(10.5, 1.0) && !editors.auto_save_due(12.5, 3.0));
+        assert!(editors.auto_save_due(13.5, 3.0));
+        assert!(!editors.auto_save_due(14.0, 3.0));
+        let _ = std::fs::remove_file(&path);
+
+        let settings = Settings { auto_close: false, auto_close_quotes: true, eol: "\n".into(), ..Settings::default() };
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![Event::Text("(".into()), Event::Text("\"".into())], &settings);
+        let doc = editors.docs.values().next().unwrap();
+        assert_eq!((doc.buf.rope.to_string().as_str(), doc.buf.crlf), ("(\"\"", false));
     }
 }

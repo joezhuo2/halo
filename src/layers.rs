@@ -30,6 +30,12 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("format_on_paste", "editor.formatOnPaste"),
     ("word_wrap", "editor.wordWrap"),
     ("auto_close", "editor.autoClosingBrackets"),
+    ("auto_close_quotes", "editor.autoClosingQuotes"),
+    ("auto_surround", "editor.autoSurround"),
+    ("auto_indent", "editor.autoIndent"),
+    ("trim_final_newlines", "files.trimFinalNewlines"),
+    ("eol", "files.eol"),
+    ("auto_save_delay", "files.autoSaveDelay"),
     ("trim_trailing_whitespace", "files.trimTrailingWhitespace"),
     ("insert_final_newline", "files.insertFinalNewline"),
     ("render_whitespace", "editor.renderWhitespace"),
@@ -70,8 +76,8 @@ pub fn to_halo(key: &str, value: Value) -> Value {
     match (key, value) {
         ("word_wrap", Value::String(s)) => json!(s != "off"),
         ("render_whitespace", Value::String(s)) => json!(s != "none"),
-        ("auto_save", Value::String(s)) => json!(s != "off"),
-        ("auto_close", Value::String(s)) => json!(s != "never"),
+        ("auto_save", Value::Bool(b)) => json!(if b { "afterDelay" } else { "off" }),
+        ("auto_close" | "auto_close_quotes" | "auto_surround", Value::String(s)) => json!(s != "never"),
         ("hot_exit", Value::String(s)) => json!(s != "off"),
         ("auto_update", Value::String(s)) => json!(!matches!(s.as_str(), "none" | "manual")),
         ("inlay_hints", Value::String(s)) => json!(s.starts_with("on")),
@@ -95,8 +101,7 @@ pub fn to_vscode(key: &str, value: Value) -> Value {
     match key {
         "word_wrap" => on(&value, "on", "off"),
         "render_whitespace" => on(&value, "all", "none"),
-        "auto_save" => on(&value, "afterDelay", "off"),
-        "auto_close" => on(&value, "languageDefined", "never"),
+        "auto_close" | "auto_close_quotes" | "auto_surround" => on(&value, "languageDefined", "never"),
         "hot_exit" => on(&value, "onExit", "off"),
         "auto_update" => on(&value, "default", "none"),
         "inlay_hints" => on(&value, "on", "off"),
@@ -358,12 +363,12 @@ mod tests {
         }));
         let mut errors = vec![];
         let (s, _, langs) = resolve(&user, &workspace, &mut errors);
-        assert_eq!((s.tab_size, s.font_size, s.insert_spaces, s.auto_save), (2, 15.0, false, true));
+        assert_eq!((s.tab_size, s.font_size, s.insert_spaces, s.auto_save.as_str()), (2, 15.0, false, "afterDelay"));
         assert_eq!(s.rulers, [80]);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("editor.insertSpaces"));
         let rust = s.lang("rust");
-        assert_eq!((rust.tab_size, rust.rulers.clone(), rust.auto_save), (8, vec![120], true));
+        assert_eq!((rust.tab_size, rust.rulers.clone(), rust.auto_save.as_str()), (8, vec![120], "afterDelay"));
         assert_eq!(s.lang("python").tab_size, 4);
         assert!(s.lang("markdown").word_wrap && s.lang("plaintext").word_wrap && !s.word_wrap);
         assert_eq!(s.lang("go").tab_size, 2);
@@ -388,6 +393,8 @@ mod tests {
         assert_eq!(to_vscode("associations", json!({"h": "cpp"})), json!({"*.h": "cpp"}));
         assert_eq!(to_halo("word_wrap", json!("bounded")), json!(true));
         assert_eq!(to_halo("auto_close", json!("never")), json!(false));
+        assert_eq!(to_halo("auto_save", json!(true)), json!("afterDelay"));
+        assert_eq!(to_halo("eol", json!("\r\n")), json!("\r\n"));
         assert_eq!(to_halo("font_family", json!("C:/fonts/x.ttf")), json!("C:/fonts/x.ttf"));
         assert_eq!(to_halo("font_family", json!("'No Such Font', monospace")), json!(""));
     }
@@ -398,7 +405,7 @@ mod tests {
         let edits = [("tab_size".to_owned(), Some(json!(3))), ("minimap".to_owned(), None), ("word_wrap".to_owned(), Some(json!(true)))];
         apply(&mut raw, Layer::User, None, &edits);
         assert_eq!(Value::Object(raw.clone()), json!({"unknown": {"x": 1}, "editor.tabSize": 3, "word_wrap": true, "[rust]": {"tab_size": 8}}));
-        apply(&mut raw, Layer::Workspace, None, &[("auto_save".to_owned(), Some(json!(true)))]);
+        apply(&mut raw, Layer::Workspace, None, &[("auto_save".to_owned(), Some(json!("afterDelay")))]);
         assert_eq!(raw["files.autoSave"], json!("afterDelay"));
         apply(&mut raw, Layer::Workspace, Some("rust"), &[("tab_size".to_owned(), None)]);
         assert!(!raw.contains_key("[rust]"));
