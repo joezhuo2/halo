@@ -143,6 +143,7 @@ pub struct Editors {
     drop: Option<DropAt>,
     pub ai_open: bool,
     pub lsp: Lsp,
+    pub marks: crate::debug::Marks,
     root: Option<PathBuf>,
     intel: Intel,
     closed: Vec<PathBuf>,
@@ -342,8 +343,8 @@ fn fold_command(doc: &mut Doc, tab: &mut Tab, cmd: &Command) {
     tab.reveal = tab.sels.first().map(|s| s.head);
 }
 
-fn settle(buf: &mut Document, hl: &mut Highlighter, lang: &mut Lang, lsp: &mut Lsp, folds: &mut Vec<(usize, usize)>) {
-    let Some(line) = buf.dirty_from.take() else { return };
+fn settle(buf: &mut Document, hl: &mut Highlighter, lang: &mut Lang, lsp: &mut Lsp, folds: &mut Vec<(usize, usize)>) -> Option<(usize, isize)> {
+    let line = buf.dirty_from.take()?;
     hl.invalidate(line);
     let delta = lang.edited(line, buf.lines());
     folds.retain_mut(|f| {
@@ -356,6 +357,7 @@ fn settle(buf: &mut Document, hl: &mut Highlighter, lang: &mut Lang, lsp: &mut L
     if let Some(path) = &buf.path {
         lsp.shift_diagnostics(path, line, delta);
     }
+    Some((line, delta))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -452,6 +454,7 @@ impl Editors {
             drop: None,
             ai_open: false,
             lsp: Lsp::default(),
+            marks: Default::default(),
             root: None,
             intel: Intel::default(),
             closed: vec![],
@@ -791,6 +794,11 @@ impl Editors {
             Fold | Unfold | FoldAll | UnfoldAll => {
                 if let Some(doc) = self.docs.get_mut(&doc_id) {
                     fold_command(doc, &mut self.groups[g].tabs[t], cmd);
+                }
+            }
+            ToggleBreakpoint => {
+                if let Some((Some(path), line)) = self.with_active(|buf, tab| (buf.path.clone(), buf.line_of(tab.sels[0].head))) {
+                    self.marks.toggle(&path, line);
                 }
             }
             GoTo(line, column) => {
@@ -1513,13 +1521,15 @@ impl Editors {
         let (char_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
         let line_h = (row_h * 1.25).round();
         let Doc { buf, hl, max_cols, conflicts, lang, folds, depths, stale, .. } = doc;
-        settle(buf, hl, lang, &mut self.lsp, folds);
+        if let (Some((line, delta)), Some(path)) = (settle(buf, hl, lang, &mut self.lsp, folds), &buf.path) {
+            self.marks.shift(path, line, delta);
+        }
         buf.clamp(&mut tab.sels);
 
         ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
         let minimap_w = if settings.minimap && body.width() > 420.0 { 78.0 } else { 0.0 };
         let text_rect = Rect::from_min_max(body.min, pos2(body.right() - minimap_w, body.bottom()));
-        let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 4.0) * char_w + 6.0;
+        let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 5.0) * char_w + 6.0;
         let wrap_cols = settings.word_wrap.then(|| (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20));
 
         if self.want_focus && is_active && self.goto.is_none() {
@@ -1564,7 +1574,9 @@ impl Editors {
                     }
                 }
             }
-            settle(buf, hl, lang, &mut self.lsp, folds);
+            if let (Some((line, delta)), Some(path)) = (settle(buf, hl, lang, &mut self.lsp, folds), &buf.path) {
+                self.marks.shift(path, line, delta);
+            }
             if let Some(c) = typed {
                 let prose = matches!(hl.language.as_str(), "Plain Text" | "Markdown");
                 self.typed(c, doc_id, buf, lang, tab, prose, &ctx);
@@ -1668,6 +1680,8 @@ impl Editors {
             _ => &[],
         };
         let hover_word = self.intel.hover.as_ref().filter(|h| h.doc == doc_id && h.group == g).map(|h| h.word);
+        let marks = path.as_deref().map(|p| (self.marks.of(p).to_vec(), self.marks.stopped_line(p), self.marks.live));
+        let (mut bp_action, bp_w) = (None, char_w * 2.2 + 2.0);
         let peek_pos = self.intel.peek.as_ref().filter(|p| p.doc == doc_id && is_active).map(|p| p.pos);
         let hint_format = TextFormat {
             font_id: FontId::monospace((settings.font_size * 0.9).round()),
@@ -1790,6 +1804,9 @@ impl Editors {
                             } else if on_lens {
                                 lens_press = true;
                                 tab.drag_anchor = None;
+                            } else if marks.is_some() && pos.x < clip.left() + bp_w {
+                                bp_action = Some(crate::debug::Gutter::Toggle(row_at(pos.y).0));
+                                tab.drag_anchor = None;
                             } else if pos.x >= fold_x && pos.x < clip.left() + gutter_w && can_fold(buf_ref.line_of(p)) {
                                 toggle_fold = Some(buf_ref.line_of(p));
                                 tab.drag_anchor = None;
@@ -1841,6 +1858,8 @@ impl Editors {
                             tab.sels = vec![Sel::new(buf_ref.line_start(line), buf_ref.line_start(line + 1).min(buf_ref.len()))];
                         }
                         if resp.secondary_clicked() && !on_lens {
+                            let line = (marks.is_some() && pos.x < clip.left() + bp_w).then(|| row_at(pos.y).0);
+                            ui.data_mut(|d| d.insert_temp(id.with("bp_menu"), line));
                             let p = hit(&painter, pos);
                             if !tab.sels.iter().any(|s| s.start() <= p && p <= s.end()) {
                                 tab.sels = vec![Sel::caret(p)];
@@ -1865,6 +1884,10 @@ impl Editors {
                     }
                     resp.context_menu(|ui| {
                         use Command::*;
+                        if let (Some(line), Some((list, ..))) = (ui.data(|d| d.get_temp::<Option<usize>>(id.with("bp_menu"))).flatten(), &marks) {
+                            bp_action = crate::debug::gutter_menu(ui, list, line).or(bp_action);
+                            return;
+                        }
                         ui.set_min_width(230.0);
                         ui::menu_pad(ui);
                         let items = [
@@ -1943,6 +1966,10 @@ impl Editors {
                         if current_line == Some(line) {
                             let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
                             painter.rect_filled(band, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
+                        }
+                        if marks.as_ref().is_some_and(|m| m.1 == Some(line)) {
+                            let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
+                            painter.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(theme.warning, 0.14));
                         }
                         if settings.guides {
                             let blank = |l: &usize| buf_ref.indent_of(*l) >= buf_ref.line_len(*l);
@@ -2045,8 +2072,13 @@ impl Editors {
                     let gutter = Rect::from_min_max(clip.min, pos2(clip.left() + gutter_w - 4.0, clip.bottom()));
                     painter.rect_filled(gutter, CornerRadius::ZERO, theme.bg);
                     let number_font = FontId::monospace(settings.font_size - 1.0);
+                    let bp_hover = pointer.filter(|pos| resp.hovered() && pos.x < clip.left() + bp_w).map(|pos| row_at(pos.y).0);
                     for line in (first..last).filter(|line| starts[line + 1] > starts[*line]) {
                         let y = origin.y + top_of(line) as f32 * line_h + line_h / 2.0;
+                        if let Some((list, stopped, live)) = &marks {
+                            let center = pos2(clip.left() + bp_w / 2.0 + 1.0, y);
+                            crate::debug::paint_gutter(&painter, theme, list, *live, *stopped, line, center, (line_h * 0.26).min(char_w * 0.8), bp_hover == Some(line));
+                        }
                         let color = if current_line == Some(line) { theme.text } else { ui::with_alpha(theme.text_dim, 0.75) };
                         painter.text(pos2(gutter.right() - 10.0 - char_w, y), Align2::RIGHT_CENTER, line + 1, number_font.clone(), color);
                         let closed = folded.iter().any(|f| f.0 == line);
@@ -2192,6 +2224,9 @@ impl Editors {
             let extra = tab.trail.len().saturating_sub(100);
             tab.trail.drain(..extra);
         }
+        if let (Some(action), Some(path)) = (bp_action, &path) {
+            self.marks.apply(path, action);
+        }
         if let Some(line) = toggle_fold {
             match folds.iter().position(|f| f.0 == line) {
                 Some(at) => drop(folds.remove(at)),
@@ -2214,6 +2249,7 @@ impl Editors {
             self.intel.queued.push(Queued::Peek(doc_id, from_lsp(buf, (symbol.line, symbol.col)), title, found.clone()));
         }
         self.track_hover(over_word, g, doc_id, buf, lang, now, &ctx);
+        crate::debug::hover_ui(&ctx, theme, &mut self.marks, (g, doc_id), over_word.map(|(a, b)| buf.text_of(a, b)), now);
         self.hover_ui(&ctx, theme, &font, g, doc_id, hover_at, line_h);
         if is_active {
             self.popups(ui, theme, doc_id, buf, tab, caret_at, line_h, &font);
@@ -2969,7 +3005,7 @@ fn b() {}
         let (char_w, hint_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.glyph_width(&small, 'm'), f.row_height(&font)));
         let line_h = (row_h * 1.25).round();
         let top = TAB_H + 22.0;
-        let text_x = 7.0 * char_w + 6.0;
+        let text_x = 8.0 * char_w + 6.0;
         let click = |editors: &mut Editors, pos: Pos2| {
             let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
             frame(&ctx, editors, vec![Event::PointerMoved(pos)]);
@@ -2994,6 +3030,35 @@ fn xb() {}
         let escape = Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
         frame(&ctx, &mut editors, vec![escape]);
         assert!(editors.intel.peek.is_none());
+    }
+
+    #[test]
+    fn gutter_clicks_toggle_breakpoints_that_follow_edits() {
+        let path = std::env::temp_dir().join(format!("halo-breakpoint-test-{}.txt", std::process::id()));
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.open(&path);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        let row_h = ctx.fonts_mut(|f| f.row_height(&FontId::monospace(settings.font_size)));
+        let pos = pos2(5.0, TAB_H + 22.0 + 1.5 * (row_h * 1.25).round());
+        let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(&ctx, &mut editors, vec![Event::PointerMoved(pos)]);
+        frame(&ctx, &mut editors, vec![button(true)]);
+        frame(&ctx, &mut editors, vec![button(false)]);
+        let lines = |e: &Editors| e.marks.of(&path).iter().map(|b| b.line).collect::<Vec<_>>();
+        assert_eq!(lines(&editors), [1]);
+        assert_eq!(editors.docs.values().next().unwrap().buf.rope.to_string(), "one\ntwo\nthree\n");
+        editors.exec(&Command::GoTo(3, 1), &settings, &ctx);
+        editors.exec(&Command::ToggleBreakpoint, &settings, &ctx);
+        assert_eq!(lines(&editors), [1, 2]);
+        editors.exec(&Command::GoTo(1, 1), &settings, &ctx);
+        frame(&ctx, &mut editors, vec![key(Key::Enter, Default::default())]);
+        frame(&ctx, &mut editors, vec![]);
+        assert_eq!(lines(&editors), [2, 3]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

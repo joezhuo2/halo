@@ -122,7 +122,8 @@ impl Drop for Client {
 }
 
 impl Client {
-    pub fn over(reader: impl Read + Send + 'static, writer: impl Write + Send + 'static, ctx: &egui::Context) -> Self {
+    #[cfg(test)]
+    fn over(reader: impl Read + Send + 'static, writer: impl Write + Send + 'static, ctx: &egui::Context) -> Self {
         let (tx, out) = channel();
         let (in_tx, rx) = channel();
         std::thread::spawn(move || write_loop(writer, out));

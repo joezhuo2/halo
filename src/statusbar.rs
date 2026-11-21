@@ -66,6 +66,12 @@ impl Halo {
                         item(ui, &theme, &format!("{} {version}", icons::ARROW_CIRCLE_UP), true, tip);
                     }
 
+                    if let Some((label, tip)) = self.debug.status()
+                        && item(ui, &theme, &label, true, &tip).clicked()
+                    {
+                        self.cmds.push(Command::ShowRunAndDebug);
+                    }
+
                     if let Some(first) = self.chord {
                         let label = format!("({}) was pressed. Waiting for the second key...", ui.ctx().format_shortcut(&first));
                         item(ui, &theme, &label, true, "Key chord");
