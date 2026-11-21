@@ -30,6 +30,7 @@ pub enum Command {
     AddFolderToWorkspace,
     RemoveFolderFromWorkspace,
     RemoveWorkspaceFolder(PathBuf),
+    AddWorkspaceFolder(PathBuf),
     MoveWorkspaceFolder(usize, usize),
     SaveWorkspaceAs,
     OpenWorkspaceFromFile,
@@ -92,12 +93,62 @@ pub enum Command {
     TogglePanel,
     ToggleAi,
     SplitEditor,
+    SplitEditorDown,
+    SplitEditorLeft,
+    SplitEditorUp,
+    LayoutSingle,
+    LayoutTwoColumns,
+    LayoutThreeColumns,
+    LayoutTwoRows,
+    LayoutThreeRows,
+    LayoutGrid,
+    LayoutTwoRowsRight,
+    LayoutTwoColumnsBottom,
+    ToggleMaximizeGroup,
+    ResetGroupSizes,
+    FocusGroupLeft,
+    FocusGroupRight,
+    FocusGroupUp,
+    FocusGroupDown,
+    MoveEditorLeft,
+    MoveEditorRight,
+    MoveEditorUp,
+    MoveEditorDown,
+    CloseGroup,
+    MoveEditorToNewWindow,
+    CopyEditorToNewWindow,
+    MoveEditorToMainWindow,
+    NewWindow,
+    OpenFolderInNewWindow,
+    DuplicateWorkspace,
     ToggleMinimap,
     ToggleWordWrap,
     ToggleTheme,
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    ToggleFullScreen,
+    ToggleZenMode,
+    ToggleCenteredLayout,
+    ToggleSidebarPosition,
+    ToggleSecondarySidebar,
+    MovePanelLeft,
+    MovePanelRight,
+    MovePanelBottom,
+    MovePanelTop,
+    TogglePanelPosition,
+    ToggleMaximizedPanel,
+    AlignPanelCenter,
+    AlignPanelJustify,
+    AlignPanelLeft,
+    AlignPanelRight,
+    ActivityBarSide,
+    ActivityBarTop,
+    ActivityBarHidden,
+    MoveView,
+    MoveViewTo(crate::workbench::View),
+    MoveViewPlace(crate::workbench::View, crate::workbench::Place),
+    ResetViewLocations,
 
     GoToFile,
     ShowCommands,
@@ -171,6 +222,7 @@ pub enum Command {
     NewTerminalInEditor,
     MoveTerminalToEditor,
     MoveTerminalToPanel,
+    ClearRestoredHistory,
 
     RunFile,
     RunTask(String),
@@ -234,6 +286,8 @@ pub enum Command {
     CloseTab(usize, usize),
     PathChanged(PathBuf, Option<PathBuf>),
     About,
+    InstallInPath,
+    ConfirmInstallInPath,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -364,6 +418,7 @@ pub struct Entry {
 }
 
 pub const SEND_TO_SHELL: &str = "!terminalFocus || !config.terminal.integrated.sendKeybindingsToShell";
+const NOT_TEXT: &str = "!editorTextFocus";
 
 fn defaults() -> Vec<Binding> {
     use Command::*;
@@ -434,6 +489,7 @@ fn defaults() -> Vec<Binding> {
         k(C, Key::T, ToggleTheme),
         k(NONE, Key::S, SaveAll),
         k(NONE, Key::F, CloseFolder),
+        k(NONE, Key::Z, ToggleZenMode),
         g(cs, Key::S, SaveAs),
         g(cs, Key::P, ShowCommands),
         g(cs, Key::F, FindInFiles),
@@ -450,9 +506,10 @@ fn defaults() -> Vec<Binding> {
         g(NONE, Key::F9, ToggleBreakpoint),
         g(NONE, Key::F10, StepOver),
         g(NONE, Key::F11, StepInto),
+        g(NONE, Key::F11, ToggleFullScreen),
         g(cs, Key::Backtick, NewTerminal),
         g(cs, Key::Tab, PrevEditor),
-        g(ca, Key::B, ToggleAi),
+        g(ca, Key::B, ToggleSecondarySidebar),
         e(cs, Key::Z, Redo),
         e(ca, Key::ArrowUp, AddCursorAbove),
         e(ca, Key::ArrowDown, AddCursorBelow),
@@ -466,6 +523,18 @@ fn defaults() -> Vec<Binding> {
         g(C, Key::J, TogglePanel),
         g(C, Key::Backtick, TogglePanel),
         g(C, Key::Backslash, SplitEditor),
+        k(C, Key::Backslash, SplitEditorDown),
+        k(C, Key::M, ToggleMaximizeGroup),
+        k(C, Key::ArrowLeft, FocusGroupLeft),
+        k(C, Key::ArrowRight, FocusGroupRight),
+        k(C, Key::ArrowUp, FocusGroupUp),
+        k(C, Key::ArrowDown, FocusGroupDown),
+        k(NONE, Key::O, CopyEditorToNewWindow),
+        g(ca, Key::ArrowLeft, MoveEditorLeft),
+        g(ca, Key::ArrowRight, MoveEditorRight),
+        g(ca, Key::ArrowUp, MoveEditorUp),
+        g(ca, Key::ArrowDown, MoveEditorDown),
+        g(cs, Key::N, NewWindow),
         g(C, Key::Tab, NextEditor),
         g(C, Key::Equals, ZoomIn),
         g(C, Key::Minus, ZoomOut),
@@ -488,14 +557,22 @@ fn defaults() -> Vec<Binding> {
             (b.when, b.cond) = (SEND_TO_SHELL.to_owned(), shell.clone());
         }
     }
+    let text = crate::when::parse(NOT_TEXT).ok().map(Arc::new);
+    for b in list.iter_mut().filter(|b| matches!(b.command, MoveEditorUp | MoveEditorDown)) {
+        (b.when, b.cond) = (NOT_TEXT.to_owned(), text.clone());
+    }
+    for b in list.iter_mut().filter(|b| b.shortcut == key(NONE, Key::F11)) {
+        b.when = if b.command == StepInto { "inDebugMode" } else { "!inDebugMode" }.to_owned();
+        b.cond = crate::when::parse(&b.when).ok().map(Arc::new);
+    }
     list
 }
 
 pub fn all() -> Vec<Command> {
     use Command::*;
     let mut commands = vec![
-        NewFile, OpenFile, OpenFolder, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, AddFolderToWorkspace, RemoveFolderFromWorkspace, SaveWorkspaceAs,
-        OpenWorkspaceFromFile, CloseWorkspace, OpenSettings, OpenSettingsJson,
+        NewFile, NewWindow, OpenFile, OpenFolder, OpenFolderInNewWindow, DuplicateWorkspace, Save, SaveAs, SaveAll, CloseEditor, CloseFolder,
+        AddFolderToWorkspace, RemoveFolderFromWorkspace, SaveWorkspaceAs, OpenWorkspaceFromFile, CloseWorkspace, OpenSettings, OpenSettingsJson,
         OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected,
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
@@ -503,8 +580,14 @@ pub fn all() -> Vec<Command> {
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
         SelectAll, AddCursorAbove, AddCursorBelow, SelectNextOccurrence, SelectAllOccurrences, ExpandSelection, ShrinkSelection, CursorUndo,
         ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
+        SplitEditorDown, SplitEditorLeft, SplitEditorUp, LayoutSingle, LayoutTwoColumns, LayoutThreeColumns, LayoutTwoRows, LayoutThreeRows,
+        LayoutGrid, LayoutTwoRowsRight, LayoutTwoColumnsBottom, ToggleMaximizeGroup, ResetGroupSizes, FocusGroupLeft, FocusGroupRight,
+        FocusGroupUp, FocusGroupDown, MoveEditorLeft, MoveEditorRight, MoveEditorUp, MoveEditorDown, CloseGroup, MoveEditorToNewWindow,
+        CopyEditorToNewWindow, MoveEditorToMainWindow,
         ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff, FilterExplorer, FocusOpenEditors,
-        MarkdownPreview, MarkdownPreviewSide,
+        MarkdownPreview, MarkdownPreviewSide, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
+        MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
+        AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations,
         GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, NextEditor, PrevEditor, GoBack, GoForward, ReopenClosed,
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
@@ -514,7 +597,7 @@ pub fn all() -> Vec<Command> {
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
         OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
         ShowTestOutput, RunAllTestsWithCoverage, ToggleCoverageDisplay, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
-        CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, NewTerminalInEditor, MoveTerminalToEditor, MoveTerminalToPanel,
+        CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, NewTerminalInEditor, MoveTerminalToEditor, MoveTerminalToPanel, ClearRestoredHistory,
         GitSync, ToggleInlineBlame, OpenLineChanges,
         StageHunk, RevertHunk, UnstageHunk, StageSelectedRanges, RevertSelectedRanges, UnstageSelectedRanges,
         MergeOpen, MergeAcceptIncoming, MergeAcceptCurrent, MergeAcceptBoth, MergeAcceptAllIncoming, MergeAcceptAllCurrent,
@@ -522,7 +605,7 @@ pub fn all() -> Vec<Command> {
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.extend([ShowOutput, ShowOutputChannels, ClearOutput, OpenOutputInEditor, ShowNotifications, ClearNotifications, ToggleDoNotDisturb, FocusNotification]);
-    commands.push(About);
+    commands.extend([About, InstallInPath]);
     commands
 }
 
@@ -682,10 +765,11 @@ impl Command {
         use Command::*;
         match self {
             NewFile | OpenFile | OpenFolder | OpenFolderIn(_) | OpenPath(_) | Save | SaveAs | SaveAll | CloseEditor
-            | CloseFolder | AddFolderToWorkspace | RemoveFolderFromWorkspace | RemoveWorkspaceFolder(_) | MoveWorkspaceFolder(..)
+            | CloseFolder | AddFolderToWorkspace | RemoveFolderFromWorkspace | RemoveWorkspaceFolder(_) | AddWorkspaceFolder(_) | MoveWorkspaceFolder(..)
             | SaveWorkspaceAs | OpenWorkspaceFromFile | OpenWorkspace(_) | CloseWorkspace | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit | ImportTheme
             | BrowseThemes | SelectTheme | ImportThemeFile(_) | SetTheme(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
-            | ImportIconThemeFile(_) | SetIconTheme(_) | CutFiles | CopyFiles | PasteFiles | CloseAllEditors | ShowTab(..) | CloseTab(..) => "File",
+            | ImportIconThemeFile(_) | SetIconTheme(_) | CutFiles | CopyFiles | PasteFiles | CloseAllEditors | ShowTab(..) | CloseTab(..)
+            | NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => "File",
             Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
             | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection => "Edit",
@@ -693,7 +777,14 @@ impl Command {
             | ShrinkSelection | CursorUndo => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
             | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | FilterExplorer
-            | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide => "View",
+            | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
+            | LayoutTwoColumns | LayoutThreeColumns | LayoutTwoRows | LayoutThreeRows | LayoutGrid | LayoutTwoRowsRight | LayoutTwoColumnsBottom
+            | ToggleMaximizeGroup | ResetGroupSizes | FocusGroupLeft | FocusGroupRight | FocusGroupUp | FocusGroupDown | MoveEditorLeft
+            | MoveEditorRight | MoveEditorUp | MoveEditorDown | CloseGroup | MoveEditorToNewWindow | CopyEditorToNewWindow
+            | MoveEditorToMainWindow | ToggleFullScreen | ToggleZenMode | ToggleCenteredLayout
+            | ToggleSidebarPosition | ToggleSecondarySidebar | MovePanelLeft | MovePanelRight | MovePanelBottom | MovePanelTop
+            | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter | AlignPanelJustify | AlignPanelLeft | AlignPanelRight
+            | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
@@ -706,7 +797,7 @@ impl Command {
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
             NewTerminal | NewTerminalWith(_) | NewTerminalIn(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
             | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
-            | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel => "Terminal",
+            | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel | ClearRestoredHistory => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
             OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) | StageHunk | RevertHunk
             | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges | MergeOpen | OpenMerge(_)
@@ -714,7 +805,7 @@ impl Command {
             | MergeNextConflict | MergePrevConflict | MergeToggleBase | MergeComplete => "Source Control",
             ShowOutput | ShowOutputChannels | ClearOutput | OpenOutputInEditor | SelectOutputChannel(_) => "Output",
             ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => "Notifications",
-            About => "Help",
+            About | InstallInPath | ConfirmInstallInPath => "Help",
         }
     }
 
@@ -740,6 +831,7 @@ impl Command {
             CloseEditor => "Close Editor",
             CloseFolder => "Close Folder",
             AddFolderToWorkspace => "Add Folder to Workspace...",
+            AddWorkspaceFolder(_) => "Add Folder to Workspace",
             RemoveFolderFromWorkspace | RemoveWorkspaceFolder(_) => "Remove Folder from Workspace",
             MoveWorkspaceFolder(..) => "Move Workspace Folder",
             SaveWorkspaceAs => "Save Workspace As...",
@@ -800,12 +892,62 @@ impl Command {
             TogglePanel => "Toggle Panel",
             ToggleAi => "Toggle AI Panel",
             SplitEditor => "Split Editor Right",
+            SplitEditorDown => "Split Editor Down",
+            SplitEditorLeft => "Split Editor Left",
+            SplitEditorUp => "Split Editor Up",
+            LayoutSingle => "Editor Layout: Single",
+            LayoutTwoColumns => "Editor Layout: Two Columns",
+            LayoutThreeColumns => "Editor Layout: Three Columns",
+            LayoutTwoRows => "Editor Layout: Two Rows",
+            LayoutThreeRows => "Editor Layout: Three Rows",
+            LayoutGrid => "Editor Layout: Grid (2x2)",
+            LayoutTwoRowsRight => "Editor Layout: Two Rows Right",
+            LayoutTwoColumnsBottom => "Editor Layout: Two Columns Bottom",
+            ToggleMaximizeGroup => "Toggle Maximize Editor Group",
+            ResetGroupSizes => "Reset Editor Group Sizes",
+            FocusGroupLeft => "Focus Editor Group Left",
+            FocusGroupRight => "Focus Editor Group Right",
+            FocusGroupUp => "Focus Editor Group Above",
+            FocusGroupDown => "Focus Editor Group Below",
+            MoveEditorLeft => "Move Editor into Group Left",
+            MoveEditorRight => "Move Editor into Group Right",
+            MoveEditorUp => "Move Editor into Group Above",
+            MoveEditorDown => "Move Editor into Group Below",
+            CloseGroup => "Close Editor Group",
+            MoveEditorToNewWindow => "Move Editor into New Window",
+            CopyEditorToNewWindow => "Copy Editor into New Window",
+            MoveEditorToMainWindow => "Move Editor into Main Window",
+            NewWindow => "New Window",
+            OpenFolderInNewWindow => "Open Folder in New Window...",
+            DuplicateWorkspace => "Duplicate Workspace in New Window",
             ToggleMinimap => "Toggle Minimap",
             ToggleWordWrap => "Toggle Word Wrap",
             ToggleTheme => "Toggle Light/Dark Theme",
             ZoomIn => "Zoom In",
             ZoomOut => "Zoom Out",
             ZoomReset => "Reset Zoom",
+            ToggleFullScreen => "View: Toggle Full Screen",
+            ToggleZenMode => "View: Toggle Zen Mode",
+            ToggleCenteredLayout => "View: Toggle Centered Layout",
+            ToggleSidebarPosition => "View: Toggle Primary Side Bar Position",
+            ToggleSecondarySidebar => "View: Toggle Secondary Side Bar Visibility",
+            MovePanelLeft => "View: Move Panel Left",
+            MovePanelRight => "View: Move Panel Right",
+            MovePanelBottom => "View: Move Panel To Bottom",
+            MovePanelTop => "View: Move Panel To Top",
+            TogglePanelPosition => "View: Toggle Panel Position",
+            ToggleMaximizedPanel => "View: Toggle Maximized Panel",
+            AlignPanelCenter => "View: Set Panel Alignment to Center",
+            AlignPanelJustify => "View: Set Panel Alignment to Justify",
+            AlignPanelLeft => "View: Set Panel Alignment to Left",
+            AlignPanelRight => "View: Set Panel Alignment to Right",
+            ActivityBarSide => "View: Show Activity Bar at the Side",
+            ActivityBarTop => "View: Show Activity Bar at the Top",
+            ActivityBarHidden => "View: Hide Activity Bar",
+            MoveView => "View: Move View...",
+            MoveViewTo(_) => "View: Move View To...",
+            MoveViewPlace(..) => "View: Move View",
+            ResetViewLocations => "View: Reset View Locations",
             GoToFile => "Go to File...",
             ShowCommands => "Show All Commands",
             FindInFiles => "Find in Files",
@@ -875,6 +1017,7 @@ impl Command {
             NewTerminalInEditor => "Terminal: Create New Terminal in Editor Area",
             MoveTerminalToEditor => "Terminal: Move Terminal into Editor Area",
             MoveTerminalToPanel => "Terminal: Move Terminal into Panel",
+            ClearRestoredHistory => "Terminal: Clear Restored History",
             RunFile => "Run File",
             RunTask(_) => "Run Task",
             RunTaskPicker => "Tasks: Run Task...",
@@ -934,6 +1077,7 @@ impl Command {
             FocusOpenEditors => "Explorer: Focus on Open Editors View",
             PathChanged(..) => "Path Changed",
             About => "About Halo",
+            InstallInPath | ConfirmInstallInPath => "Shell Command: Install 'halo' command in PATH",
         }
     }
 }
