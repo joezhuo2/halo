@@ -490,7 +490,7 @@ impl Session {
     }
 
     pub fn save(&mut self) {
-        if crate::windows::secondary() {
+        if crate::windows::secondary() || cfg!(test) {
             return;
         }
         if Self::shares_recent() {
