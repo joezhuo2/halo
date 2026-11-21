@@ -213,7 +213,7 @@ mod tests {
 
     fn ws(paths: &[&str]) -> Workspace {
         let mut w = Workspace::default();
-        paths.iter().for_each(|p| drop(w.add(PathBuf::from(p))));
+        paths.iter().for_each(|p| _ = w.add(PathBuf::from(p)));
         w
     }
 

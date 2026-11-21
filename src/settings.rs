@@ -387,6 +387,7 @@ pub struct Backup {
 #[serde(default)]
 pub struct Session {
     pub folder: Option<PathBuf>,
+    pub workspace: crate::workspace::Workspace,
     pub files: Vec<PathBuf>,
     pub pinned: Vec<(usize, PathBuf)>,
     pub backups: Vec<Backup>,
@@ -407,6 +408,7 @@ impl Default for Session {
     fn default() -> Self {
         Self {
             folder: None,
+            workspace: Default::default(),
             files: vec![],
             pinned: vec![],
             backups: vec![],
