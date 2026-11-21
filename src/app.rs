@@ -72,6 +72,7 @@ pub struct Halo {
     pub inbox: Option<std::sync::mpsc::Receiver<crate::ipc::Request>>,
     pub waits: Vec<crate::ipc::Wait>,
     reveal_at: Option<u64>,
+    jump: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
 }
 
 impl Halo {
@@ -176,6 +177,7 @@ impl Halo {
             inbox: None,
             waits: vec![],
             reveal_at: None,
+            jump: None,
         };
         app.editors.config = app.settings.clone();
         app
@@ -844,6 +846,16 @@ impl Halo {
                 self.reveal_at = None;
             }
             ctx.request_repaint();
+        }
+        if let Some(path) = self.editors.active_path().filter(|p| self.session.recent_files.first() != Some(p)) {
+            self.session.remember_file(&path);
+        }
+        if self.jump.as_ref().is_none_or(|(folders, files)| *folders != self.session.recent || *files != self.session.recent_files) {
+            let jump = (self.session.recent.clone(), self.session.recent_files.clone());
+            if !crate::windows::secondary() && std::env::var_os("HALO_COMMANDS").is_none() && !cfg!(test) {
+                crate::jumplist::update(jump.0.clone(), jump.1.clone());
+            }
+            self.jump = Some(jump);
         }
         let window = ui.max_rect();
         if self.git.poll() {

@@ -446,6 +446,7 @@ pub struct Session {
     pub grid: Option<serde_json::Value>,
     pub backups: Vec<Backup>,
     pub recent: Vec<PathBuf>,
+    pub recent_files: Vec<PathBuf>,
     pub sidebar: bool,
     pub panel: bool,
     pub ai: bool,
@@ -465,6 +466,7 @@ impl Default for Session {
             grid: None,
             backups: vec![],
             recent: vec![],
+            recent_files: vec![],
             sidebar: true,
             panel: true,
             ai: false,
@@ -495,6 +497,12 @@ impl Session {
         self.recent.retain(|p| p != folder);
         self.recent.insert(0, folder.to_path_buf());
         self.recent.truncate(10);
+    }
+
+    pub fn remember_file(&mut self, file: &Path) {
+        self.recent_files.retain(|p| p != file);
+        self.recent_files.insert(0, file.to_path_buf());
+        self.recent_files.truncate(10);
     }
 }
 

@@ -17,6 +17,7 @@ mod git;
 mod glob;
 mod history;
 mod ipc;
+mod jumplist;
 mod jsonc;
 mod layers;
 mod icon_theme;

@@ -24,6 +24,9 @@ resvg = { version = "0.50.0", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Storage_EnhancedStorage", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem"] }
+
 [build-dependencies]
 winresource = "0.1"
 

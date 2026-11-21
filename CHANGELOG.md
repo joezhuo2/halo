@@ -6,6 +6,18 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Windows jump list**: right-click the taskbar icon for recent folders,
+  recent files and a New Window task. Items can be pinned to the list.
+
+### Fixed
+
+- Startup no longer flashes a white window when the window was last
+  maximized: windows are cloaked from creation until the first frames are
+  drawn.
+
+
 ## [0.1.4] - 2026-11-21
 
 Covered by tests and by starting the release build off screen. Most of it
