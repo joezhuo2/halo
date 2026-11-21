@@ -1086,6 +1086,27 @@ impl Editors {
         })
     }
 
+    pub fn when_keys(&self, keys: &mut serde_json::Map<String, serde_json::Value>) {
+        let Some((g, t)) = self.active_tab() else { return };
+        let tab = &self.groups[g].tabs[t];
+        let Some(doc) = self.docs.get(&tab.doc) else { return };
+        let path = doc.buf.path.as_deref();
+        let name = path.and_then(Path::file_name).map_or(doc.buf.title.clone(), |n| n.to_string_lossy().into_owned());
+        let ext = path.and_then(Path::extension).map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        let entries = [
+            ("editorHasSelection", tab.sels.iter().any(|s| !s.is_empty()).into()),
+            ("editorHasMultipleSelections", (tab.sels.len() > 1).into()),
+            ("editorReadonly", doc.buf.read_only.into()),
+            ("editorLangId", path.map_or("plaintext".to_owned(), lsp::language_id).into()),
+            ("resourceFilename", name.into()),
+            ("resourceExtname", ext.into()),
+            ("findWidgetVisible", (self.find.open && self.focused).into()),
+            ("suggestWidgetVisible", self.intel.suggesting().into()),
+            ("inDiffEditor", (doc.buf.read_only && doc.hl.language == "Diff").into()),
+        ];
+        keys.extend(entries.map(|(k, v): (&str, serde_json::Value)| (k.to_owned(), v)));
+    }
+
     fn active_doc(&mut self) -> Option<(&mut Doc, &mut Tab)> {
         let (g, t) = self.active_tab()?;
         let tab = &mut self.groups[g].tabs[t];

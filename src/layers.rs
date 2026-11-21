@@ -75,6 +75,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("terminal_scrollback", "terminal.integrated.scrollback"),
     ("terminal_copy_on_selection", "terminal.integrated.copyOnSelection"),
     ("terminal_right_click", "terminal.integrated.rightClickBehavior"),
+    ("send_keybindings_to_shell", "terminal.integrated.sendKeybindingsToShell"),
 ];
 
 pub fn vscode_key(key: &str) -> Option<String> {

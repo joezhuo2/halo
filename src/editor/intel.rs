@@ -405,6 +405,10 @@ pub(super) struct Intel {
 }
 
 impl Intel {
+    pub fn suggesting(&self) -> bool {
+        self.suggest.is_some()
+    }
+
     pub fn dismiss(&mut self) {
         self.suggest = None;
         self.signature = None;

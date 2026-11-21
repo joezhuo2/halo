@@ -414,6 +414,43 @@ impl Halo {
         });
     }
 
+    fn when_keys(&self, ctx: &egui::Context) -> serde_json::Map<String, serde_json::Value> {
+        let terminal = self.bottom.has_focus() || self.ai.has_focus();
+        let typing = ctx.memory(|m| m.focused().is_some()) && !terminal;
+        let debug = match (self.debug.active(), self.editors.marks.stopped.is_some()) {
+            (false, _) => "inactive",
+            (true, true) => "stopped",
+            (true, false) => "running",
+        };
+        let explorer = self.explorer.has_focus();
+        let side = self.session.sidebar && (explorer || self.zone == Zone::Explorer);
+        let mut keys: serde_json::Map<String, serde_json::Value> = [
+            ("editorTextFocus", self.editors.has_focus().into()),
+            ("editorFocus", (self.zone == Zone::Editor && !self.editors.is_empty() && !terminal).into()),
+            ("terminalFocus", terminal.into()),
+            ("inDebugMode", self.debug.active().into()),
+            ("debugState", debug.into()),
+            ("filesExplorerFocus", explorer.into()),
+            ("listFocus", explorer.into()),
+            ("sideBarVisible", self.session.sidebar.into()),
+            ("sideBarFocus", side.into()),
+            ("panelVisible", self.session.panel.into()),
+            ("panelFocus", self.bottom.has_focus().into()),
+            ("inputFocus", typing.into()),
+            ("textInputFocus", typing.into()),
+            ("inQuickOpen", self.search.is_open().into()),
+            ("isWindows", cfg!(windows).into()),
+            ("isLinux", cfg!(target_os = "linux").into()),
+            ("isMac", cfg!(target_os = "macos").into()),
+            ("config.terminal.integrated.sendKeybindingsToShell", self.settings.send_keybindings_to_shell.into()),
+        ]
+        .into_iter()
+        .map(|(k, v): (&str, serde_json::Value)| (k.to_owned(), v))
+        .collect();
+        self.editors.when_keys(&mut keys);
+        keys
+    }
+
     fn handle_window_events(&mut self, ctx: &egui::Context) {
         let (close_requested, focused) = ctx.input(|i| {
             let v = i.viewport();
@@ -724,6 +761,7 @@ impl eframe::App for Halo {
             let rgba = ui::logo_image(128, dark).pixels.iter().flat_map(|p| p.to_srgba_unmultiplied()).collect();
             ctx.send_viewport_cmd(ViewportCommand::Icon(Some(std::sync::Arc::new(egui::IconData { rgba, width: 128, height: 128 }))));
         }
+        command::set_context(self.when_keys(&ctx));
         self.page.keys(&ctx);
         if self.page.recording.is_none() {
             self.global_shortcuts(&ctx);
