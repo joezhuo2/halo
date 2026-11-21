@@ -35,6 +35,7 @@ pub enum Command {
     OpenWorkspaceFromFile,
     OpenWorkspace(PathBuf),
     CloseWorkspace,
+    NewTerminalIn(PathBuf),
     OpenSettings,
     OpenSettingsJson,
     OpenKeybindings,
@@ -703,7 +704,7 @@ impl Command {
             | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
             | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
-            NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
+            NewTerminal | NewTerminalWith(_) | NewTerminalIn(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
             | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
             | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
@@ -745,6 +746,7 @@ impl Command {
             OpenWorkspaceFromFile => "Open Workspace from File...",
             OpenWorkspace(_) => "Open Workspace",
             CloseWorkspace => "Close Workspace",
+            NewTerminalIn(_) => "Terminal: Create New Terminal",
             OpenSettings => "Settings",
             OpenSettingsJson => "Open settings.json",
             OpenKeybindings => "Keyboard Shortcuts (keybindings.json)",

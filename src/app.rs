@@ -285,7 +285,7 @@ impl Halo {
 
     fn dispatch(&mut self, cmd: Command, ctx: &egui::Context) {
         use Command::*;
-        let cwd = self.session.folder.clone();
+        let cwd = self.active_root();
         match cmd {
             OpenFolder => {
                 if let Some(folder) = rfd::FileDialog::new().pick_folder() {
@@ -513,6 +513,16 @@ impl Halo {
                 }
                 None => ui::notify("The active editor is not a terminal."),
             },
+            NewTerminal if self.session.workspace.folders.len() > 1 => {
+                let workspace = &self.session.workspace;
+                let mut items: Vec<_> = workspace.names().into_iter().zip(workspace.roots()).map(|(n, p)| (n, p.to_string_lossy().into_owned(), NewTerminalIn(p))).collect();
+                items.sort_by_key(|(_, path, _)| Some(std::path::Path::new(path)) != cwd.as_deref());
+                self.search.pick("Select the working directory for the new terminal", items);
+            }
+            NewTerminalIn(dir) => {
+                self.session.panel = true;
+                self.bottom.exec(&NewTerminal, &self.settings, Some(&dir), ctx);
+            }
             NewTerminal | NewTerminalWith(_) | SplitTerminal => {
                 self.session.panel = true;
                 self.bottom.exec(&cmd, &self.settings, cwd.as_deref(), ctx);
