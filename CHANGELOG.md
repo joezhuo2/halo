@@ -6,6 +6,82 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+Covered by tests; not yet checked by hand in the running app.
+
+### Added
+
+- **Diff editor**: changes open side by side, with the working tree file on
+  the right as the live, editable document. Inline view toggle per tab and a
+  "Side by Side Diff" setting. Next and Previous Change (`Alt+F5`,
+  `Shift+Alt+F5`, `F7` and `Shift+F7` in a diff) with an "n of m" count and an
+  overview ruler.
+- Stage, unstage and revert single hunks or selected lines from a diff tab or
+  the command palette.
+- Click a change mark in the gutter to peek at the change, then revert or
+  stage it. Show Next and Previous Change are on `Alt+F3` and `Shift+Alt+F3`.
+- **Merge editor**: Incoming, Current, optional Base and an editable Result,
+  with accept per conflict, Accept All, conflict navigation and Complete
+  Merge, which saves and stages the file. Opens from the conflict bar and
+  from conflicted files in Source Control.
+- **Blame** for the current line in the status bar, and optionally inline on
+  the caret line ("Git: Toggle Inline Blame").
+- **Local history**: every save keeps a version of the file. The Timeline
+  lists them with the commits and can diff, restore or delete them.
+- Compare the active file with another file, the clipboard or its saved
+  version, and compare two files from the Explorer.
+- Source Control: Amend, Undo Last Commit, Merge and Rebase with a branch
+  picker, Continue, Abort and Skip while an operation is in progress,
+  Cherry Pick, tags, remotes, worktrees, Clone, Initialize Repository, and a
+  Stashes section with Show, Apply, Pop and Drop.
+- **Debugger** over the Debug Adapter Protocol: Run and Debug view with
+  variables, watch, call stack and breakpoints, a debug toolbar, and `F5`,
+  `F9`, `F10` and `F11`. Reads `.vscode/launch.json`, including
+  `preLaunchTask`. Conditional breakpoints, hit counts and logpoints in the
+  gutter. The Debug Console evaluates expressions while paused. Adapters are
+  set in `debug_adapters`, with defaults for codelldb, lldb-dap, gdb, debugpy
+  and dlv.
+- **Test explorer** for Rust, pytest, Go, Jest and Vitest: Testing view, Run
+  All, Run Failed, Run Test at Cursor (`Ctrl+;` chords), gutter marks with
+  the last result, failure messages at the failing line, Debug Test, and Run
+  with Coverage.
+- **Tasks**: `.vscode/tasks.json` with dependencies, background tasks and
+  problem matchers that feed the Problems panel. npm, yarn, pnpm, bun and
+  cargo tasks are detected. `Ctrl+Shift+B` runs the build task.
+- **Explorer**: select several files, cut, copy and paste, drag and drop to
+  move, drop files from the operating system, an Open Editors section, type
+  to filter (`Ctrl+Alt+F`), the `files_exclude` setting and compact folders.
+- **Terminal**: `Ctrl+Click` opens URLs and file paths with line and column,
+  find with `Ctrl+F`, shell integration for PowerShell, bash and zsh (command
+  marks with exit status, `Ctrl+Up` and `Ctrl+Down` between commands, Run
+  Recent Command), rename and colour, and terminals in the editor area.
+- Markdown preview (`Ctrl+Shift+V`, `Ctrl+K V`) with scroll sync.
+- Image tabs for png, jpg, gif, webp, bmp, ico and svg, with zoom and pan.
+- Import VS Code color themes and file icon themes, from a file or from
+  installed VS Code extensions.
+- Output panel (`Ctrl+Shift+U`) with Git, Language Servers, Debug, Tasks and
+  Halo channels.
+- Notifications with severity, actions and progress, a bell in the status
+  bar and a Notification Center with Do Not Disturb.
+
+### Changed
+
+- Dragging a tab moves the tab itself, and the other tabs slide apart to show
+  where it will land. `Esc` cancels the drag.
+- Files open off the interface thread. Binary files show a notice instead of
+  text, and files above `large_mb` (20 MB by default) open in a light mode.
+- Pinned tabs are restored after a restart.
+- The reference counts above declarations shimmer their own text while they
+  load.
+- `F5` starts debugging when the folder has a `launch.json`, and runs the file
+  otherwise. `Ctrl+F5` runs without debugging.
+- The theme button in the status bar opens the theme picker. `Ctrl+T` still
+  switches between light and dark.
+
+### Fixed
+
+- Long commit subjects in the Timeline are shortened with an ellipsis, so the
+  author and age stay visible.
+
 ## [0.1.3] - 2026-11-20
 
 ### Added
