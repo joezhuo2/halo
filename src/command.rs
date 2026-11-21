@@ -229,15 +229,18 @@ pub fn all() -> Vec<Command> {
     use Command::*;
     vec![
         NewFile, OpenFile, OpenFolder, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, OpenSettings, OpenSettingsJson,
-        OpenKeybindings, Exit, Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, OpenSnippets, MoveLineUp, MoveLineDown, CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove,
-        InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll, SelectAll, AddCursorAbove,
-        AddCursorBelow, SelectNextOccurrence, SelectAllOccurrences, ExpandSelection, ShrinkSelection, CursorUndo, ShowExplorer, ShowSourceControl, ToggleSidebar, TogglePanel, ToggleAi,
-        SplitEditor, ToggleMinimap, ToggleWordWrap, ToggleTheme, ZoomIn, ZoomOut, ZoomReset, GoToFile, ShowCommands, FindInFiles,
-        GoToSymbol, GoToLine, NextEditor, PrevEditor, GoBack, GoForward, ReopenClosed, KeepEditor, GoToDefinition, PeekDefinition, GoToDeclaration,
-        GoToTypeDefinition, GoToImplementation, FindReferences, GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
-        ShowHover, TriggerSuggest, TriggerParameterHints, RenameSymbol, QuickFix, OrganizeImports, FormatDocument,
-        FormatSelection, ShowProblems, RestartLanguageServers, NewTerminal, SplitTerminal, KillTerminal, RunFile, GitSync,
-        RefreshExplorer, About,
+        OpenKeybindings, OpenSnippets, Exit,
+        Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
+        CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
+        RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
+        SelectAll, AddCursorAbove, AddCursorBelow, SelectNextOccurrence, SelectAllOccurrences, ExpandSelection, ShrinkSelection, CursorUndo,
+        ShowExplorer, ShowSourceControl, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
+        ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer,
+        GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, NextEditor, PrevEditor, GoBack, GoForward, ReopenClosed,
+        KeepEditor, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
+        GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
+        ShowHover, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
+        RunFile, NewTerminal, SplitTerminal, KillTerminal, GitSync, About,
     ]
 }
 
@@ -360,6 +363,29 @@ impl Command {
         name[..1].to_lowercase() + &name[1..]
     }
 
+    pub fn category(&self) -> &'static str {
+        use Command::*;
+        match self {
+            NewFile | OpenFile | OpenFolder | OpenFolderIn(_) | OpenPath(_) | Save | SaveAs | SaveAll | CloseEditor
+            | CloseFolder | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit => "File",
+            Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
+            | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
+            | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection => "Edit",
+            SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence | SelectAllOccurrences | ExpandSelection
+            | ShrinkSelection | CursorUndo => "Selection",
+            ShowExplorer | ShowSourceControl | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
+            | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer => "View",
+            GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoTo(..) | NextEditor | PrevEditor | GoBack
+            | GoForward | ReopenClosed | KeepEditor | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
+            | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
+            ShowHover | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
+            RunFile | RunTask(_) => "Run",
+            NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal => "Terminal",
+            OpenDiff(..) | GitSync => "Source Control",
+            About => "Help",
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         use Command::*;
         match self {
@@ -468,6 +494,13 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commands_are_grouped_in_category_order() {
+        let mut groups: Vec<_> = all().iter().map(Command::category).collect();
+        groups.dedup();
+        assert_eq!(groups, ["File", "Edit", "Selection", "View", "Go", "Language", "Run", "Terminal", "Source Control", "Help"]);
+    }
 
     #[test]
     fn keys_round_trip_and_user_entries_rebind() {

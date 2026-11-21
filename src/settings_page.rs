@@ -134,7 +134,7 @@ fn item(ui: &mut Ui, theme: &Theme, group: &str, name: &str, about: &str) {
 
 fn toggle(ui: &mut Ui, theme: &Theme, group: &str, name: &str, about: &str, value: &mut bool) {
     item(ui, theme, group, name, "");
-    ui.checkbox(value, RichText::new(about).color(theme.text_dim));
+    ui::checkbox(ui, theme, value, RichText::new(about).color(theme.text_dim));
 }
 
 fn field(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> egui::Response {
@@ -420,7 +420,13 @@ fn keys_tab(ui: &mut Ui, theme: &Theme, page: &mut SettingsPage, cmds: &mut Vec<
     ui.add_space(10.0);
     let filter = page.filter.to_lowercase();
     grid(ui, "settings_keys", 3, |ui| {
+        let mut category = "";
         for cmd in command::all().into_iter().filter(|c| c.label().to_lowercase().contains(&filter)) {
+            if cmd.category() != category {
+                category = cmd.category();
+                ui.vertical(|ui| ui::section_header(ui, theme, category));
+                ui.end_row();
+            }
             ui.label(RichText::new(cmd.label()).color(theme.text));
             let recording = page.recording.as_ref() == Some(&cmd);
             let (text, color) = match command::shortcut_text(&ctx, &cmd) {
