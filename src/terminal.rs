@@ -198,6 +198,7 @@ pub struct Terminal {
     find: FindBar,
     pub label: Option<String>,
     pub color: Option<usize>,
+    pub profile: Option<ShellProfile>,
 }
 
 impl Drop for Terminal {
@@ -220,7 +221,9 @@ impl Terminal {
             true => crate::shell_integration::prepare(&profile.program, &profile.args),
             false => (profile.args.clone(), vec![]),
         };
-        Self::start(id, &profile.name, &profile.program, &args, &env.into_iter().collect(), cwd, None, ctx)
+        let mut terminal = Self::start(id, &profile.name, &profile.program, &args, &env.into_iter().collect(), cwd, None, ctx)?;
+        terminal.profile = Some(profile.clone());
+        Ok(terminal)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -278,6 +281,7 @@ impl Terminal {
             find: FindBar::default(),
             label: None,
             color: None,
+            profile: None,
         })
     }
 
@@ -319,6 +323,34 @@ impl Terminal {
 
     pub fn has_focus(&self) -> bool {
         self.focused || self.find.has_focus
+    }
+
+    pub fn exec(&mut self, cmd: &Command, ctx: &egui::Context) -> bool {
+        match cmd {
+            Command::Find | Command::Replace => self.find.show(),
+            Command::Copy => {
+                if let Some(text) = self.selection() {
+                    ctx.copy_text(text);
+                }
+            }
+            Command::Paste => {
+                self.focus();
+                ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+            }
+            Command::ScrollToPrevMark | Command::ScrollToNextMark => self.scroll_to_command(*cmd == Command::ScrollToNextMark),
+            Command::CopyLastCommandOutput => match self.last_output() {
+                Some(text) => ctx.copy_text(text),
+                None => ui::notify("No finished command output was found. It needs shell integration in the active terminal."),
+            },
+            Command::RunCommandLine(line) => {
+                self.write(format!("{line}\r"));
+                self.focus();
+            }
+            Command::SetTerminalColor(color) => self.color = *color,
+            _ => return false,
+        }
+        ctx.request_repaint();
+        true
     }
 
     pub fn tint(&self, theme: &Theme) -> Color32 {
@@ -1089,33 +1121,38 @@ impl BottomPanel {
         self.active_pane().map(|p| p.recent()).unwrap_or_default()
     }
 
+    pub fn create(&mut self, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) -> Result<Terminal, String> {
+        self.integrate = settings.shell_integration;
+        let profile = default_profile(settings, cwd).ok_or("No terminal profile is configured in settings.json.")?;
+        self.spawn(&profile, cwd, ctx).ok_or_else(|| self.error.take().unwrap_or_default())
+    }
+
+    pub fn take_active(&mut self) -> Option<Terminal> {
+        let group = self.groups.get_mut(self.active).filter(|g| g.panes.get(g.active).is_some_and(|p| p.task.is_none()))?;
+        let pane = group.panes.remove(group.active);
+        self.prune();
+        Some(pane)
+    }
+
+    pub fn adopt(&mut self, mut terminal: Terminal) {
+        let profile = terminal.profile.clone().unwrap_or_else(|| ShellProfile { name: terminal.name.clone(), program: String::new(), args: vec![] });
+        terminal.focus();
+        self.groups.push(Group { panes: vec![terminal], active: 0, profile });
+        (self.active, self.started, self.tab) = (self.groups.len() - 1, true, PanelTab::Terminal);
+    }
+
     pub fn exec(&mut self, cmd: &Command, settings: &Settings, cwd: Option<&Path>, ctx: &egui::Context) -> bool {
         self.integrate = settings.shell_integration;
         match cmd {
-            Command::ScrollToPrevMark | Command::ScrollToNextMark => {
-                let forward = *cmd == Command::ScrollToNextMark;
-                if let Some(pane) = self.active_pane() {
-                    pane.scroll_to_command(forward);
-                }
+            Command::ScrollToPrevMark | Command::ScrollToNextMark | Command::CopyLastCommandOutput | Command::RunCommandLine(_) | Command::SetTerminalColor(_) => {
+                let Some(pane) = self.active_pane() else { return false };
+                pane.exec(cmd, ctx);
+                self.tab = PanelTab::Terminal;
             }
-            Command::CopyLastCommandOutput => match self.active_pane().and_then(|p| p.last_output()) {
-                Some(text) => ctx.copy_text(text),
-                None => ui::notify("No finished command output was found. It needs shell integration in the active terminal."),
-            },
             Command::RenameTerminal => {
                 let Some(pane) = self.active_pane() else { return false };
                 let rename = (pane.id, pane.title(), true);
                 (self.renaming, self.tab) = (Some(rename), PanelTab::Terminal);
-            }
-            Command::SetTerminalColor(color) => {
-                let Some(pane) = self.active_pane() else { return false };
-                pane.color = *color;
-            }
-            Command::RunCommandLine(line) => {
-                let Some(pane) = self.active_pane() else { return false };
-                pane.write(format!("{line}\r"));
-                pane.focus();
-                self.tab = PanelTab::Terminal;
             }
             Command::NewTerminal => self.new_group(default_profile(settings, cwd).as_ref(), cwd, ctx),
             Command::NewTerminalWith(name) => self.new_group(settings.terminal(name), cwd, ctx),
@@ -1289,6 +1326,7 @@ impl BottomPanel {
                                     p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, pane.title(), FontId::proportional(12.5), theme.text);
                                 }
                             }
+                            let mut to_editor = false;
                             resp.context_menu(|ui| {
                                 ui::menu_pad(ui);
                                 if ui.button("Rename...").clicked() {
@@ -1301,10 +1339,17 @@ impl BottomPanel {
                                         }
                                     }
                                 });
+                                if pane.task.is_none() && ui.button("Move Terminal into Editor Area").clicked() {
+                                    to_editor = true;
+                                }
                                 if ui.button("Kill Terminal").clicked() {
                                     kill = Some((index, at));
                                 }
                             });
+                            if to_editor {
+                                (self.active, group.active) = (index, at);
+                                cmds.push(Command::MoveTerminalToEditor);
+                            }
                             let trash = Rect::from_center_size(pos2(r.right() - 16.0, r.center().y), vec2(20.0, 20.0));
                             if resp.hovered() {
                                 let over = ui.rect_contains_pointer(trash);

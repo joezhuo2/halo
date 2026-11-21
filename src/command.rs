@@ -123,6 +123,9 @@ pub enum Command {
     RenameTerminal,
     ChangeTerminalColor,
     SetTerminalColor(Option<usize>),
+    NewTerminalInEditor,
+    MoveTerminalToEditor,
+    MoveTerminalToPanel,
 
     RunFile,
     RunTask(String),
@@ -390,7 +393,8 @@ pub fn all() -> Vec<Command> {
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
         OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
-        CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, GitSync, ToggleInlineBlame, OpenLineChanges,
+        CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, NewTerminalInEditor, MoveTerminalToEditor, MoveTerminalToPanel,
+        GitSync, ToggleInlineBlame, OpenLineChanges,
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.push(About);
@@ -540,7 +544,8 @@ impl Command {
             | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
             | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration => "Run",
             NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
-            | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_) => "Terminal",
+            | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
+            | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
             OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) => "Source Control",
             About => "Help",
@@ -659,6 +664,9 @@ impl Command {
             RenameTerminal => "Terminal: Rename...",
             ChangeTerminalColor => "Terminal: Change Color...",
             SetTerminalColor(_) => "Terminal: Set Color",
+            NewTerminalInEditor => "Terminal: Create New Terminal in Editor Area",
+            MoveTerminalToEditor => "Terminal: Move Terminal into Editor Area",
+            MoveTerminalToPanel => "Terminal: Move Terminal into Panel",
             RunFile => "Run File",
             RunTask(_) => "Run Task",
             RunTaskPicker => "Tasks: Run Task...",

@@ -173,6 +173,14 @@ impl Halo {
             self.menu_item(ui, NewTerminal);
             self.menu_item(ui, SplitTerminal);
             self.menu_item(ui, KillTerminal);
+            self.menu_item(ui, NewTerminalInEditor);
+            self.menu_item(ui, MoveTerminalToEditor);
+            self.menu_item(ui, MoveTerminalToPanel);
+            ui.separator();
+            self.menu_item(ui, RenameTerminal);
+            self.menu_item(ui, ChangeTerminalColor);
+            self.menu_item(ui, RunRecentLine);
+            self.menu_item(ui, CopyLastCommandOutput);
             ui.separator();
             let names: Vec<String> = self.settings.terminals.iter().map(|p| p.name.clone()).collect();
             for name in names {
