@@ -243,6 +243,8 @@ Each of these can be switched off under **Settings > Text Editor**.
 - `Ctrl+Alt+B`, or the robot button beside Split Editor, opens a panel with a
   **Claude** tab and a **Codex** tab. Each runs that CLI in the open folder
   when you press **Start session**. Nothing starts until you ask.
+- If a CLI is missing, the tab offers **Install Claude CLI** or **Install
+  Codex CLI**, which runs the official installer in the panel's terminal.
 
 ### Search
 
@@ -289,6 +291,10 @@ what it searches:
   View..." or a drag moves the Explorer, Source Control, Testing, Outline,
   Timeline, Terminal and the other views between the side bars and the
   panel.
+- **Windows:** right-click the taskbar icon for recent folders, recent files
+  and New Window. Pin an item to keep it in the list.
+- **macOS:** the native traffic lights sit in the title bar, and the green
+  button opens a fullscreen Space.
 
 ### Accessibility
 
