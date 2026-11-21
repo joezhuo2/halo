@@ -232,6 +232,7 @@ pub struct Session {
     pub panel: bool,
     pub ai: bool,
     pub source_control: bool,
+    pub search: bool,
     pub outline: bool,
 }
 
@@ -245,6 +246,7 @@ impl Default for Session {
             panel: true,
             ai: false,
             source_control: false,
+            search: false,
             outline: true,
         }
     }

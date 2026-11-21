@@ -73,7 +73,7 @@ fn rank<T>(query: &str, items: impl Iterator<Item = T>, text: impl Fn(&T) -> Opt
     scored.into_iter().take(SHOWN).map(|(_, item)| item).collect()
 }
 
-fn list_files(folder: &Path) -> Vec<String> {
+pub(crate) fn list_files(folder: &Path) -> Vec<String> {
     if let Some(text) = git::run(folder, &["ls-files", "-co", "--exclude-standard"]) {
         return text.lines().map(str::to_owned).collect();
     }

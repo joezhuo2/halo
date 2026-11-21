@@ -6,6 +6,7 @@ mod app;
 mod command;
 mod editor;
 mod explorer;
+mod find;
 mod git;
 mod lsp;
 mod scm;

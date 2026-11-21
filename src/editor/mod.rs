@@ -8,7 +8,7 @@ use crate::lsp::{self, Lsp};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use buffer::{After, Document, Kind, Motion, Pattern, Sel, Take, hidden, is_word, merge_sels};
+use buffer::{After, Document, Kind, Motion, Sel, Take, hidden, is_word, merge_sels};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, CursorIcon, Event, EventFilter, FontId, Id, Key, Layout, PointerButton,
@@ -26,6 +26,7 @@ pub fn configure(settings: &Settings) {
     highlight::configure(&settings.grammars, &settings.associations);
 }
 
+pub use buffer::Pattern;
 pub use highlight::languages;
 
 const TAB_H: f32 = 34.0;
@@ -146,6 +147,13 @@ fn block_tokens(path: Option<&Path>) -> Option<(&'static str, &'static str)> {
         (_, ("//", None)) => Some(("/*", "*/")),
         _ => None,
     }
+}
+
+fn search_target(buf: &Document, line: usize) -> Option<(String, usize)> {
+    let text = buf.line_text(line);
+    let number = text.strip_prefix("  ").filter(|_| buf.read_only && buf.title.starts_with("Search: "))?.split(':').next()?.parse().ok()?;
+    let file = (0..line).rev().map(|above| buf.line_text(above)).find(|above| !above.is_empty() && !above.starts_with(' '))?;
+    Some((file, number))
 }
 
 fn visible_text(buf: &Document, line: usize) -> String {
@@ -445,7 +453,31 @@ impl Editors {
         }
     }
 
-    pub fn open_text(&mut self, title: &str, text: &str) {
+    pub fn replace_in(&mut self, path: &Path, pattern: &Pattern, with: &str, preserve: bool) -> Result<usize, String> {
+        let replace = |buf: &mut Document, sels: &mut Vec<Sel>| {
+            let found = buf.find_all(pattern, None);
+            let edits = found.iter().map(|m| (m.0, m.1, pattern.replacement(&buf.text_of(m.0, m.1), with, preserve))).collect();
+            buf.apply(sels, edits, Kind::Other, After::Map);
+            found.len()
+        };
+        let Some(id) = self.find_doc(path) else {
+            let mut buf = Document::load(path)?;
+            let count = replace(&mut buf, &mut vec![Sel::caret(0)]);
+            return if count > 0 { buf.save().map(|_| count) } else { Ok(0) };
+        };
+        let Some(doc) = self.docs.get_mut(&id) else { return Ok(0) };
+        let clean = !doc.buf.is_dirty();
+        let count = match self.groups.iter_mut().flat_map(|group| &mut group.tabs).find(|tab| tab.doc == id) {
+            Some(tab) => replace(&mut doc.buf, &mut tab.sels),
+            None => replace(&mut doc.buf, &mut vec![Sel::caret(0)]),
+        };
+        if clean && count > 0 {
+            self.save_doc(id, false);
+        }
+        Ok(count)
+    }
+
+    pub fn open_text(&mut self, title: &str, text: &str, syntax: Option<&Path>) {
         self.active = self.active.min(self.groups.len() - 1);
         let text = if text.is_empty() { "No differences.\n".to_owned() } else { text.replace("\r\n", "\n") };
         let mut buf = Document::from_text(&text, title.to_owned());
@@ -453,7 +485,7 @@ impl Editors {
         let existing = self.docs.iter().find(|(_, d)| d.buf.read_only && d.buf.title == title).map(|(id, _)| *id);
         let id = existing.unwrap_or_else(|| self.insert_doc(Document::from_text("", String::new())));
         if let Some(doc) = self.docs.get_mut(&id) {
-            doc.hl = Highlighter::new(Some(Path::new("changes.diff")), &buf.rope);
+            doc.hl = Highlighter::new(syntax, &buf.rope);
             doc.max_cols = (0, 0);
             doc.buf = buf;
         }
@@ -839,8 +871,10 @@ impl Editors {
             }
         }
         ui.allocate_rect(rect, Sense::hover());
+        let mut outer = false;
         for cmd in pending {
-            if cmd == Command::ToggleAi {
+            outer |= matches!(cmd, Command::ToggleAi | Command::OpenPath(_));
+            if outer {
                 cmds.push(cmd);
             } else {
                 self.exec(&cmd, settings, ui.ctx());
@@ -1266,6 +1300,7 @@ impl Editors {
         }
         let buf_ref: &Document = buf;
         let lang_ref: &Lang = lang;
+        let root = self.root.clone();
         let out = ui
             .scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
                 area.show_viewport(ui, |ui, viewport| {
@@ -1377,6 +1412,9 @@ impl Editors {
                         if resp.double_clicked() && !on_lens {
                             let (a, b) = buf_ref.word_at(hit(&painter, pos));
                             tab.sels = vec![Sel::new(a, b)];
+                            if let (Some((file, line)), Some(root)) = (search_target(buf_ref, buf_ref.line_of(a)), &root) {
+                                pending.extend([Command::OpenPath(root.join(file)), Command::GoTo(line, 1)]);
+                            }
                         }
                         if resp.triple_clicked() && !on_lens {
                             let line = buf_ref.line_of(hit(&painter, pos));
@@ -2075,11 +2113,12 @@ end", "word ".repeat(100)))], &settings);
     fn opens_read_only_diff_tabs_and_reuses_them() {
         let ctx = egui::Context::default();
         let mut editors = Editors::new();
-        editors.open_text("a.txt (changes)", "@@ -1 +1 @@\r\n-one\r\n+two\r\n");
+        let diff = Some(Path::new("changes.diff"));
+        editors.open_text("a.txt (changes)", "@@ -1 +1 @@\r\n-one\r\n+two\r\n", diff);
         frame(&ctx, &mut editors, vec![]);
         frame(&ctx, &mut editors, vec![]);
         frame(&ctx, &mut editors, vec![Event::Text("x".into())]);
-        editors.open_text("a.txt (changes)", "");
+        editors.open_text("a.txt (changes)", "", diff);
         frame(&ctx, &mut editors, vec![Event::Text("x".into())]);
         assert_eq!(editors.docs.len(), 1);
         assert_eq!(editors.groups[0].tabs.len(), 1);

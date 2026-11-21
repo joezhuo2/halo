@@ -3,6 +3,7 @@ use crate::ai::AiPanel;
 use crate::command::{self, Command, Scope};
 use crate::editor::Editors;
 use crate::explorer::Explorer;
+use crate::find::FindPanel;
 use crate::git::Git;
 use crate::lsp;
 use crate::scm::Scm;
@@ -38,6 +39,7 @@ pub struct Halo {
     pub bottom: BottomPanel,
     pub ai: AiPanel,
     pub search: Search,
+    pub find: FindPanel,
     pub wsl: Wsl,
     notices: Vec<String>,
     pub page: crate::settings_page::SettingsPage,
@@ -76,6 +78,7 @@ impl Halo {
             bottom: BottomPanel::new(),
             ai: AiPanel::default(),
             search: Search::default(),
+            find: FindPanel::default(),
             wsl: Wsl::default(),
             notices: vec![],
             page: Default::default(),
@@ -218,13 +221,17 @@ impl Halo {
                 self.editors.open(&path);
             }
             Exit => ctx.send_viewport_cmd(ViewportCommand::Close),
-            ShowExplorer | ShowSourceControl => {
-                let source_control = cmd == ShowSourceControl;
-                if self.session.sidebar && self.session.source_control == source_control {
+            ShowExplorer | ShowSourceControl | FindInFiles => {
+                let shown = (self.session.search, self.session.source_control && !self.session.search);
+                let wanted = (cmd == FindInFiles, cmd == ShowSourceControl);
+                if self.session.sidebar && shown == wanted && cmd != FindInFiles {
                     self.session.sidebar = false;
                 } else {
                     self.session.sidebar = true;
-                    self.session.source_control = source_control;
+                    (self.session.search, self.session.source_control) = wanted;
+                }
+                if cmd == FindInFiles {
+                    self.find.focus();
                 }
             }
             ToggleSidebar => self.session.sidebar ^= true,
@@ -250,7 +257,6 @@ impl Halo {
             About => self.about = true,
             GoToFile => self.search.open(""),
             ShowCommands => self.search.open(">"),
-            FindInFiles => self.search.open("%"),
             GoToSymbol => self.search.open("@"),
             GoToWorkspaceSymbol => self.search.open("#"),
             RestartLanguageServers => self.editors.lsp.restart(),
@@ -354,10 +360,14 @@ impl Halo {
             .frame(Frame::new().fill(theme.bar))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                let explorer = self.session.sidebar && !self.session.source_control;
-                let source = self.session.sidebar && self.session.source_control;
+                let (search, source) = (self.session.search, self.session.source_control && !self.session.search);
+                let explorer = self.session.sidebar && !search && !source;
+                let source = self.session.sidebar && source;
                 if activity_item(ui, &theme, icons::FILES, explorer, "Explorer (Ctrl+Shift+E)").clicked() {
                     self.cmds.push(Command::ShowExplorer);
+                }
+                if activity_item(ui, &theme, icons::MAGNIFYING_GLASS, self.session.sidebar && search, "Search (Ctrl+Shift+F)").clicked() {
+                    self.cmds.push(Command::FindInFiles);
                 }
                 if activity_item(ui, &theme, icons::GIT_BRANCH, source, "Source Control (Ctrl+Shift+G)").clicked() {
                     self.cmds.push(Command::ShowSourceControl);
@@ -387,6 +397,10 @@ impl Halo {
             .size_range(170.0..=640.0)
             .frame(Frame::new().fill(self.theme.panel))
             .show_collapsible(ui, &mut open, |ui| {
+                if self.session.search {
+                    let folder = self.session.folder.clone();
+                    return self.find.ui(ui, &self.theme, folder.as_deref(), &mut self.editors, &mut self.cmds);
+                }
                 if self.session.source_control {
                     return self.scm.ui(ui, &self.theme, &mut self.git, &mut self.cmds);
                 }
@@ -591,7 +605,7 @@ impl eframe::App for Halo {
             self.git.refresh_prs();
         }
         for (title, text) in self.git.take_texts() {
-            self.editors.open_text(&title, &text);
+            self.editors.open_text(&title, &text, Some(std::path::Path::new("changes.diff")));
         }
         if self.editors.take_saved() {
             self.after_save(&ctx);
