@@ -618,6 +618,22 @@ impl Editors {
         tabs.filter_map(|(g, t, active, doc)| Some((g, t, active, self.terminals.get(&doc)?))).collect()
     }
 
+    pub fn insert_terminal(&mut self, (g, t): (usize, usize), active: bool, terminal: crate::terminal::Terminal) {
+        let (g, was, focus) = (g.min(self.groups.len().saturating_sub(1)), self.active, self.want_focus);
+        let old = self.groups.get(g).map_or(0, |group| group.active);
+        self.active = g;
+        self.add_terminal(terminal);
+        let group = &mut self.groups[self.active];
+        if let Some(tab) = group.tabs.pop() {
+            let at = t.min(group.tabs.len());
+            group.tabs.insert(at, tab);
+            group.active = if active { at } else { old + usize::from(old >= at && group.tabs.len() > 1) };
+        }
+        if !active {
+            (self.active, self.want_focus) = (was, focus);
+        }
+    }
+
     pub fn terminal_focused(&self) -> bool {
         self.focused && self.active_tab().is_some_and(|(g, t)| self.terminals.contains_key(&self.groups[g].tabs[t].doc))
     }

@@ -141,6 +141,7 @@ impl Halo {
             }
         }
         app.editors.restore(&app.session.backups);
+        crate::terminal_restore::restore(&mut app.bottom, &mut app.editors, &app.settings, app.session.folder.as_deref(), ctx);
         app
     }
 

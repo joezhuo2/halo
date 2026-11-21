@@ -7,6 +7,7 @@ use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor, StdSyncHandler
 use crate::editor::Editors;
 use crate::settings::{Settings, ShellProfile};
 use crate::terminal::BottomPanel;
+use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -94,6 +95,29 @@ pub fn save_in(base: &Path, panel: &BottomPanel, editors: &Editors, settings: &S
         false => vec![],
     };
     write_all(&folder_dir(base, folder), &saved);
+}
+
+pub fn read_all(dir: &Path) -> Vec<Saved> {
+    let files = std::fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json"));
+    let mut all: Vec<Saved> = files.filter_map(|e| serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()).collect();
+    all.sort_by_key(|s| s.place);
+    all
+}
+
+pub fn restore_in(base: &Path, panel: &mut BottomPanel, editors: &mut Editors, settings: &Settings, folder: Option<&Path>, ctx: &egui::Context) {
+    ARMED.store(true, Ordering::Relaxed);
+    if !settings.terminal_persistent_sessions {
+        return;
+    }
+    for (place, active, terminal) in panel.revive(&read_all(&folder_dir(base, folder)), settings, folder, ctx) {
+        if let Place::Editor(g, t) = place {
+            editors.insert_terminal((g, t), active, terminal);
+        }
+    }
+}
+
+pub fn restore(panel: &mut BottomPanel, editors: &mut Editors, settings: &Settings, folder: Option<&Path>, ctx: &egui::Context) {
+    restore_in(&base(), panel, editors, settings, folder, ctx);
 }
 
 pub fn save(panel: &BottomPanel, editors: &Editors, settings: &Settings, folder: Option<&Path>) {
