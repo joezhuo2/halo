@@ -177,7 +177,7 @@ impl Halo {
         self.reload_settings(ctx);
         self.explorer.set_roots(workspace.roots(), workspace.names(), workspace.name().filter(|_| workspace.is_multi()));
         self.editors.set_root(folder.clone());
-        self.git.set_root(folder.clone(), ctx);
+        self.git.set_roots(workspace.roots(), ctx);
         self.session.folder = folder;
         self.session.workspace = workspace;
         crate::debug::restore(&self.session, &mut self.editors.marks);
@@ -897,6 +897,10 @@ impl eframe::App for Halo {
             self.editors.reload_clean();
             self.editors.refresh_blame();
             self.timeline.reload();
+        }
+        if self.session.workspace.is_multi() {
+            let active = self.editors.active_path();
+            self.git.follow(active.as_deref(), &ctx);
         }
         self.tasks.poll(&mut self.bottom, &ctx);
         if self.editors.history.changed() {

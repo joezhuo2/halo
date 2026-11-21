@@ -107,6 +107,7 @@ pub struct Git {
     folder: Option<PathBuf>,
     folder_repo: Option<bool>,
     repos: Vec<PathBuf>,
+    followed: Option<PathBuf>,
     shown: Option<(String, Vec<Change>)>,
     texts: Vec<(String, String)>,
     prs: Option<Result<Vec<Pr>, String>>,
@@ -408,6 +409,7 @@ impl Git {
             folder: None,
             folder_repo: None,
             repos: vec![],
+            followed: None,
             shown: None,
             texts: vec![],
             prs: None,
@@ -429,19 +431,35 @@ impl Git {
         }
     }
 
-    pub fn set_root(&mut self, root: Option<PathBuf>, ctx: &egui::Context) {
+    pub fn set_roots(&mut self, roots: Vec<PathBuf>, ctx: &egui::Context) {
+        let root = roots.first().cloned();
         self.folder = root.clone();
         self.folder_repo = None;
         self.repos.clear();
         if let Some(folder) = root.clone() {
             let (tx, ctx) = (self.tx.clone(), ctx.clone());
             std::thread::spawn(move || {
-                let (repos, own) = find_repos(&folder);
+                let (mut repos, own) = find_repos(&folder);
+                for (more, _) in roots[1..].iter().map(|r| find_repos(r)) {
+                    let more: Vec<PathBuf> = more.into_iter().filter(|r| !repos.contains(r)).collect();
+                    repos.extend(more);
+                }
                 let _ = tx.send(Msg::Repos(folder, repos, own));
                 ctx.request_repaint();
             });
         }
         self.select(root, ctx);
+    }
+
+    pub fn follow(&mut self, active: Option<&Path>, ctx: &egui::Context) {
+        if active == self.followed.as_deref() {
+            return;
+        }
+        self.followed = active.map(Path::to_path_buf);
+        let owner = active.and_then(|a| self.repos.iter().filter(|r| a.starts_with(r)).max_by_key(|r| r.components().count()));
+        if let Some(repo) = owner.cloned().filter(|r| self.root.as_ref() != Some(r)) {
+            self.select(Some(repo), ctx);
+        }
     }
 
     pub fn select(&mut self, root: Option<PathBuf>, ctx: &egui::Context) {
@@ -610,6 +628,7 @@ impl Git {
                             self.select(Some(first.clone()), &ctx);
                         }
                         self.repos = repos;
+                        self.followed = None;
                     }
                 }
                 Msg::Files(hash, files) => self.shown = Some((hash, files)),
@@ -953,7 +972,7 @@ mod tests {
         git(&["commit", "-q", "-m", "init"]);
 
         let mut g = Git::new();
-        g.set_root(Some(dir.clone()), &egui::Context::default());
+        g.set_roots(vec![dir.clone()], &egui::Context::default());
         g.wait(|g| g.branch() == Some("trunk"));
         assert_eq!(g.tracking(), None);
         g.push();
@@ -1005,9 +1024,18 @@ mod tests {
         exec(&nested, &["init", "-q"]).unwrap();
         assert_eq!(find_repos(&dir), (vec![dir.clone(), nested.clone()], true));
         assert_eq!(find_repos(&base), (vec![dir.clone()], false));
-        g.set_root(Some(base.clone()), &egui::Context::default());
+        g.set_roots(vec![base.clone()], &egui::Context::default());
         g.wait(|g| g.branch() == Some("trunk") && g.repos().len() == 1);
         assert_eq!(g.root(), Some(dir.as_path()));
+        g.set_roots(vec![nested.clone(), dir.clone()], &egui::Context::default());
+        g.wait(|g| g.repos().len() == 2);
+        assert_eq!(g.repos(), [nested.clone(), dir.clone()]);
+        g.follow(Some(&dir.join("a.txt")), &egui::Context::default());
+        assert_eq!(g.root(), Some(dir.as_path()));
+        g.follow(Some(&nested.join("x.rs")), &egui::Context::default());
+        assert_eq!(g.root(), Some(nested.as_path()));
+        g.set_roots(vec![base.clone()], &egui::Context::default());
+        g.wait(|g| g.branch() == Some("trunk") && g.repos().len() == 1);
 
         g.switch("missing", false);
         g.wait(|g| g.error().is_some());
