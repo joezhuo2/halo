@@ -330,6 +330,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn marks_changed_words_inside_a_line() {
         assert_eq!(tokens("let x_1 = foo(a,  b);"), vec!["let", " ", "x_1", " ", "=", " ", "foo", "(", "a", ",", "  ", "b", ")", ";"]);
         assert_eq!(intra("let x = 1;", "let y = 1;"), (vec![4..5], vec![4..5]));

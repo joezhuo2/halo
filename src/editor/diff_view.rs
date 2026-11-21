@@ -1030,7 +1030,7 @@ mod tests {
         let buf = &editors.docs[&tab.doc].buf;
         tab.sels = vec![Sel::new(buf.line_start(12), buf.line_start(12) + 3)];
         editors.exec(&Command::StageSelectedRanges, &settings, &ctx);
-        settle(&ctx, &mut editors, "the staged line", |e| cached(&dir).contains("+thirteen"));
+        settle(&ctx, &mut editors, "the staged line", |_| cached(&dir).contains("+thirteen"));
         let staged = crate::git::exec(&dir, &["show", ":a.txt"]).unwrap();
         assert!(staged.ends_with("12\nthirteen\n") && staged.contains("TWO\n") && !staged.contains("ELEVEN"), "{staged}");
 
@@ -1047,7 +1047,7 @@ mod tests {
         editors.exec(&Command::RevertHunk, &settings, &ctx);
         assert!(editors.banner.as_ref().is_some_and(|b| b.0.contains("Unstage")));
         editors.exec(&Command::UnstageHunk, &settings, &ctx);
-        settle(&ctx, &mut editors, "the unstaged hunk", |e| !cached(&dir).contains("TWO"));
+        settle(&ctx, &mut editors, "the unstaged hunk", |_| !cached(&dir).contains("TWO"));
         assert!(cached(&dir).contains("+thirteen"));
         settle(&ctx, &mut editors, "the reloaded staged diff", |e| hunks(e) == 1);
         let _ = std::fs::remove_dir_all(&dir);
