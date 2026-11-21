@@ -67,6 +67,14 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("zoom_level", "window.zoomLevel"),
     ("restore_session", "window.restoreWindows"),
     ("auto_update", "update.mode"),
+    ("terminal_font_family", "terminal.integrated.fontFamily"),
+    ("terminal_font_size", "terminal.integrated.fontSize"),
+    ("terminal_line_height", "terminal.integrated.lineHeight"),
+    ("terminal_cursor_style", "terminal.integrated.cursorStyle"),
+    ("terminal_cursor_blinking", "terminal.integrated.cursorBlinking"),
+    ("terminal_scrollback", "terminal.integrated.scrollback"),
+    ("terminal_copy_on_selection", "terminal.integrated.copyOnSelection"),
+    ("terminal_right_click", "terminal.integrated.rightClickBehavior"),
 ];
 
 pub fn vscode_key(key: &str) -> Option<String> {
@@ -107,7 +115,7 @@ pub fn to_halo(key: &str, value: Value) -> Value {
         ("semantic_highlighting", Value::String(_)) => json!(true),
         ("rulers", Value::Array(list)) => list.into_iter().map(|r| r.get("column").cloned().unwrap_or(r)).collect(),
         ("associations", Value::Object(map)) => Value::Object(map.into_iter().map(|(k, v)| (k.trim_start_matches("*.").to_owned(), v)).collect()),
-        ("font_family", Value::String(s)) => font_path(&s),
+        ("font_family" | "terminal_font_family", Value::String(s)) => font_path(&s),
         ("terminals", Value::Object(map)) => map
             .into_iter()
             .map(|(name, p)| {
@@ -131,7 +139,7 @@ pub fn to_vscode(key: &str, value: Value) -> Value {
             Value::Object(map) => Value::Object(map.into_iter().map(|(k, v)| (format!("*.{k}"), v)).collect()),
             other => other,
         },
-        "font_family" => match value.as_str().and_then(|path| font_files().into_iter().find(|f| f.1 == path)) {
+        "font_family" | "terminal_font_family" => match value.as_str().and_then(|path| font_files().into_iter().find(|f| f.1 == path)) {
             Some((name, _)) => json!(name),
             None => value,
         },

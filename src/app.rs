@@ -68,13 +68,14 @@ impl Halo {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = &cc.egui_ctx;
         let settings = Settings::load();
-        ctx.set_fonts(crate::theme::fonts(&settings.font_family));
+        ctx.set_fonts(crate::theme::fonts(&settings.font_family, &settings.terminal_font_family));
+        crate::terminal::configure(&settings);
         crate::editor::configure(&settings);
         let theme = Theme::of(&settings);
         theme.apply(ctx);
 
         let session = Session::load();
-        let font = settings.font_family.clone();
+        let font = format!("{}\n{}", settings.font_family, settings.terminal_font_family);
         let mut app = Self {
             theme,
             settings,
@@ -187,9 +188,11 @@ impl Halo {
         }
         self.theme = Theme::of(&self.settings);
         self.theme.apply(ctx);
-        if self.font != self.settings.font_family {
-            self.font = self.settings.font_family.clone();
-            ctx.set_fonts(crate::theme::fonts(&self.font));
+        crate::terminal::configure(&self.settings);
+        let font = format!("{}\n{}", self.settings.font_family, self.settings.terminal_font_family);
+        if self.font != font {
+            self.font = font;
+            ctx.set_fonts(crate::theme::fonts(&self.settings.font_family, &self.settings.terminal_font_family));
         }
     }
 

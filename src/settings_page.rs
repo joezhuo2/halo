@@ -109,6 +109,14 @@ pub const SETTINGS: &[Meta] = &[
     m("colors", 2, "Workbench", "Colors", "Interface colors on the left, syntax colors on the right.", Kind::Custom),
     m("default_terminal", 3, "Terminal", "Default Profile", "The shell a new terminal starts with.", Kind::Custom),
     m("terminals", 3, "Terminal", "Profiles", "The name, program and arguments of each shell.", Kind::Custom),
+    m("terminal_font_family", 3, "Terminal", "Font Family", "The font of the terminals. Empty uses the editor font.", Kind::Custom),
+    m("terminal_font_size", 3, "Terminal", "Font Size", "The font size of the terminals in pixels. 0 uses the editor font size.", Kind::Float(0.0, 32.0)),
+    m("terminal_line_height", 3, "Terminal", "Line Height", "The height of a terminal row as a multiple of the font height.", Kind::Float(1.0, 3.0)),
+    m("terminal_cursor_style", 3, "Terminal", "Cursor Style", "The cursor shape when the program in the terminal does not choose one.", Kind::Choice(&[("block", "Block"), ("line", "Line"), ("underline", "Underline")])),
+    m("terminal_cursor_blinking", 3, "Terminal", "Cursor Blinking", "Let the terminal cursor blink.", Kind::Toggle),
+    m("terminal_scrollback", 3, "Terminal", "Scrollback", "The number of lines a new terminal keeps above the screen.", Kind::Int(100, 100000)),
+    m("terminal_copy_on_selection", 3, "Terminal", "Copy On Selection", "Copy text to the clipboard as soon as it is selected in a terminal.", Kind::Toggle),
+    m("terminal_right_click", 3, "Terminal", "Right Click Behavior", "What a right click in a terminal does.", Kind::Choice(&[("default", "Nothing (default)"), ("copyPaste", "Copy the selection, or paste without one"), ("paste", "Paste"), ("selectWord", "Select the word"), ("nothing", "Nothing")])),
     m("run", 4, "Run", "Commands", "The command Run File uses for each file extension. {file} is replaced by the path of the file.", Kind::Custom),
     m("tasks", 4, "Run", "Tasks", "Named commands that are listed in the Run menu.", Kind::Custom),
     m("grammars", 5, LANG, "Grammars Folder", "A folder of .sublime-syntax grammars. New grammars and associations are loaded when Halo starts.", Kind::Custom),
@@ -520,7 +528,8 @@ fn remove_button(ui: &mut Ui, theme: &Theme) -> bool {
 
 fn custom(ui: &mut Ui, theme: &Theme, key: &str, s: &mut Settings, page: &mut SettingsPage) {
     match key {
-        "font_family" => font_family(ui, s, page),
+        "font_family" => font_family(ui, &mut s.font_family, "Default (Hack)", page),
+        "terminal_font_family" => font_family(ui, &mut s.terminal_font_family, "Editor font", page),
         "rulers" => rulers(ui, s),
         "word_separators" => drop(field(ui, &mut s.word_separators, 320.0, "separators")),
         "colors" => colors(ui, theme, s),
@@ -543,24 +552,24 @@ fn custom(ui: &mut Ui, theme: &Theme, key: &str, s: &mut Settings, page: &mut Se
     }
 }
 
-fn font_family(ui: &mut Ui, s: &mut Settings, page: &mut SettingsPage) {
+fn font_family(ui: &mut Ui, value: &mut String, empty: &str, page: &mut SettingsPage) {
     let fonts = page.fonts.get_or_insert_with(crate::settings::font_files);
-    let shown = match fonts.iter().find(|font| font.1 == s.font_family) {
+    let shown = match fonts.iter().find(|font| font.1 == *value) {
         Some(font) => font.0.to_owned(),
-        None if s.font_family.is_empty() => "Default (Hack)".to_owned(),
-        None => Path::new(&s.font_family).file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        None if value.is_empty() => empty.to_owned(),
+        None => Path::new(value.as_str()).file_name().unwrap_or_default().to_string_lossy().into_owned(),
     };
     ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("font_family").width(240.0).selected_text(shown).show_ui(ui, |ui| {
-            ui.selectable_value(&mut s.font_family, String::new(), "Default (Hack)");
+        egui::ComboBox::from_id_salt(("font_family", empty)).width(240.0).selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(value, String::new(), empty);
             for (name, file) in fonts.iter() {
-                ui.selectable_value(&mut s.font_family, file.clone(), *name);
+                ui.selectable_value(value, file.clone(), *name);
             }
         });
         if ui.button("Browse...").clicked()
             && let Some(file) = rfd::FileDialog::new().add_filter("Fonts", &["ttf", "otf", "ttc"]).pick_file()
         {
-            s.font_family = file.to_string_lossy().into_owned();
+            *value = file.to_string_lossy().into_owned();
         }
     });
 }
