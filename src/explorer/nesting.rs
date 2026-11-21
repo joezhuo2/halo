@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 fn capture<'a>(pattern: &str, name: &'a str) -> Option<&'a str> {
     match pattern.split_once('*') {
         None => (pattern == name).then_some(""),
@@ -18,6 +20,8 @@ pub fn nest(files: &[&str], dirname: &str, patterns: &[(&str, &str)]) -> Vec<Opt
     let names: Vec<String> = files.iter().map(|f| f.to_lowercase()).collect();
     let dirname = dirname.to_lowercase();
     let mut owner = vec![None; names.len()];
+    let mut index: HashMap<&str, Vec<usize>> = HashMap::new();
+    names.iter().enumerate().for_each(|(i, n)| index.entry(n).or_default().push(i));
     for (parent, children) in patterns {
         let (parent, children) = (parent.trim().to_lowercase(), children.to_lowercase());
         for p in 0..names.len() {
@@ -25,12 +29,12 @@ pub fn nest(files: &[&str], dirname: &str, patterns: &[(&str, &str)]) -> Vec<Opt
             let (base, ext) = names[p].rsplit_once('.').filter(|(b, _)| !b.is_empty()).unwrap_or((&names[p], ""));
             for child in children.split(',').map(str::trim).filter(|c| !c.is_empty()) {
                 let child = child.replace("${capture}", capture).replace("${basename}", base).replace("${extname}", ext).replace("${dirname}", &dirname);
-                for c in 0..names.len() {
-                    if c != p
-                        && owner[c].is_none()
-                        && wild(&child, &names[c])
-                        && !std::iter::successors(Some(p), |a| owner[*a]).any(|a| a == c)
-                    {
+                let hits: Vec<usize> = match child.contains('*') {
+                    true => (0..names.len()).filter(|c| wild(&child, &names[*c])).collect(),
+                    false => index.get(child.as_str()).cloned().unwrap_or_default(),
+                };
+                for c in hits {
+                    if c != p && owner[c].is_none() && !std::iter::successors(Some(p), |a| owner[*a]).any(|a| a == c) {
                         owner[c] = Some(p);
                     }
                 }
