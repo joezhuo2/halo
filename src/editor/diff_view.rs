@@ -369,6 +369,15 @@ fn marks(painter: &Painter, galley: &egui::Galley, x: f32, row: Rect, ranges: Op
     }
 }
 
+pub(super) fn caret_prefix(d: &DiffTab, line: usize) -> &'static str {
+    match hunk_in(&d.model.hunks, line, false) {
+        Some(h) if !h.left.is_empty() => "changed: ",
+        Some(_) => "added: ",
+        None if d.model.hunks.iter().any(|h| h.right.is_empty() && h.right.start == line) => "removed above: ",
+        None => "",
+    }
+}
+
 pub(super) fn tint(painter: &Painter, theme: &Theme, d: &DiffTab, line: usize, band: Rect, x: &dyn Fn(usize) -> f32) {
     if hunk_in(&d.model.hunks, line, false).is_none() {
         return;

@@ -342,6 +342,15 @@ impl Terminal {
         processor.advance(&mut *self.term.lock(), text.as_bytes());
     }
 
+    fn caret_line(&self) -> (String, usize, usize, (usize, usize), usize) {
+        let term = self.term.lock();
+        let point = term.grid().cursor.point;
+        let (text, _) = grid_rows(&term, point.line.0, point.line.0).pop().unwrap_or_default();
+        let text: String = text.into_iter().filter(|c| *c != '\0').collect::<String>().trim_end().to_owned();
+        let column = point.column.0.min(text.chars().count());
+        (text, point.line.0.max(0) as usize, column, (column, column), 0)
+    }
+
     pub fn title(&self) -> String {
         if let Some(label) = &self.label {
             return label.clone();
@@ -511,6 +520,7 @@ impl Terminal {
         let rect = ui.available_rect_before_wrap().shrink2(vec2(10.0, 4.0));
         let id = Id::new(("terminal", self.id));
         let resp = ui.interact(rect, id, Sense::click_and_drag());
+        crate::a11y::line_node(ui, id, ui::Role::Terminal, &self.title(), || self.caret_line());
         let look = look();
         let size = if look.size > 0.0 { look.size } else { font_size };
         let font = if look.font { FontId::new(size, egui::FontFamily::Name("terminal".into())) } else { FontId::monospace(size) };

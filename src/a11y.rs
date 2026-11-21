@@ -51,6 +51,40 @@ pub fn mark(ui: &Ui, id: Id) {
     });
 }
 
+pub fn text_node(ui: &mut Ui, id: Id, name: &str, rope: &ropey::Rope, (anchor, head): (usize, usize), prefix: &str) {
+    line_node(ui, id, crate::ui::Role::MultilineTextInput, name, || {
+        let head = head.min(rope.len_chars());
+        let line = rope.char_to_line(head);
+        let start = rope.line_to_char(line);
+        let text: String = rope.line(line).chars().take_while(|c| !matches!(c, '\n' | '\r')).collect();
+        let shift = prefix.chars().count();
+        let at = |pos: usize| pos.saturating_sub(start).min(text.chars().count()) + shift;
+        (format!("{prefix}{text}"), line, head - start, (at(anchor), at(head)), anchor.abs_diff(head))
+    });
+}
+
+pub fn line_node(ui: &mut Ui, id: Id, role: crate::ui::Role, name: &str, caret: impl FnOnce() -> (String, usize, usize, (usize, usize), usize)) {
+    if ui.ctx().accesskit_node_builder(id, |_| ()).is_none() {
+        return;
+    }
+    let (text, line, column, (anchor, head), selected) = caret();
+    let run = ui.new_child(eframe::egui::UiBuilder::new().id_salt((id, "caret_line")).accessibility_parent(id)).unique_id();
+    ui.ctx().accesskit_node_builder(run, |n| {
+        n.set_role(crate::ui::Role::TextRun);
+        n.set_value(text.clone());
+        n.set_character_lengths(text.chars().map(|c| c.len_utf8() as u8).collect::<Vec<u8>>());
+    });
+    ui.ctx().accesskit_node_builder(id, |n| {
+        n.set_role(role);
+        n.set_label(name);
+        n.set_value(text);
+        let more = if selected > 0 { format!(", {selected} selected") } else { String::new() };
+        n.set_description(format!("Line {}, Column {}{more}", line + 1, column + 1));
+        let position = |at| eframe::egui::accesskit::TextPosition { node: run.accesskit_id(), character_index: at };
+        n.set_text_selection(eframe::egui::accesskit::TextSelection { anchor: position(anchor), focus: position(head) });
+    });
+}
+
 pub fn cycle(ctx: &Context, forward: bool) -> Option<Region> {
     let (first, focused) = marks(ctx, |now, last| if now.first.iter().any(Option::is_some) { (now.first, now.focused) } else { (last.first, last.focused) });
     let n = REGIONS.len();

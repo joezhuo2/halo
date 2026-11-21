@@ -72,6 +72,14 @@ fn tip(cmd: &Command, ctx: &egui::Context) -> String {
     }
 }
 
+pub(super) fn caret_prefix(m: &MergeTab, line: usize) -> &'static str {
+    let k = m.ranges.partition_point(|r| r.end <= line);
+    match m.model.chunks.get(k).filter(|c| c.kind == merge::Kind::Conflict && m.ranges[k].start <= line) {
+        Some(_) => "conflict: ",
+        None => "",
+    }
+}
+
 pub(super) fn tint(painter: &Painter, theme: &Theme, m: &MergeTab, line: usize, band: Rect) {
     let k = m.ranges.partition_point(|r| r.end <= line);
     let Some(chunk) = m.model.chunks.get(k).filter(|c| c.kind == merge::Kind::Conflict && m.ranges[k].start <= line) else { return };

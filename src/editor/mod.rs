@@ -2156,6 +2156,9 @@ impl Editors {
                     let origin = content_rect.min;
                     let clip = ui.clip_rect();
                     let resp = ui.interact(clip, id, Sense::click_and_drag());
+                    let caret = tab.sels.last().map_or((0, 0), |s| (s.anchor, s.head));
+                    let said = shown.as_ref().map(|d| diff_view::caret_prefix(d, buf_ref.line_of(caret.1))).or_else(|| merging.as_ref().map(|m| merge_view::caret_prefix(m, buf_ref.line_of(caret.1))));
+                    crate::a11y::text_node(ui, id, &buf_ref.title, &buf_ref.rope, caret, said.unwrap_or_default());
                     let text_x = origin.x + gutter_w;
                     let row_at = |y: f32| locate((((y - origin.y) / line_h).floor().max(0.0) as usize).min(rows - 1));
                     let first = row_at(origin.y + viewport.min.y).0;
@@ -3105,6 +3108,34 @@ mod tests {
 
     fn key(key: Key, modifiers: egui::Modifiers) -> Event {
         Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    #[test]
+    fn screen_readers_get_selected_tabs_and_the_caret_line() {
+        use crate::ui::Role;
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Paste("first line\n  second".into())]);
+        ctx.enable_accesskit();
+        let mut tree = |events: Vec<Event>| {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 600.0))), events, focused: true, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| editors.ui(ui, &Theme::dark(), &settings, &Git::new(), &mut vec![]));
+            crate::a11y::tree(&mut out)
+        };
+        let nodes = tree(vec![]);
+        assert_eq!(crate::a11y::node(&nodes, Role::Tab, "Untitled-2, modified").is_selected(), Some(true));
+        assert_eq!(crate::a11y::node(&nodes, Role::Tab, "Untitled-1").is_selected(), Some(false));
+        let text = crate::a11y::node(&nodes, Role::MultilineTextInput, "Untitled-2");
+        assert_eq!((text.value(), text.description()), (Some("  second"), Some("Line 2, Column 9")));
+        let nodes = tree(vec![key(Key::ArrowUp, Default::default())]);
+        let text = crate::a11y::node(&nodes, Role::MultilineTextInput, "Untitled-2");
+        assert_eq!((text.value(), text.description()), (Some("first line"), Some("Line 1, Column 9")));
+        assert!(nodes.iter().any(|n| n.role() == Role::TextRun && n.value() == Some("first line")));
     }
 
     fn frame_with(ctx: &egui::Context, editors: &mut Editors, events: Vec<Event>, settings: &Settings) {
