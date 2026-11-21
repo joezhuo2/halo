@@ -826,8 +826,8 @@ pub fn color_names() -> [(Option<usize>, &'static str); 9] {
     ]
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PanelTab {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PanelTab {
     Problems,
     Output,
     Debug,
@@ -835,15 +835,6 @@ enum PanelTab {
     Ports,
     Tests,
 }
-
-const TABS: [(PanelTab, &str); 6] = [
-    (PanelTab::Problems, "PROBLEMS"),
-    (PanelTab::Output, "OUTPUT"),
-    (PanelTab::Debug, "DEBUG CONSOLE"),
-    (PanelTab::Terminal, "TERMINAL"),
-    (PanelTab::Ports, "PORTS"),
-    (PanelTab::Tests, "TEST RESULTS"),
-];
 
 struct Group {
     panes: Vec<Terminal>,
@@ -931,7 +922,7 @@ fn default_profile(settings: &Settings, cwd: Option<&Path>) -> Option<ShellProfi
 }
 
 pub struct BottomPanel {
-    tab: PanelTab,
+    pub tab: PanelTab,
     groups: Vec<Group>,
     active: usize,
     next_id: u64,
@@ -981,20 +972,8 @@ impl BottomPanel {
         self.focused = false;
     }
 
-    pub fn show_problems(&mut self) {
-        self.tab = PanelTab::Problems;
-    }
-
-    pub fn showing_problems(&self) -> bool {
-        self.tab == PanelTab::Problems
-    }
-
     pub fn show_tests(&mut self) {
         self.tab = PanelTab::Tests;
-    }
-
-    pub fn show_output(&mut self) {
-        self.tab = PanelTab::Output;
     }
 
     pub fn show_debug(&mut self) {
@@ -1243,36 +1222,33 @@ impl BottomPanel {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn ui(
+    pub fn header(
         &mut self,
         ui: &mut Ui,
         theme: &Theme,
         settings: &Settings,
         cwd: Option<&Path>,
-        lsp: &Lsp,
-        task_files: &[(PathBuf, Vec<Diagnostic>)],
+        labels: &[&str],
+        index: &mut usize,
+        tab: Option<PanelTab>,
         cmds: &mut Vec<Command>,
-    ) {
+    ) -> (Rect, Option<usize>) {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-        self.focused = false;
-        self.integrate = settings.shell_integration;
-        self.prune();
         let ctx = ui.ctx().clone();
         let header = Rect::from_min_size(ui.max_rect().min, vec2(ui.max_rect().width(), 32.0));
         let body = Rect::from_min_max(pos2(header.left(), header.bottom()), ui.max_rect().max);
         ui.allocate_rect(ui.max_rect(), Sense::hover());
+        let mut dragged = None;
 
         ui.scope_builder(UiBuilder::new().max_rect(header.shrink2(vec2(10.0, 0.0))), |ui| {
             ui.horizontal_centered(|ui| {
-                let mut index = TABS.iter().position(|t| t.0 == self.tab).unwrap_or(0);
-                ui::tabs(ui, theme, Id::new("panel_tab"), &TABS.map(|t| t.1), &mut index);
-                self.tab = TABS[index].0;
+                dragged = ui::tabs(ui, theme, Id::new("panel_tab"), labels, index);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let behind = ui.painter().add(egui::Shape::Noop);
                     if ui::icon_button(ui, theme, icons::X, 24.0, false, "Close Panel (Ctrl+J)").clicked() {
                         cmds.push(Command::TogglePanel);
                     }
-                    if self.tab == PanelTab::Terminal {
+                    if tab == Some(PanelTab::Terminal) {
                         if ui::icon_button(ui, theme, icons::TRASH, 24.0, false, "Kill Terminal").clicked() {
                             self.kill_active();
                         }
@@ -1295,7 +1271,7 @@ impl BottomPanel {
                         if ui::icon_button(ui, theme, icons::PLUS, 24.0, false, "New Terminal (Ctrl+Shift+`)").clicked() {
                             self.new_group(default_profile(settings, cwd).as_ref(), cwd, &ctx);
                         }
-                    } else if self.tab == PanelTab::Ports
+                    } else if tab == Some(PanelTab::Ports)
                         && ui::icon_button(ui, theme, icons::ARROWS_CLOCKWISE, 24.0, false, "Refresh Ports").clicked()
                     {
                         self.ports_loaded = false;
@@ -1305,9 +1281,28 @@ impl BottomPanel {
                 });
             });
         });
+        (body, dragged)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn body(
+        &mut self,
+        ui: &mut Ui,
+        body: Rect,
+        tab: PanelTab,
+        theme: &Theme,
+        settings: &Settings,
+        cwd: Option<&Path>,
+        lsp: &Lsp,
+        task_files: &[(PathBuf, Vec<Diagnostic>)],
+        cmds: &mut Vec<Command>,
+    ) {
+        self.integrate = settings.shell_integration;
+        self.prune();
         ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             ui.set_clip_rect(body.intersect(ui.clip_rect()));
-            match self.tab {
+            match tab {
                 PanelTab::Terminal => self.terminals(ui, body, theme, settings, cwd, cmds),
                 PanelTab::Ports => self.ports_ui(ui, body, theme),
                 PanelTab::Problems => problems_ui(ui, theme, lsp, task_files, cwd, cmds),

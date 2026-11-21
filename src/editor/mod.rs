@@ -1102,6 +1102,10 @@ impl Editors {
         self.groups.iter().all(|g| g.tabs.is_empty())
     }
 
+    pub fn columns(&self) -> usize {
+        self.groups.len()
+    }
+
     pub fn open_paths(&self) -> Vec<PathBuf> {
         let mut out: Vec<PathBuf> = vec![];
         for tab in self.groups.iter().flat_map(|g| &g.tabs).filter(|t| !t.preview) {

@@ -1,5 +1,9 @@
-use crate::ui::icons;
-use eframe::egui::{Rect, vec2};
+use crate::app::Halo;
+use crate::command::Command;
+use crate::terminal::PanelTab;
+use crate::theme::Theme;
+use crate::ui::{self, icons};
+use eframe::egui::{self, CornerRadius, CursorIcon, FontId, Frame, Id, Layout, Rect, Response, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -52,7 +56,7 @@ pub enum Activity {
 
 use View::*;
 
-pub const ALL: [View; 14] = [Explorer, Search, SourceControl, RunAndDebug, Testing, Outline, Timeline, Ai, Problems, Output, DebugConsole, TestResults, Terminal, Ports];
+pub const ALL: [View; 14] = [Explorer, Search, SourceControl, RunAndDebug, Testing, Outline, Timeline, Ai, Problems, Output, DebugConsole, Terminal, Ports, TestResults];
 pub const MOVABLE: [View; 12] = [Explorer, SourceControl, RunAndDebug, Testing, Outline, Timeline, Ai, Problems, Output, DebugConsole, TestResults, Terminal];
 pub const PLACES: [Place; 3] = [Place::Primary, Place::Secondary, Place::Panel];
 pub const ACTIVITY: f32 = 46.0;
@@ -107,6 +111,28 @@ impl View {
             Ai => Place::Secondary,
             Problems | Output | DebugConsole | TestResults | Terminal | Ports => Place::Panel,
             _ => Place::Primary,
+        }
+    }
+
+    pub fn tab(self) -> Option<PanelTab> {
+        Some(match self {
+            Problems => PanelTab::Problems,
+            Output => PanelTab::Output,
+            DebugConsole => PanelTab::Debug,
+            TestResults => PanelTab::Tests,
+            Terminal => PanelTab::Terminal,
+            Ports => PanelTab::Ports,
+            _ => return None,
+        })
+    }
+
+    fn tip(self) -> &'static str {
+        match self {
+            Explorer => "Explorer (Ctrl+Shift+E)",
+            Search => "Search (Ctrl+Shift+F)",
+            SourceControl => "Source Control (Ctrl+Shift+G)",
+            RunAndDebug => "Run and Debug (Ctrl+Shift+D)",
+            view => view.name(),
         }
     }
 }
@@ -198,7 +224,7 @@ impl Default for Workbench {
     fn default() -> Self {
         Self {
             moved: vec![],
-            active: [None; 3],
+            active: [None, None, Some(Terminal)],
             panel_at: None,
             panel_max: false,
             primary_size: 260.0,
@@ -253,7 +279,7 @@ impl Workbench {
 
     pub fn reset_views(&mut self) {
         self.moved.clear();
-        self.active = [None; 3];
+        self.active = Self::default().active;
     }
 
     pub fn enter_zen(&mut self, shown: [bool; 3], full: bool, center: bool) -> [bool; 3] {
@@ -344,6 +370,449 @@ pub fn place(area: Rect, s: &Spec) -> Rects {
 
 pub fn centered(editor: Rect, ratio: f32) -> Rect {
     Rect::from_center_size(editor.center(), vec2(editor.width() * ratio.clamp(0.2, 1.0), editor.height()))
+}
+
+fn edge_line(rect: Rect, edge: Edge) -> Rect {
+    match edge {
+        Edge::Left => Rect::from_x_y_ranges(rect.left() - 0.5..=rect.left() + 0.5, rect.y_range()),
+        Edge::Right => Rect::from_x_y_ranges(rect.right() - 0.5..=rect.right() + 0.5, rect.y_range()),
+        Edge::Top => Rect::from_x_y_ranges(rect.x_range(), rect.top() - 0.5..=rect.top() + 0.5),
+        Edge::Bottom => Rect::from_x_y_ranges(rect.x_range(), rect.bottom() - 0.5..=rect.bottom() + 0.5),
+    }
+}
+
+fn splitter(ui: &mut Ui, theme: &Theme, id: Id, rect: Rect, edge: Edge) -> Response {
+    let line = edge_line(rect, edge);
+    let resp = ui.interact(line.expand(3.0), id, Sense::click_and_drag());
+    let hot = resp.hovered() || resp.dragged();
+    if hot {
+        ui.ctx().set_cursor_icon(if edge.vertical() { CursorIcon::ResizeHorizontal } else { CursorIcon::ResizeVertical });
+    }
+    let t = ui::anim(ui, id.with("hot"), hot);
+    ui.painter().rect_filled(line.expand(t), CornerRadius::ZERO, ui::mix(theme.border, theme.accent, t));
+    resp
+}
+
+fn resize(ui: &mut Ui, theme: &Theme, id: &str, rect: Rect, edge: Edge, size: &mut f32, range: (f32, f32)) {
+    let d = splitter(ui, theme, Id::new(id), rect, edge).drag_delta();
+    let grow = match edge {
+        Edge::Right => d.x,
+        Edge::Left => -d.x,
+        Edge::Bottom => d.y,
+        Edge::Top => -d.y,
+    };
+    *size = (*size + grow).clamp(range.0, range.1);
+}
+
+fn activity_item(ui: &mut Ui, theme: &Theme, icon: &str, active: bool, tip: &str, size: egui::Vec2) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
+    let a = ui::anim(ui, resp.id.with("active"), active);
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if a > 0.0 {
+            let bar = match size.x > size.y {
+                true => Rect::from_min_max(pos2(rect.left(), rect.bottom() - 2.0), rect.max).shrink2(vec2(8.0 * (1.0 - a), 0.0)),
+                false => Rect::from_min_max(rect.min, pos2(rect.left() + 2.0, rect.bottom())).shrink2(vec2(0.0, 8.0 * (1.0 - a))),
+            };
+            painter.rect_filled(bar, CornerRadius::ZERO, ui::with_alpha(theme.accent, a));
+        }
+        let color = ui::mix(theme.text_dim, theme.text, h.max(a));
+        painter.text(rect.center(), egui::Align2::CENTER_CENTER, icon, FontId::proportional(size.y * 0.52), color);
+    }
+    resp.on_hover_text(tip)
+}
+
+fn side_menu(ui: &mut Ui, right: bool, cmds: &mut Vec<Command>) {
+    ui::menu_pad(ui);
+    let items = [
+        (if right { "Move Primary Side Bar Left" } else { "Move Primary Side Bar Right" }, Command::ToggleSidebarPosition),
+        ("Hide Primary Side Bar", Command::ToggleSidebar),
+        ("Move View...", Command::MoveView),
+        ("Reset View Locations", Command::ResetViewLocations),
+    ];
+    for (label, cmd) in items {
+        if ui.button(label).clicked() {
+            cmds.push(cmd);
+            ui.close();
+        }
+    }
+}
+
+impl Halo {
+    fn visible(&mut self, place: Place) -> &mut bool {
+        match place {
+            Place::Primary => &mut self.session.sidebar,
+            Place::Secondary => &mut self.session.ai,
+            Place::Panel => &mut self.session.panel,
+        }
+    }
+
+    fn is_visible(&self, place: Place) -> bool {
+        [self.session.sidebar, self.session.ai, self.session.panel][place as usize]
+    }
+
+    pub(crate) fn showing(&self, view: View) -> bool {
+        let place = self.session.layout.place(view);
+        self.is_visible(place) && self.session.layout.shown(place) == Some(view)
+    }
+
+    pub(crate) fn reveal(&mut self, view: View) {
+        let place = self.session.layout.activate(view);
+        *self.visible(place) = true;
+    }
+
+    pub(crate) fn toggle_view(&mut self, view: View) {
+        let place = self.session.layout.place(view);
+        let before = (*self.visible(place), self.session.layout.shown(place));
+        self.session.layout.activate(view);
+        let same = before.1 == self.session.layout.shown(place);
+        *self.visible(place) = !(before.0 && same);
+    }
+
+    pub(crate) fn panel_at(&self) -> Edge {
+        self.session.layout.panel_at.unwrap_or_else(|| Edge::parse(&self.settings.panel_location))
+    }
+
+    pub(crate) fn toggle_zen(&mut self) {
+        let shown = match self.session.layout.leave_zen() {
+            Some(shown) => shown,
+            None => {
+                let now = [self.session.sidebar, self.session.ai, self.session.panel];
+                self.session.layout.enter_zen(now, self.settings.zen_full_screen, self.settings.zen_center_layout)
+            }
+        };
+        (self.session.sidebar, self.session.ai, self.session.panel) = (shown[0], shown[1], shown[2]);
+    }
+
+    pub(crate) fn layout_command(&mut self, cmd: Command) {
+        use Command::*;
+        let layout = &mut self.session.layout;
+        match cmd {
+            ToggleFullScreen => layout.fullscreen ^= true,
+            ToggleZenMode => self.toggle_zen(),
+            ToggleCenteredLayout => layout.centered ^= true,
+            ToggleSecondarySidebar => self.session.ai ^= true,
+            ToggleMaximizedPanel => {
+                layout.panel_max ^= true;
+                self.session.panel |= self.session.layout.panel_max;
+            }
+            MovePanelLeft | MovePanelRight | MovePanelBottom | MovePanelTop | TogglePanelPosition => {
+                let at = match cmd {
+                    MovePanelLeft => Edge::Left,
+                    MovePanelRight => Edge::Right,
+                    MovePanelTop => Edge::Top,
+                    MovePanelBottom => Edge::Bottom,
+                    _ if self.panel_at().vertical() => Edge::Bottom,
+                    _ => Edge::Right,
+                };
+                (self.session.layout.panel_at, self.session.panel) = (Some(at), true);
+            }
+            ToggleSidebarPosition | AlignPanelCenter | AlignPanelJustify | AlignPanelLeft | AlignPanelRight | ActivityBarSide | ActivityBarTop
+            | ActivityBarHidden => {
+                let s = &mut self.settings;
+                match cmd {
+                    ToggleSidebarPosition => s.sidebar_location = if Edge::side(&s.sidebar_location) == Edge::Left { "right" } else { "left" }.into(),
+                    AlignPanelCenter => s.panel_alignment = "center".into(),
+                    AlignPanelJustify => s.panel_alignment = "justify".into(),
+                    AlignPanelLeft => s.panel_alignment = "left".into(),
+                    AlignPanelRight => s.panel_alignment = "right".into(),
+                    ActivityBarSide => s.activity_bar_location = "default".into(),
+                    ActivityBarTop => s.activity_bar_location = "top".into(),
+                    _ => s.activity_bar_location = "hidden".into(),
+                }
+                s.save();
+            }
+            MoveView => {
+                let items = MOVABLE.map(|v| (v.name().to_owned(), self.session.layout.place(v).name().to_owned(), MoveViewTo(v)));
+                self.search.pick("Select a view to move", items.into());
+            }
+            MoveViewTo(view) => {
+                let from = self.session.layout.place(view);
+                let items = PLACES.into_iter().filter(|p| *p != from).map(|p| (p.name().to_owned(), String::new(), MoveViewPlace(view, p))).collect();
+                self.search.pick(&format!("Select where to move {}", view.name()), items);
+            }
+            MoveViewPlace(view, place) => {
+                if self.session.layout.move_view(view, place) {
+                    self.reveal(view);
+                }
+            }
+            ResetViewLocations => layout.reset_views(),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn reconcile_panel(&mut self) {
+        let tab = self.bottom.tab;
+        if self.seen_panel.0 != tab
+            && let Some(view) = ALL.into_iter().find(|v| v.tab() == Some(tab))
+        {
+            if self.session.layout.place(view) != Place::Panel && !self.seen_panel.1 {
+                self.session.panel = false;
+            }
+            self.reveal(view);
+        }
+        self.bottom.tab = self.session.layout.shown(Place::Panel).and_then(View::tab).unwrap_or(PanelTab::Ports);
+        self.seen_panel = (self.bottom.tab, self.session.panel);
+    }
+
+    pub(crate) fn workbench(&mut self, ui: &mut Ui) {
+        self.bottom.blur();
+        self.reconcile_panel();
+        egui::CentralPanel::default().frame(Frame::new().fill(self.theme.bg)).show(ui, |ui| {
+            let layout = &self.session.layout;
+            let panel_at = self.panel_at();
+            let spec = Spec {
+                side: Edge::side(&self.settings.sidebar_location),
+                panel_at,
+                align: Align::parse(&self.settings.panel_alignment),
+                activity: if layout.zen.is_some() { Activity::Hidden } else { Activity::parse(&self.settings.activity_bar_location) },
+                primary: self.session.sidebar.then_some(layout.primary_size),
+                secondary: (self.session.ai && !layout.views(Place::Secondary).is_empty()).then_some(layout.secondary_size),
+                panel: self.session.panel.then_some(if panel_at.vertical() { layout.panel_width } else { layout.panel_size }),
+                max: layout.panel_max,
+            };
+            let r = place(ui.max_rect(), &spec);
+            self.editor_area(ui, r.editor);
+            if let Some(rect) = r.activity {
+                self.icon_strip(ui, rect, Place::Primary, spec.activity == Activity::Side);
+            }
+            let mut targets: Vec<(Place, Rect)> = r.activity.map(|a| (Place::Primary, a)).into_iter().collect();
+            for (place, rect) in [(Place::Primary, r.primary), (Place::Secondary, r.secondary), (Place::Panel, r.panel)] {
+                if let Some(rect) = rect {
+                    self.container(ui, place, rect);
+                    targets.push((place, rect));
+                }
+            }
+            let theme = self.theme.clone();
+            let layout = &mut self.session.layout;
+            if let Some(rect) = r.primary {
+                let rect = r.activity.filter(|_| spec.activity == Activity::Top).map_or(rect, |a| a.union(rect));
+                resize(ui, &theme, "primary_split", rect, spec.side.flip(), &mut layout.primary_size, PRIMARY);
+            }
+            if let Some(rect) = r.secondary {
+                resize(ui, &theme, "secondary_split", rect, spec.side, &mut layout.secondary_size, SECONDARY);
+            }
+            if let Some(rect) = r.panel.filter(|_| !spec.max) {
+                let (size, range) = if panel_at.vertical() { (&mut layout.panel_width, PANEL_WIDTH) } else { (&mut layout.panel_size, PANEL) };
+                resize(ui, &theme, "panel_split", rect, panel_at.flip(), size, range);
+            }
+            self.drop_view(ui, &targets);
+        });
+        if !self.showing(Ai) {
+            self.ai.blur();
+        }
+    }
+
+    fn editor_area(&mut self, ui: &mut Ui, area: Rect) {
+        if area.width() < 1.0 || area.height() < 1.0 {
+            return;
+        }
+        let layout = &self.session.layout;
+        let zen = layout.zen.is_some();
+        let center = layout.centered && self.editors.columns() == 1;
+        let rect = if center { centered(area, layout.centered_ratio) } else { area };
+        let frame = if zen && self.settings.zen_show_tabs == "none" && !self.editors.is_empty() { rect.with_min_y(rect.top() - 34.0) } else { rect };
+        let plain = (zen && self.settings.zen_hide_line_numbers).then(|| {
+            let mut s = self.settings.clone();
+            s.line_numbers = "off".into();
+            s.langs.values_mut().for_each(|l| l.line_numbers = "off".into());
+            s
+        });
+        let ai = self.showing(Ai);
+        ui.scope_builder(UiBuilder::new().max_rect(frame).id_salt("editor_area"), |ui| {
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            if self.editors.is_empty() {
+                self.welcome(ui);
+            } else {
+                self.editors.ai_open = ai;
+                self.editors.ui(ui, &self.theme, plain.as_ref().unwrap_or(&self.settings), &self.git, &mut self.cmds);
+            }
+            self.drop_files(ui, rect);
+        });
+        if center {
+            let theme = self.theme.clone();
+            for (edge, sign) in [(Edge::Left, -1.0), (Edge::Right, 1.0)] {
+                let resp = splitter(ui, &theme, Id::new(("centered_margin", sign as i32)), rect, edge);
+                let ratio = &mut self.session.layout.centered_ratio;
+                *ratio = (*ratio + sign * 2.0 * resp.drag_delta().x / area.width()).clamp(0.2, 1.0);
+                if resp.double_clicked() {
+                    *ratio = RATIO;
+                }
+            }
+        }
+    }
+
+    fn container(&mut self, ui: &mut Ui, place: Place, rect: Rect) {
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, self.theme.panel);
+        let tops = self.session.layout.tops(place);
+        let Some(mut view) = self.session.layout.shown(place) else { return };
+        let mut body = rect;
+        if place == Place::Panel {
+            let names: Vec<String> = tops.iter().map(|v| v.name().to_uppercase()).collect();
+            let labels: Vec<&str> = names.iter().map(String::as_str).collect();
+            let mut index = tops.iter().position(|v| *v == view).unwrap_or(0);
+            let cwd = self.session.folder.clone();
+            let (rest, dragged) = ui
+                .scope_builder(UiBuilder::new().max_rect(rect).id_salt("panel_header"), |ui| {
+                    self.bottom.header(ui, &self.theme, &self.settings, cwd.as_deref(), &labels, &mut index, view.tab(), &mut self.cmds)
+                })
+                .inner;
+            (body, view) = (rest, tops[index]);
+            self.session.layout.active[Place::Panel as usize] = Some(view);
+            if let Some(dragged) = dragged.map(|i| tops[i]).filter(|v| MOVABLE.contains(v)) {
+                self.dragging = Some(dragged);
+            }
+        } else if place == Place::Secondary && tops.len() > 1 {
+            let strip = Rect::from_min_size(rect.min, vec2(rect.width(), STRIP));
+            body.min.y = strip.bottom();
+            self.icon_strip(ui, strip, place, false);
+        }
+        self.view_ui(ui, view, body);
+    }
+
+    fn icon_strip(&mut self, ui: &mut Ui, rect: Rect, place: Place, vertical: bool) {
+        let theme = self.theme.clone();
+        let size = if vertical { vec2(ACTIVITY, 44.0) } else { vec2(36.0, STRIP) };
+        let tops = self.session.layout.tops(place);
+        let shown = self.session.layout.shown(place).filter(|_| self.is_visible(place));
+        let primary = place == Place::Primary;
+        let right = Edge::side(&self.settings.sidebar_location) == Edge::Right;
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, if vertical { theme.bar } else { theme.panel });
+        if primary {
+            ui.interact(rect, Id::new("activity_bar"), Sense::click()).context_menu(|ui| side_menu(ui, right, &mut self.cmds));
+        }
+        let mut clicked = None;
+        let layout = if vertical { Layout::top_down(egui::Align::Center) } else { Layout::left_to_right(egui::Align::Center) };
+        ui.scope_builder(UiBuilder::new().max_rect(rect).layout(layout).id_salt(("icon_strip", place as u8)), |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            for view in &tops {
+                let resp = activity_item(ui, &theme, view.icon(), shown == Some(*view), view.tip(), size);
+                if resp.drag_started() && MOVABLE.contains(view) {
+                    self.dragging = Some(*view);
+                }
+                if resp.clicked() {
+                    clicked = Some(*view);
+                }
+                if primary {
+                    resp.context_menu(|ui| side_menu(ui, right, &mut self.cmds));
+                }
+            }
+            if !primary {
+                return;
+            }
+            ui.with_layout(if vertical { Layout::bottom_up(egui::Align::Center) } else { Layout::right_to_left(egui::Align::Center) }, |ui| {
+                if activity_item(ui, &theme, icons::GEAR, false, "Settings (Ctrl+,)", size).clicked() {
+                    self.cmds.push(Command::OpenSettings);
+                }
+                let accounts = activity_item(ui, &theme, icons::USER_CIRCLE, false, "Accounts", size);
+                egui::Popup::menu(&accounts).show(|ui| self.accounts.menu(ui));
+                if cfg!(windows) {
+                    let folder = self.session.folder.clone();
+                    let in_wsl = folder.as_deref().and_then(crate::wsl::parse).is_some();
+                    let button = activity_item(ui, &theme, icons::LINUX_LOGO, in_wsl, "Switch to WSL", size);
+                    egui::Popup::menu(&button).show(|ui| self.wsl.menu(ui, folder.as_deref(), &mut self.cmds));
+                }
+            });
+        });
+        match clicked {
+            Some(Search) => self.cmds.push(Command::FindInFiles),
+            Some(view) if primary => self.toggle_view(view),
+            Some(view) => self.reveal(view),
+            None => {}
+        }
+    }
+
+    fn view_ui(&mut self, ui: &mut Ui, view: View, rect: Rect) {
+        let cwd = self.session.folder.clone();
+        let active = self.editors.active_path();
+        ui.scope_builder(UiBuilder::new().max_rect(rect).id_salt(("view", view as u8)), |ui| {
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            match view {
+                Explorer => self.explorer_view(ui, active.as_deref()),
+                Search => self.find.ui(ui, &self.theme, cwd.as_deref(), &mut self.editors, &mut self.cmds),
+                SourceControl => self.scm.ui(ui, &self.theme, &mut self.git, &mut self.cmds),
+                RunAndDebug => self.debug_view(ui),
+                Testing => self.testing_view(ui),
+                Outline => self.outline_view(ui),
+                Timeline => self.timeline.ui(ui, &self.theme, active.as_deref(), &mut self.session.timeline, &mut self.cmds),
+                Ai => self.ai.ui(ui, &self.theme, self.settings.font_size, cwd.as_deref(), &mut self.cmds),
+                _ => {
+                    let files = self.tasks.files();
+                    let tab = view.tab().unwrap_or(PanelTab::Ports);
+                    self.bottom.body(ui, rect, tab, &self.theme, &self.settings, cwd.as_deref(), &self.editors.lsp, &files, &mut self.cmds);
+                }
+            }
+        });
+    }
+
+    fn outline_view(&mut self, ui: &mut Ui) {
+        let (active, loading) = (!self.editors.is_empty(), self.editors.outline_loading());
+        crate::app::outline(ui, &self.theme, self.editors.outline(), active, loading, &mut self.session.outline, &mut self.cmds);
+    }
+
+    fn explorer_view(&mut self, ui: &mut Ui, active: Option<&std::path::Path>) {
+        let views = self.session.layout.views(self.session.layout.place(Explorer));
+        let (has_outline, has_timeline) = (views.contains(&Outline), views.contains(&Timeline));
+        let full = ui.available_rect_before_wrap();
+        let timeline_t = if has_timeline { ui::reveal(ui, Id::new("timeline_reveal"), self.session.timeline) } else { 0.0 };
+        let outline_t = ui::reveal(ui, Id::new("outline_reveal"), self.session.outline);
+        let size = |t: f32, share: f32| 24.0 + t * (full.height() * share - 24.0).max(0.0);
+        let lower = match has_timeline {
+            true => (full.bottom() - size(timeline_t, 0.3)).max(full.top() + 104.0).min(full.bottom() - 24.0),
+            false => full.bottom(),
+        };
+        let split = match has_outline {
+            true => (lower - size(outline_t, 0.4 - 0.1 * timeline_t)).max(full.top() + 80.0).min(lower - 24.0),
+            false => lower,
+        };
+        ui.scope_builder(UiBuilder::new().max_rect(full.with_max_y(split)), |ui| {
+            ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+            let tabs = self.editors.open_tabs();
+            self.explorer.ui(ui, &self.theme, &self.git, active, &self.settings, &tabs, &mut self.cmds);
+        });
+        let sections = [(Outline, has_outline, full.with_min_y(split).with_max_y(lower)), (Timeline, has_timeline, full.with_min_y(lower))];
+        for (view, _, region) in sections.into_iter().filter(|s| s.1) {
+            ui.scope_builder(UiBuilder::new().max_rect(region), |ui| {
+                ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                match view {
+                    Outline => self.outline_view(ui),
+                    _ => self.timeline.ui(ui, &self.theme, active, &mut self.session.timeline, &mut self.cmds),
+                }
+            });
+            let header = Rect::from_min_size(region.min, vec2(region.width(), 24.0));
+            if ui.interact(header, Id::new(("view_drag", view as u8)), Sense::drag()).drag_started() {
+                self.dragging = Some(view);
+            }
+        }
+    }
+
+    fn drop_view(&mut self, ui: &Ui, targets: &[(Place, Rect)]) {
+        let Some(view) = self.dragging else { return };
+        let ctx = ui.ctx().clone();
+        ctx.set_cursor_icon(CursorIcon::Grabbing);
+        let pos = ctx.pointer_latest_pos();
+        let target = pos.and_then(|p| targets.iter().find(|(_, r)| r.contains(p))).copied();
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("view_drop")));
+        let theme = &self.theme;
+        if let Some((_, rect)) = target {
+            painter.rect(rect, CornerRadius::ZERO, ui::with_alpha(theme.accent, 0.12), Stroke::new(1.0, theme.accent), StrokeKind::Inside);
+        }
+        if let Some(p) = pos {
+            let galley = painter.layout_no_wrap(view.name().to_owned(), FontId::proportional(12.5), theme.text);
+            let label = Rect::from_min_size(p + vec2(14.0, 10.0), galley.size() + vec2(14.0, 8.0));
+            painter.rect(label, CornerRadius::same(4), theme.raised, Stroke::new(1.0, theme.border), StrokeKind::Inside);
+            painter.galley(label.min + vec2(7.0, 4.0), galley, theme.text);
+        }
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            self.dragging = None;
+            if let Some((place, _)) = target
+                && self.session.layout.move_view(view, place)
+            {
+                self.reveal(view);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -473,12 +942,79 @@ mod tests {
         assert_eq!(back.zen, Some(Zen { shown: [false, true, false], fullscreen: false, centered: false }));
     }
 
+    fn run(ctx: &egui::Context, app: &mut Halo, time: f64, events: Vec<egui::Event>) {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1400.0, 900.0))), time: Some(time), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| app.frame(ui));
+        out.textures_delta.clear();
+    }
+
+    fn headless() -> (egui::Context, Halo) {
+        let ctx = egui::Context::default();
+        let mut app = Halo::build(&ctx, crate::settings::Settings::default(), crate::settings::Session::default());
+        app.session.layout.active[Place::Panel as usize] = Some(Problems);
+        (ctx, app)
+    }
+
+    #[test]
+    fn headless_moves_a_view_to_the_secondary_side_bar_and_back() {
+        let (ctx, mut app) = headless();
+        run(&ctx, &mut app, 0.0, vec![]);
+        assert!(app.session.sidebar && !app.session.ai && app.showing(Explorer));
+        app.cmds.push(Command::MoveViewPlace(Explorer, Place::Secondary));
+        run(&ctx, &mut app, 0.1, vec![]);
+        run(&ctx, &mut app, 0.2, vec![]);
+        assert_eq!(app.session.layout.place(Explorer), Place::Secondary);
+        assert!(app.session.ai && app.showing(Explorer) && !app.showing(Ai));
+        assert_eq!(app.session.layout.tops(Place::Primary)[..2], [Search, SourceControl]);
+        app.cmds.push(Command::ToggleAi);
+        run(&ctx, &mut app, 0.3, vec![]);
+        assert!(app.session.ai && app.showing(Ai));
+        app.cmds.push(Command::MoveViewPlace(Explorer, Place::Primary));
+        run(&ctx, &mut app, 0.4, vec![]);
+        run(&ctx, &mut app, 0.5, vec![]);
+        assert!(app.session.layout.moved.is_empty() && app.showing(Explorer) && app.showing(Ai));
+        app.cmds.extend([Command::MoveViewPlace(TestResults, Place::Secondary), Command::ToggleAi]);
+        run(&ctx, &mut app, 0.6, vec![]);
+        assert!(app.showing(Ai) && !app.showing(TestResults));
+        app.session.panel = false;
+        run(&ctx, &mut app, 0.7, vec![]);
+        app.bottom.show_tests();
+        app.session.panel = true;
+        run(&ctx, &mut app, 0.8, vec![]);
+        assert!(app.showing(TestResults) && !app.session.panel);
+        app.cmds.push(Command::ResetViewLocations);
+        run(&ctx, &mut app, 0.9, vec![]);
+        assert_eq!(app.session.layout.place(TestResults), Place::Panel);
+    }
+
+    #[test]
+    fn headless_zen_mode_hides_everything_and_escape_twice_restores_it() {
+        let (ctx, mut app) = headless();
+        app.session.ai = true;
+        run(&ctx, &mut app, 0.0, vec![]);
+        app.cmds.push(Command::ToggleZenMode);
+        run(&ctx, &mut app, 0.1, vec![]);
+        run(&ctx, &mut app, 0.2, vec![]);
+        assert!(!app.session.sidebar && !app.session.ai && !app.session.panel);
+        assert!(app.session.layout.zen.is_some() && app.session.layout.fullscreen && app.session.layout.centered);
+        app.cmds.push(Command::ToggleSidebar);
+        run(&ctx, &mut app, 0.3, vec![]);
+        assert!(app.session.sidebar);
+        let escape = || vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }];
+        run(&ctx, &mut app, 1.0, escape());
+        assert!(app.session.layout.zen.is_some());
+        run(&ctx, &mut app, 1.2, escape());
+        assert!(app.session.layout.zen.is_none() && !app.session.layout.fullscreen && !app.session.layout.centered);
+        assert!(app.session.sidebar && app.session.ai && app.session.panel);
+    }
+
     #[test]
     fn views_move_reset_and_round_trip() {
         let mut w = Workbench::default();
         assert_eq!(w.views(Place::Secondary), [Ai]);
         assert_eq!(w.tops(Place::Primary), [Explorer, Search, SourceControl, RunAndDebug, Testing]);
-        assert_eq!(w.shown(Place::Panel), Some(Problems));
+        assert_eq!(w.shown(Place::Panel), Some(Terminal));
+        assert_eq!(w.tops(Place::Panel), [Problems, Output, DebugConsole, Terminal, Ports, TestResults]);
         assert!(!w.move_view(Search, Place::Panel) && !w.move_view(Ports, Place::Primary) && !w.move_view(Ai, Place::Secondary));
         assert!(w.move_view(Outline, Place::Secondary) && w.move_view(Terminal, Place::Primary));
         assert_eq!(w.views(Place::Secondary), [Outline, Ai]);
@@ -499,7 +1035,7 @@ mod tests {
         let back: Workbench = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
         assert_eq!(back, w);
         w.reset_views();
-        assert!(w.moved.is_empty() && w.active == [None; 3] && w.place(Ai) == Place::Secondary);
+        assert!(w.moved.is_empty() && w.active == Workbench::default().active && w.place(Ai) == Place::Secondary);
         let old: crate::settings::Session = serde_json::from_str(r#"{"sidebar":true,"search":true,"debug_view":false,"ai":true}"#).unwrap();
         assert!(old.ai && old.layout == Workbench::default());
         let partial: Workbench = serde_json::from_str(r#"{"moved":[["Problems","Secondary"]],"panel_at":"Left"}"#).unwrap();

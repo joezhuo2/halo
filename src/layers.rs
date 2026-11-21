@@ -82,6 +82,15 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("terminal_copy_on_selection", "terminal.integrated.copyOnSelection"),
     ("terminal_right_click", "terminal.integrated.rightClickBehavior"),
     ("send_keybindings_to_shell", "terminal.integrated.sendKeybindingsToShell"),
+    ("sidebar_location", "workbench.sideBar.location"),
+    ("panel_location", "workbench.panel.defaultLocation"),
+    ("panel_alignment", "workbench.panel.alignment"),
+    ("activity_bar_location", "workbench.activityBar.location"),
+    ("zen_full_screen", "zenMode.fullScreen"),
+    ("zen_center_layout", "zenMode.centerLayout"),
+    ("zen_show_tabs", "zenMode.showTabs"),
+    ("zen_hide_line_numbers", "zenMode.hideLineNumbers"),
+    ("zen_restore", "zenMode.restore"),
 ];
 
 pub fn vscode_key(key: &str) -> Option<String> {
