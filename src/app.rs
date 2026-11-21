@@ -55,6 +55,8 @@ pub struct Halo {
     exiting: bool,
     focused: bool,
     pub chord: Option<egui::KeyboardShortcut>,
+    auto_save_focus: (bool, bool),
+    zoom_level: Option<f32>,
     theme_fade: Option<(f64, egui::Color32)>,
     icon_dark: Option<bool>,
     update: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
@@ -67,14 +69,15 @@ impl Halo {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = &cc.egui_ctx;
         let settings = Settings::load();
-        ctx.set_fonts(crate::theme::fonts(&settings.font_family));
+        ctx.set_fonts(crate::theme::fonts(&settings.font_family, &settings.terminal_font_family));
+        crate::terminal::configure(&settings);
         crate::editor::configure(&settings);
         let theme = Theme::of(&settings);
         theme.apply(ctx);
         crate::icon_theme::select(&settings.icon_theme, &crate::settings::dir());
 
         let session = Session::load();
-        let font = settings.font_family.clone();
+        let font = format!("{}\n{}", settings.font_family, settings.terminal_font_family);
         let mut app = Self {
             theme,
             settings,
@@ -102,6 +105,8 @@ impl Halo {
             exiting: false,
             focused: true,
             chord: None,
+            auto_save_focus: (false, true),
+            zoom_level: None,
             theme_fade: None,
             icon_dark: None,
             update: None,
@@ -109,21 +114,24 @@ impl Halo {
             debug: Default::default(),
             testing: Default::default(),
         };
+        app.editors.config = app.settings.clone();
         if app.settings.auto_update && !cfg!(debug_assertions) && std::env::var_os("HALO_COMMANDS").is_none() {
             app.update = Some(crate::update::start(ctx));
         }
 
         let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().or_else(|_| std::path::absolute(&p)).ok()).map(strip_unc);
+        let restore = app.settings.restore_session;
+        let last = app.session.folder.clone().filter(|f| restore && f.is_dir());
         let arg_is_none = arg.is_none();
         let (folder, files) = match arg {
             Some(path) if path.is_dir() => (Some(path), vec![]),
-            Some(path) => (app.session.folder.clone().filter(|f| f.is_dir()), vec![path]),
-            None => (app.session.folder.clone().filter(|f| f.is_dir()), app.session.files.clone()),
+            Some(path) => (last, vec![path]),
+            None => (last, if restore { app.session.files.clone() } else { vec![] }),
         };
         let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
         app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
         app.set_folder(folder, ctx);
-        if arg_is_none {
+        if arg_is_none && restore {
             let pins: Vec<_> = app.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
             app.editors.restore_pins(&pins);
         }
@@ -147,6 +155,8 @@ impl Halo {
             None => "Halo".to_owned(),
         };
         ctx.send_viewport_cmd(ViewportCommand::Title(title));
+        crate::layers::set_folder(folder.as_deref());
+        self.reload_settings(ctx);
         self.explorer.set_root(folder.clone());
         self.editors.set_root(folder.clone());
         self.git.set_root(folder.clone(), ctx);
@@ -178,12 +188,19 @@ impl Halo {
     }
 
     pub(crate) fn apply_settings(&mut self, ctx: &egui::Context) {
+        if self.zoom_level != Some(self.settings.zoom_level) {
+            self.zoom_level = Some(self.settings.zoom_level);
+            ctx.set_zoom_factor(1.2f32.powf(self.settings.zoom_level).clamp(0.5, 3.0));
+        }
         self.theme = Theme::of(&self.settings);
         self.theme.apply(ctx);
         crate::icon_theme::select(&self.settings.icon_theme, &crate::settings::dir());
-        if self.font != self.settings.font_family {
-            self.font = self.settings.font_family.clone();
-            ctx.set_fonts(crate::theme::fonts(&self.font));
+        crate::terminal::configure(&self.settings);
+        let font = format!("{}
+{}", self.settings.font_family, self.settings.terminal_font_family);
+        if self.font != font {
+            self.font = font;
+            ctx.set_fonts(crate::theme::fonts(&self.settings.font_family, &self.settings.terminal_font_family));
         }
     }
 
@@ -311,7 +328,7 @@ impl Halo {
                 self.settings.save();
             }
             ToggleWordWrap => {
-                self.settings.word_wrap ^= true;
+                self.settings.word_wrap = if self.settings.word_wrap == "off" { "on" } else { "off" }.into();
                 self.settings.save();
             }
             ToggleTheme => {
@@ -442,7 +459,7 @@ impl Halo {
         self.git.refresh(ctx);
         self.explorer.refresh();
         let active = self.editors.active_path();
-        if active.as_ref().is_some_and(|p| *p == Settings::path()) {
+        if active.as_ref().is_some_and(|p| *p == Settings::path() || Some(p) == crate::layers::workspace_path().as_ref()) {
             self.reload_settings(ctx);
         }
         if active.as_ref().is_some_and(|p| *p == command::path()) {
@@ -456,11 +473,12 @@ impl Halo {
     fn global_shortcuts(&mut self, ctx: &egui::Context) {
         let bindings = command::bindings();
         let editor = self.zone == Zone::Editor && !self.editors.terminal_focused();
+        let keys = command::context();
         ctx.input_mut(|i| {
             let Some(first) = self.chord else {
                 for binding in bindings.iter() {
                     let chord = binding.chord.is_some();
-                    if (binding.scope == Scope::Global || (chord && editor)) && i.consume_shortcut(&binding.shortcut) {
+                    if (binding.scope == Scope::Global || (chord && editor)) && binding.active(&keys) && i.consume_shortcut(&binding.shortcut) {
                         match chord {
                             true => self.chord = Some(binding.shortcut),
                             false => self.cmds.push(binding.command.clone()),
@@ -469,7 +487,7 @@ impl Halo {
                 }
                 return;
             };
-            let second = bindings.iter().filter(|b| b.shortcut == first).find(|b| b.chord.is_some_and(|c| i.consume_shortcut(&c)));
+            let second = bindings.iter().filter(|b| b.shortcut == first && b.active(&keys)).find(|b| b.chord.is_some_and(|c| i.consume_shortcut(&c)));
             if let Some(binding) = second {
                 self.cmds.push(binding.command.clone());
             } else if !i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })) {
@@ -478,6 +496,43 @@ impl Halo {
             i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
             self.chord = None;
         });
+    }
+
+    fn when_keys(&self, ctx: &egui::Context) -> serde_json::Map<String, serde_json::Value> {
+        let terminal = self.bottom.has_focus() || self.ai.has_focus() || self.editors.terminal_focused();
+        let typing = ctx.memory(|m| m.focused().is_some()) && !terminal;
+        let debug = match (self.debug.active(), self.editors.marks.stopped.is_some()) {
+            (false, _) => "inactive",
+            (true, true) => "stopped",
+            (true, false) => "running",
+        };
+        let explorer = self.explorer.has_focus();
+        let side = self.session.sidebar && (explorer || self.zone == Zone::Explorer);
+        let mut keys: serde_json::Map<String, serde_json::Value> = [
+            ("editorTextFocus", (self.editors.has_focus() && !terminal).into()),
+            ("editorFocus", (self.zone == Zone::Editor && !self.editors.is_empty() && !terminal).into()),
+            ("terminalFocus", terminal.into()),
+            ("inDebugMode", self.debug.active().into()),
+            ("debugState", debug.into()),
+            ("filesExplorerFocus", explorer.into()),
+            ("listFocus", explorer.into()),
+            ("sideBarVisible", self.session.sidebar.into()),
+            ("sideBarFocus", side.into()),
+            ("panelVisible", self.session.panel.into()),
+            ("panelFocus", self.bottom.has_focus().into()),
+            ("inputFocus", typing.into()),
+            ("textInputFocus", typing.into()),
+            ("inQuickOpen", self.search.is_open().into()),
+            ("isWindows", cfg!(windows).into()),
+            ("isLinux", cfg!(target_os = "linux").into()),
+            ("isMac", cfg!(target_os = "macos").into()),
+            ("config.terminal.integrated.sendKeybindingsToShell", self.settings.send_keybindings_to_shell.into()),
+        ]
+        .into_iter()
+        .map(|(k, v): (&str, serde_json::Value)| (k.to_owned(), v))
+        .collect();
+        self.editors.when_keys(&mut keys);
+        keys
     }
 
     fn handle_window_events(&mut self, ctx: &egui::Context) {
@@ -792,16 +847,21 @@ impl eframe::App for Halo {
             let rgba = ui::logo_image(128, dark).pixels.iter().flat_map(|p| p.to_srgba_unmultiplied()).collect();
             ctx.send_viewport_cmd(ViewportCommand::Icon(Some(std::sync::Arc::new(egui::IconData { rgba, width: 128, height: 128 }))));
         }
-        if self.page.recording.is_none() {
+        command::set_context(self.when_keys(&ctx));
+        self.page.find_key(&ctx);
+        if !self.page.keys.recording() {
             self.global_shortcuts(&ctx);
         }
-        if self.settings.auto_save {
-            if self.editors.auto_save_due(ctx.input(|i| i.time)) {
-                self.editors.exec(&Command::SaveAll, &self.settings, &ctx);
-                self.git.refresh(&ctx);
-            } else if self.editors.any_dirty() {
-                ctx.request_repaint_after(std::time::Duration::from_secs(1));
-            }
+        let delay = self.settings.auto_save_delay as f64 / 1000.0;
+        let focus = (self.editors.has_focus() && self.focused, self.focused);
+        let now = ctx.input(|i| i.time);
+        let save = auto_save(&self.settings.auto_save, || self.editors.auto_save_due(now, delay), self.auto_save_focus, focus);
+        self.auto_save_focus = focus;
+        if save && self.editors.any_dirty() {
+            self.editors.exec(&Command::SaveAll, &self.settings, &ctx);
+            self.git.refresh(&ctx);
+        } else if self.settings.auto_save == "afterDelay" && self.editors.any_dirty() {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(delay.max(0.05)));
         }
 
         crate::notifications::show(&ctx, &self.theme, &mut self.cmds);
@@ -857,6 +917,15 @@ impl eframe::App for Halo {
 
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         self.save_session();
+    }
+}
+
+fn auto_save(mode: &str, due: impl FnOnce() -> bool, was: (bool, bool), now: (bool, bool)) -> bool {
+    match mode {
+        "afterDelay" => due(),
+        "onFocusChange" => was.0 && !now.0,
+        "onWindowChange" => was.1 && !now.1,
+        _ => false,
     }
 }
 
@@ -945,5 +1014,19 @@ fn resize_edges(ctx: &egui::Context, window: egui::Rect) {
     ctx.set_cursor_icon(cursor);
     if ctx.input(|i| i.pointer.primary_pressed()) {
         ctx.send_viewport_cmd(ViewportCommand::BeginResize(direction));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn auto_save_follows_the_mode() {
+        let save = |mode: &str, was, now| super::auto_save(mode, || true, was, now);
+        assert!(save("afterDelay", (true, true), (true, true)));
+        assert!(!super::auto_save("afterDelay", || false, (true, true), (true, true)));
+        assert!(save("onFocusChange", (true, true), (false, true)) && save("onFocusChange", (true, true), (false, false)));
+        assert!(!save("onFocusChange", (false, true), (false, true)) && !save("onFocusChange", (true, true), (true, true)));
+        assert!(save("onWindowChange", (true, true), (true, false)) && !save("onWindowChange", (true, true), (false, true)));
+        assert!(!save("off", (true, true), (false, false)));
     }
 }

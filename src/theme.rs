@@ -54,20 +54,26 @@ const fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
-pub fn fonts(file: &str) -> egui::FontDefinitions {
+pub fn fonts(file: &str, terminal: &str) -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-    if file.is_empty() {
-        return fonts;
-    }
-    match std::fs::read(file) {
-        Ok(bytes) if skrifa::FontRef::from_index(&bytes, 0).is_ok() => {
-            fonts.font_data.insert("editor".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
-            fonts.families.entry(egui::FontFamily::Monospace).or_default().insert(0, "editor".into());
+    for (name, file) in [("editor", file), ("terminal", terminal)].into_iter().filter(|f| !f.1.is_empty()) {
+        match std::fs::read(file) {
+            Ok(bytes) if skrifa::FontRef::from_index(&bytes, 0).is_ok() => {
+                fonts.font_data.insert(name.into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+                if name == "editor" {
+                    fonts.families.entry(egui::FontFamily::Monospace).or_default().insert(0, name.into());
+                }
+            }
+            Ok(_) => crate::ui::notify(format!("{file} is not a font Halo can load, the default font is in use.")),
+            Err(error) => crate::ui::notify(format!("Could not read the font {file}: {error}")),
         }
-        Ok(_) => crate::ui::notify(format!("{file} is not a font Halo can load, the default font is in use.")),
-        Err(error) => crate::ui::notify(format!("Could not read the font {file}: {error}")),
     }
+    let mut mono = fonts.families.get(&egui::FontFamily::Monospace).cloned().unwrap_or_default();
+    if fonts.font_data.contains_key("terminal") {
+        mono.insert(0, "terminal".into());
+    }
+    fonts.families.insert(egui::FontFamily::Name("terminal".into()), mono);
     fonts
 }
 
@@ -288,6 +294,7 @@ mod tests {
         assert_eq!(theme.syntax.keyword, Theme::dark().syntax.keyword);
         settings.theme = "light".into();
         assert_eq!(Theme::of(&settings).accent, Theme::light().accent);
-        assert!(fonts("").font_data.len() == fonts("no-such-font.ttf").font_data.len());
+        assert!(fonts("", "").font_data.len() == fonts("no-such-font.ttf", "nope.ttf").font_data.len());
+        assert!(fonts("", "").families.contains_key(&egui::FontFamily::Name("terminal".into())));
     }
 }

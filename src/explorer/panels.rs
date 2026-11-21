@@ -240,7 +240,9 @@ impl Explorer {
             });
         }
         let ctx = ui.ctx().clone();
-        if !self.confirm_delete.is_empty() {
+        if !self.confirm_delete.is_empty() && !self.confirm {
+            self.delete(cmds);
+        } else if !self.confirm_delete.is_empty() {
             let text = format!("Move {} to the recycle bin?", count_text(&self.confirm_delete));
             match confirm(&ctx, "explorer_delete", "Delete", &text, RichText::new("Move to Recycle Bin").color(theme.deleted)) {
                 Some(true) => self.delete(cmds),

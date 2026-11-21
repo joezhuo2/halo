@@ -317,3 +317,18 @@ mod headless {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[test]
+fn sort_orders_follow_the_setting() {
+    let dir = Path::new("root");
+    let mut list = vec![entry(dir, "b.rs", false), entry(dir, "Z", true), entry(dir, "a.txt", false), entry(dir, "c.rs", false)];
+    let names = |list: &[Entry]| list.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
+    sort_entries(&mut list, "mixed");
+    assert_eq!(names(&list), ["a.txt", "b.rs", "c.rs", "Z"]);
+    sort_entries(&mut list, "filesFirst");
+    assert_eq!(names(&list), ["a.txt", "b.rs", "c.rs", "Z"]);
+    sort_entries(&mut list, "type");
+    assert_eq!(names(&list), ["Z", "b.rs", "c.rs", "a.txt"]);
+    sort_entries(&mut list, "default");
+    assert_eq!(names(&list), ["Z", "a.txt", "b.rs", "c.rs"]);
+}

@@ -165,6 +165,37 @@ pub fn encode_key(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
     Some(text.into_bytes())
 }
 
+#[derive(Clone, Default)]
+pub struct Look {
+    font: bool,
+    size: f32,
+    line_height: f32,
+    cursor: String,
+    blink: bool,
+    scrollback: usize,
+    copy_on_select: bool,
+    right_click: String,
+}
+
+static LOOK: Mutex<Option<Look>> = Mutex::new(None);
+
+pub fn configure(s: &Settings) {
+    *LOOK.lock().unwrap() = Some(Look {
+        font: !s.terminal_font_family.is_empty(),
+        size: s.terminal_font_size,
+        line_height: s.terminal_line_height,
+        cursor: s.terminal_cursor_style.clone(),
+        blink: s.terminal_cursor_blinking,
+        scrollback: s.terminal_scrollback,
+        copy_on_select: s.terminal_copy_on_selection,
+        right_click: s.terminal_right_click.clone(),
+    });
+}
+
+fn look() -> Look {
+    LOOK.lock().unwrap().clone().unwrap_or(Look { line_height: 1.15, blink: true, scrollback: 5000, ..Default::default() })
+}
+
 type HoveredLink = (i32, Vec<(usize, usize)>, Link);
 
 fn grid_rows(term: &Term<Proxy>, from: i32, to: i32) -> Vec<(Vec<char>, bool)> {
@@ -254,7 +285,7 @@ impl Terminal {
         let shared =
             Arc::new(Shared { exited: AtomicBool::new(false), title: Mutex::new(None), sender: Mutex::new(None), code: Mutex::new(None) });
         let proxy = Proxy { ctx: ctx.clone(), shared: shared.clone() };
-        let config = Config { scrolling_history: 5000, ..Default::default() };
+        let config = Config { scrolling_history: look().scrollback, ..Default::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &Size { cols: 80, rows: 24 }, proxy.clone())));
         let integration = Arc::new(Mutex::new(Integration::default()));
         let tap = Tap::new(pty, term.clone(), integration.clone(), ctx);
@@ -480,9 +511,11 @@ impl Terminal {
         let rect = ui.available_rect_before_wrap().shrink2(vec2(10.0, 4.0));
         let id = Id::new(("terminal", self.id));
         let resp = ui.interact(rect, id, Sense::click_and_drag());
-        let font = FontId::monospace(font_size);
+        let look = look();
+        let size = if look.size > 0.0 { look.size } else { font_size };
+        let font = if look.font { FontId::new(size, egui::FontFamily::Name("terminal".into())) } else { FontId::monospace(size) };
         let (cw, rh) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
-        let cell = vec2(cw, (rh * 1.15).round());
+        let cell = vec2(cw, (rh * look.line_height.clamp(1.0, 3.0)).round());
         let cols = ((rect.width() / cell.x) as usize).max(2);
         let rows = ((rect.height() / cell.y) as usize).max(1);
         if (cols, rows) != self.size {
@@ -590,6 +623,23 @@ impl Terminal {
             } else if resp.clicked() && link.is_none() {
                 term.selection = None;
             }
+            if resp.secondary_clicked() {
+                match look.right_click.as_str() {
+                    "selectWord" => term.selection = Some(Selection::new(SelectionType::Semantic, point, side)),
+                    "copyPaste" if term.selection.is_some() => {
+                        ctx.copy_text(term.selection_to_string().unwrap_or_default());
+                        term.selection = None;
+                    }
+                    "copyPaste" | "paste" => {
+                        resp.request_focus();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if look.copy_on_select && resp.drag_stopped() && let Some(text) = self.selection() {
+            ctx.copy_text(text);
         }
         if resp.hovered() {
             ctx.set_cursor_icon(if link.is_some() { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Text });
@@ -711,18 +761,18 @@ impl Terminal {
             let min = cell_pos(point.line.0 + offset, point.column.0);
             let block = Rect::from_min_size(min, cell);
             let idle = now - self.last_input;
-            let blink = if idle < 0.5 || idle > 30.0 { 1.0 } else { 0.55 + 0.45 * ((idle - 0.5) * std::f64::consts::TAU / 1.2).cos() as f32 };
+            let blink = if !look.blink || idle < 0.5 || idle > 30.0 { 1.0 } else { 0.55 + 0.45 * ((idle - 0.5) * std::f64::consts::TAU / 1.2).cos() as f32 };
             if !self.focused {
                 painter.rect_stroke(block, CornerRadius::ZERO, Stroke::new(1.0, theme.text_dim), StrokeKind::Inside);
             } else {
-                let shape = match content.cursor.shape {
-                    CursorShape::Beam => Rect::from_min_size(min, vec2(2.0, cell.y)),
-                    CursorShape::Underline => Rect::from_min_max(pos2(min.x, block.bottom() - 2.0), block.max),
+                let shape = match (content.cursor.shape, look.cursor.as_str()) {
+                    (CursorShape::Beam, _) | (CursorShape::Block, "line") => Rect::from_min_size(min, vec2(2.0, cell.y)),
+                    (CursorShape::Underline, _) | (CursorShape::Block, "underline") => Rect::from_min_max(pos2(min.x, block.bottom() - 2.0), block.max),
                     _ => block,
                 };
                 let strength = if shape == block { 0.55 } else { 1.0 };
                 painter.rect_filled(shape, CornerRadius::ZERO, ui::with_alpha(theme.accent, blink * strength));
-                if idle <= 30.0 {
+                if idle <= 30.0 && look.blink {
                     ctx.request_repaint_after(std::time::Duration::from_millis(50));
                 }
             }

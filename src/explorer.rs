@@ -142,10 +142,24 @@ pub struct Explorer {
     compact: bool,
     exclude: Vec<String>,
     confirm_drag: bool,
+    confirm: bool,
+    sort: String,
     error: Option<String>,
     focused: bool,
     collapsed: bool,
     animation: Option<FolderAnimation>,
+}
+
+fn sort_entries(entries: &mut [Entry], order: &str) {
+    let modified = |e: &Entry| std::cmp::Reverse(std::fs::metadata(&e.path).and_then(|m| m.modified()).ok());
+    let ext = |e: &Entry| Path::new(&e.name).extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+    match order {
+        "mixed" => entries.sort_by_cached_key(|e| e.name.to_lowercase()),
+        "filesFirst" => entries.sort_by_cached_key(|e| (e.is_dir, e.name.to_lowercase())),
+        "type" => entries.sort_by_cached_key(|e| (!e.is_dir, ext(e), e.name.to_lowercase())),
+        "modified" => entries.sort_by_cached_key(|e| (!e.is_dir, modified(e), e.name.to_lowercase())),
+        _ => entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase())),
+    }
 }
 
 fn validate(name: &str) -> Result<(), String> {
@@ -245,6 +259,8 @@ impl Explorer {
             compact: false,
             exclude: vec![],
             confirm_drag: true,
+            confirm: true,
+            sort: String::new(),
             error: None,
             focused: false,
             collapsed: false,
@@ -274,7 +290,7 @@ impl Explorer {
                 Some(Entry { path, name, is_dir })
             })
             .collect();
-        entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase()));
+        sort_entries(&mut entries, &self.sort);
         entries
     }
 
@@ -940,9 +956,11 @@ impl Explorer {
         };
 
         self.confirm_drag = settings.confirm_drag_and_drop;
-        if self.exclude != settings.files_exclude || self.compact != settings.compact_folders {
+        self.confirm = settings.confirm_delete;
+        if self.exclude != settings.files_exclude || self.compact != settings.compact_folders || self.sort != settings.explorer_sort {
             self.exclude = settings.files_exclude.clone();
             self.compact = settings.compact_folders;
+            self.sort = settings.explorer_sort.clone();
             self.refresh();
         }
         self.poll(cmds);

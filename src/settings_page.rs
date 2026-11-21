@@ -1,14 +1,16 @@
 use crate::app::Halo;
-use crate::command::{self, Command};
+use crate::command::Command;
+use crate::layers::{self, Layer};
 use crate::settings::{Settings, ShellProfile, Task};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, FontId, Id, Key, KeyboardShortcut, Layout, Rect, RichText, ScrollArea, Sense,
-    Stroke, TextEdit, Ui, UiBuilder, pos2, vec2,
+    self, Align, Align2, Color32, CornerRadius, FontId, Id, Key, KeyboardShortcut, Layout, Modifiers, Rect, RichText, ScrollArea,
+    Sense, Stroke, TextEdit, Ui, UiBuilder, pos2, text::LayoutJob, vec2,
 };
+use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const TABS: [(&str, &str); 7] = [
     (icons::TEXT_AA, "Text Editor"),
@@ -20,12 +22,126 @@ const TABS: [(&str, &str); 7] = [
     (icons::KEYBOARD, "Keyboard Shortcuts"),
 ];
 
+#[derive(Clone, Copy)]
+pub enum Kind {
+    Toggle,
+    Int(i64, i64),
+    Float(f64, f64),
+    Choice(&'static [(&'static str, &'static str)]),
+    Custom,
+}
+
+pub struct Meta {
+    pub key: &'static str,
+    pub tab: usize,
+    pub group: &'static str,
+    pub title: &'static str,
+    pub about: &'static str,
+    pub kind: Kind,
+}
+
+const fn m(key: &'static str, tab: usize, group: &'static str, title: &'static str, about: &'static str, kind: Kind) -> Meta {
+    Meta { key, tab, group, title, about, kind }
+}
+
+const ED: &str = "Editor";
+const PROBLEMS: &str = "Problems";
+const FILES: &str = "Files";
+const LANG: &str = "Languages";
+
+pub const SETTINGS: &[Meta] = &[
+    m("font_family", 0, ED, "Font Family", "The font of the editor and the terminal.", Kind::Custom),
+    m("font_size", 0, ED, "Font Size", "The font size in pixels.", Kind::Float(8.0, 32.0)),
+    m("tab_size", 0, ED, "Tab Size", "The number of spaces a tab is equal to.", Kind::Int(1, 8)),
+    m("large_mb", 0, ED, "Large File Size (MB)", "Files above this size open without highlighting, language servers, minimap, git gutter, blame, word wrap and local history.", Kind::Int(1, 250)),
+    m("insert_spaces", 0, ED, "Insert Spaces", "Insert spaces when pressing Tab.", Kind::Toggle),
+    m("word_wrap", 0, ED, "Word Wrap", "How long lines wrap (Alt+Z toggles).", Kind::Choice(&[("off", "Off"), ("on", "At the editor width"), ("wordWrapColumn", "At the wrap column"), ("bounded", "At the editor width or the wrap column, whichever is less")])),
+    m("word_wrap_column", 0, ED, "Word Wrap Column", "The column lines wrap at when Word Wrap uses the wrap column.", Kind::Int(1, 1000)),
+    m("line_numbers", 0, ED, "Line Numbers", "How line numbers are shown in the gutter.", Kind::Choice(&[("on", "On"), ("off", "Off"), ("relative", "Relative to the cursor")])),
+    m("cursor_style", 0, ED, "Cursor Style", "The shape of the cursor.", Kind::Choice(&[("line", "Line"), ("line-thin", "Thin line"), ("block", "Block"), ("block-outline", "Block outline"), ("underline", "Underline"), ("underline-thin", "Thin underline")])),
+    m("cursor_blinking", 0, ED, "Cursor Blinking", "How the cursor blinks.", Kind::Choice(&[("blink", "Blink"), ("smooth", "Smooth"), ("phase", "Phase"), ("expand", "Expand"), ("solid", "Solid")])),
+    m("line_height", 0, ED, "Line Height", "0 uses the default. Values below 8 multiply the font size; larger values are pixels.", Kind::Float(0.0, 100.0)),
+    m("render_line_highlight", 0, ED, "Render Line Highlight", "Where the line of the cursor is highlighted.", Kind::Choice(&[("none", "None"), ("gutter", "Gutter"), ("line", "Line"), ("all", "Gutter and line")])),
+    m("scroll_beyond_last_line", 0, ED, "Scroll Beyond Last Line", "Let the editor scroll half a page past the last line.", Kind::Toggle),
+    m("smooth_scrolling", 0, ED, "Smooth Scrolling", "Animate scrolling to the cursor and to search results.", Kind::Toggle),
+    m("cursor_surrounding_lines", 0, ED, "Cursor Surrounding Lines", "The number of lines kept visible above and below the cursor when it moves.", Kind::Int(0, 50)),
+    m("mouse_wheel_zoom", 0, ED, "Mouse Wheel Zoom", "Zoom with Ctrl and the mouse wheel over the editor.", Kind::Toggle),
+    m("multi_cursor_modifier", 0, ED, "Multi Cursor Modifier", "The key held while clicking to add a cursor. The other one follows links.", Kind::Choice(&[("alt", "Alt"), ("ctrlCmd", "Ctrl")])),
+    m("word_separators", 0, ED, "Word Separators", "Characters that end a word for word motions, double click and word deletion. ASCII only.", Kind::Custom),
+    m("match_brackets", 0, ED, "Match Brackets", "Highlight the bracket that matches the one at the cursor.", Kind::Choice(&[("always", "Always"), ("near", "Near"), ("never", "Never")])),
+    m("selection_highlight", 0, ED, "Selection Highlight", "Highlight other places of the selected text in the visible lines.", Kind::Toggle),
+    m("detect_indentation", 0, ED, "Detect Indentation", "Take the tab size and spaces or tabs from the contents of a file when it opens.", Kind::Toggle),
+    m("auto_close", 0, ED, "Auto Closing Brackets", "Close brackets as they are typed and type over the closing one.", Kind::Toggle),
+    m("auto_close_quotes", 0, ED, "Auto Closing Quotes", "Close quotes as they are typed and type over the closing one.", Kind::Toggle),
+    m("auto_surround", 0, ED, "Auto Surround", "Wrap the selection when a bracket or quote is typed.", Kind::Toggle),
+    m("auto_indent", 0, ED, "Auto Indent", "How Enter indents the new line.", Kind::Choice(&[("none", "None"), ("keep", "Keep the indentation"), ("brackets", "Brackets"), ("advanced", "Advanced"), ("full", "Full")])),
+    m("render_whitespace", 0, ED, "Render Whitespace", "Which spaces are drawn as dots and tabs as arrows.", Kind::Choice(&[("none", "None"), ("boundary", "All but single spaces between words"), ("selection", "In the selection"), ("trailing", "Trailing"), ("all", "All")])),
+    m("sticky_scroll", 0, ED, "Sticky Scroll", "Keep the lines that open the current scopes at the top while scrolling.", Kind::Toggle),
+    m("bracket_colors", 0, ED, "Bracket Pair Colors", "Color brackets by how deeply they are nested.", Kind::Toggle),
+    m("guides", 0, ED, "Guides", "Draw indentation guides and highlight the guide of the bracket pair around the cursor.", Kind::Toggle),
+    m("diff_side_by_side", 0, ED, "Side by Side Diff", "Open changes in two columns. Off shows one column with the removed lines above the added ones.", Kind::Toggle),
+    m("rulers", 0, ED, "Rulers", "Columns that get a vertical line, separated by commas.", Kind::Custom),
+    m("minimap", 0, ED, "Minimap", "Show the minimap beside the editor.", Kind::Toggle),
+    m("minimap_side", 0, ED, "Minimap Side", "The side of the editor the minimap is on.", Kind::Choice(&[("right", "Right"), ("left", "Left")])),
+    m("breadcrumbs", 0, ED, "Breadcrumbs", "Show the path and the enclosing symbols above the text.", Kind::Toggle),
+    m("code_lens", 0, ED, "Code Lens", "Show reference counts above declarations. Click one to list the places.", Kind::Toggle),
+    m("inlay_hints", 0, ED, "Inlay Hints", "Show inferred types and parameter names inside the line.", Kind::Toggle),
+    m("semantic_highlighting", 0, ED, "Semantic Highlighting", "Color types, functions and constants as the language server reports them.", Kind::Toggle),
+    m("inline_blame", 0, ED, "Inline Blame", "Show the commit beside the caret line.", Kind::Toggle),
+    m("local_history", 0, ED, "Local History", "Keep up to 50 saved versions of each file in the Timeline.", Kind::Toggle),
+    m("format_on_save", 0, ED, "Format On Save", "Format the file with its language server when it is saved by hand.", Kind::Toggle),
+    m("format_on_paste", 0, ED, "Format On Paste", "Format pasted text with the language server.", Kind::Toggle),
+    m("diagnostics", 0, PROBLEMS, "Diagnostics", "Underline errors and warnings, and list them in the Problems panel.", Kind::Toggle),
+    m("status_problems", 0, PROBLEMS, "Status Bar Counts", "Show the number of errors and warnings in the status bar.", Kind::Toggle),
+    m("auto_save", 1, FILES, "Auto Save", "When changed files are saved.", Kind::Choice(&[("off", "Off"), ("afterDelay", "After a delay"), ("onFocusChange", "When the editor loses focus"), ("onWindowChange", "When the window loses focus")])),
+    m("auto_save_delay", 1, FILES, "Auto Save Delay", "Milliseconds after the last edit before a file is saved, when Auto Save is After a delay.", Kind::Int(100, 60000)),
+    m("hot_exit", 1, FILES, "Hot Exit", "Keep unsaved and untitled files when Halo closes and bring them back the next time it opens.", Kind::Toggle),
+    m("trim_trailing_whitespace", 1, FILES, "Trim Trailing Whitespace", "Remove spaces and tabs at the ends of lines when a file is saved.", Kind::Toggle),
+    m("insert_final_newline", 1, FILES, "Insert Final Newline", "End the file with a line break when it is saved.", Kind::Toggle),
+    m("trim_final_newlines", 1, FILES, "Trim Final Newlines", "Remove the empty lines after the last line break when a file is saved.", Kind::Toggle),
+    m("eol", 1, FILES, "End of Line", "The line ending of new files.", Kind::Choice(&[("auto", "Default for the system"), ("\n", "LF"), ("\r\n", "CRLF")])),
+    m("auto_update", 1, "Application", "Auto Update", "When Halo opens, look for a newer release, install it in the background and use it the next time Halo opens.", Kind::Toggle),
+    m("zoom_level", 2, "Window", "Zoom Level", "The zoom of the whole window. Each step is 20% larger or smaller; 0 is 100%.", Kind::Float(-4.0, 6.0)),
+    m("restore_session", 2, "Window", "Restore Session", "Open the last folder and its files when Halo starts.", Kind::Toggle),
+    m("tab_close_button", 2, "Workbench", "Tab Close Button", "Where the close button of an editor tab is.", Kind::Choice(&[("right", "Right"), ("left", "Left"), ("off", "Off")])),
+    m("enable_preview", 2, "Workbench", "Enable Preview", "Open files from a single click in a preview tab that the next one replaces.", Kind::Toggle),
+    m("compact_folders", 1, "Explorer", "Compact Folders", "Show a chain of folders that each hold only one folder as a single row in the Explorer.", Kind::Toggle),
+    m("confirm_drag_and_drop", 1, "Explorer", "Confirm Drag And Drop", "Ask before moving files and folders by dragging them in the Explorer.", Kind::Toggle),
+    m("files_exclude", 1, FILES, "Exclude", "Glob patterns of files and folders the Explorer hides. Supports *, **, ?, [abc] and {a,b}.", Kind::Custom),
+    m("confirm_delete", 2, "Explorer", "Confirm Delete", "Ask before moving a file to the recycle bin from the Explorer.", Kind::Toggle),
+    m("explorer_sort", 2, "Explorer", "Sort Order", "How the Explorer orders files and folders.", Kind::Choice(&[("default", "Folders first, by name"), ("mixed", "By name"), ("filesFirst", "Files first"), ("type", "Folders first, by extension"), ("modified", "Folders first, newest first")])),
+    m("theme", 2, "Workbench", "Color Theme", "The base theme. Custom colors are kept for each theme. Import more with Preferences: Import VS Code Theme.", Kind::Custom),
+    m("icon_theme", 2, "Workbench", "File Icon Theme", "The icons shown next to files and folders. Import more with Preferences: Import VS Code Icon Theme.", Kind::Custom),
+    m("colors", 2, "Workbench", "Colors", "Interface colors on the left, syntax colors on the right.", Kind::Custom),
+    m("default_terminal", 3, "Terminal", "Default Profile", "The shell a new terminal starts with.", Kind::Custom),
+    m("terminals", 3, "Terminal", "Profiles", "The name, program and arguments of each shell.", Kind::Custom),
+    m("shell_integration", 3, "Terminal", "Shell Integration", "Let PowerShell, bash and zsh report their prompts, commands, exit codes and folder, for command marks and navigation.", Kind::Toggle),
+    m("terminal_font_family", 3, "Terminal", "Font Family", "The font of the terminals. Empty uses the editor font.", Kind::Custom),
+    m("terminal_font_size", 3, "Terminal", "Font Size", "The font size of the terminals in pixels. 0 uses the editor font size.", Kind::Float(0.0, 32.0)),
+    m("terminal_line_height", 3, "Terminal", "Line Height", "The height of a terminal row as a multiple of the font height.", Kind::Float(1.0, 3.0)),
+    m("terminal_cursor_style", 3, "Terminal", "Cursor Style", "The cursor shape when the program in the terminal does not choose one.", Kind::Choice(&[("block", "Block"), ("line", "Line"), ("underline", "Underline")])),
+    m("terminal_cursor_blinking", 3, "Terminal", "Cursor Blinking", "Let the terminal cursor blink.", Kind::Toggle),
+    m("terminal_scrollback", 3, "Terminal", "Scrollback", "The number of lines a new terminal keeps above the screen.", Kind::Int(100, 100000)),
+    m("send_keybindings_to_shell", 3, "Terminal", "Send Keybindings to Shell", "Let Ctrl+B, Ctrl+J, Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+S and Ctrl+W reach the shell while a terminal has focus.", Kind::Toggle),
+    m("terminal_copy_on_selection", 3, "Terminal", "Copy On Selection", "Copy text to the clipboard as soon as it is selected in a terminal.", Kind::Toggle),
+    m("terminal_right_click", 3, "Terminal", "Right Click Behavior", "What a right click in a terminal does.", Kind::Choice(&[("default", "Nothing (default)"), ("copyPaste", "Copy the selection, or paste without one"), ("paste", "Paste"), ("selectWord", "Select the word"), ("nothing", "Nothing")])),
+    m("run", 4, "Run", "Commands", "The command Run File uses for each file extension. {file} is replaced by the path of the file.", Kind::Custom),
+    m("tasks", 4, "Run", "Tasks", "Named commands that are listed in the Run menu.", Kind::Custom),
+    m("grammars", 5, LANG, "Grammars Folder", "A folder of .sublime-syntax grammars. New grammars and associations are loaded when Halo starts.", Kind::Custom),
+    m("associations", 5, LANG, "File Associations", "Open files with an extension as another language, given by its name or its extension.", Kind::Custom),
+    m("lsp", 5, "Language Servers", "Enabled", "Start the language server of a file for diagnostics, completion, hover, navigation, rename and formatting.", Kind::Toggle),
+    m("servers", 5, "Language Servers", "Commands", "The command that starts the server for each file extension. It must be on PATH and speak LSP over standard input and output.", Kind::Custom),
+    m("debug_adapters", 5, "Debugging", "Debug Adapters", "The command that starts the debug adapter for each launch.json type. {port} makes Halo connect to it over TCP.", Kind::Custom),
+];
+
 #[derive(Default)]
 pub struct SettingsPage {
     pub open: bool,
-    pub recording: Option<Command>,
+    pub keys: crate::shortcuts::KeysPage,
     tab: usize,
-    filter: String,
+    layer: usize,
+    query: String,
+    focus: bool,
     pub(crate) themes: Option<(Vec<String>, Vec<String>)>,
     confirm: Option<String>,
     fonts: Option<Vec<(&'static str, String)>>,
@@ -36,23 +152,209 @@ pub struct SettingsPage {
     new_exclude: String,
 }
 
+pub struct Query {
+    pub modified: bool,
+    pub lang: Option<String>,
+    pub words: Vec<String>,
+}
+
+pub fn parse_query(text: &str) -> Query {
+    let mut query = Query { modified: false, lang: None, words: vec![] };
+    for part in text.split_whitespace() {
+        if part.eq_ignore_ascii_case("@modified") {
+            query.modified = true;
+        } else if let Some(id) = part.strip_prefix("@lang:") {
+            query.lang = Some(id.to_lowercase()).filter(|id| !id.is_empty());
+        } else {
+            query.words.extend(words(part));
+        }
+    }
+    query
+}
+
+fn words(text: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut word = String::new();
+    let mut previous = ' ';
+    for c in text.chars() {
+        if (!c.is_alphanumeric() || (c.is_uppercase() && previous.is_lowercase())) && !word.is_empty() {
+            out.push(std::mem::take(&mut word));
+        }
+        if c.is_alphanumeric() {
+            word.extend(c.to_lowercase());
+        }
+        previous = c;
+    }
+    if !word.is_empty() {
+        out.push(word);
+    }
+    out
+}
+
+fn word_score(query: &str, word: &str) -> u32 {
+    let subsequence = || {
+        let mut chars = word.chars();
+        query.chars().all(|q| chars.any(|w| w == q))
+    };
+    if word == query {
+        4
+    } else if word.starts_with(query) {
+        3
+    } else if query.len() >= 3 && word.contains(query) {
+        2
+    } else if query.len() >= 3 && word.starts_with(&query[..1]) && subsequence() {
+        1
+    } else {
+        0
+    }
+}
+
+pub fn score(meta: &Meta, query: &[String]) -> Option<u32> {
+    let code = layers::vscode_key(meta.key).unwrap_or_default();
+    let fields = [(words(meta.title), 3), (words(&format!("{} {code}", meta.key)), 2), (words(meta.group), 1), (words(meta.about), 1)];
+    let mut total = 0;
+    for q in query {
+        let best = fields.iter().flat_map(|(list, weight)| list.iter().map(move |w| word_score(q, w) * weight)).max().unwrap_or(0);
+        if best == 0 {
+            return None;
+        }
+        total += best;
+    }
+    let title = meta.title.to_lowercase();
+    Some(total + if !query.is_empty() && title.contains(&query.join(" ")) { 10 } else { 0 })
+}
+
+fn highlight(text: &str, query: &[String], color: Color32, accent: Color32, size: f32) -> LayoutJob {
+    let lower = text.to_lowercase();
+    let mut marked = vec![false; text.len()];
+    for q in query.iter().filter(|q| !q.is_empty()) {
+        for (at, _) in lower.match_indices(q.as_str()) {
+            marked[at..at + q.len()].iter_mut().for_each(|m| *m = true);
+        }
+    }
+    let mut job = LayoutJob::default();
+    let mut start = 0;
+    for end in (1..=text.len()).filter(|&i| text.is_char_boundary(i)) {
+        if end == text.len() || marked.get(end) != marked.get(start) && text.is_char_boundary(end) {
+            let format = egui::TextFormat {
+                font_id: FontId::proportional(size),
+                color: if marked[start] { accent } else { color },
+                background: if marked[start] { ui::with_alpha(accent, 0.18) } else { Color32::TRANSPARENT },
+                ..Default::default()
+            };
+            job.append(&text[start..end], 0.0, format);
+            start = end;
+        }
+    }
+    job
+}
+
+fn to_map(settings: &Settings) -> Map<String, Value> {
+    match serde_json::to_value(settings) {
+        Ok(Value::Object(map)) => map,
+        _ => Map::new(),
+    }
+}
+
+struct View {
+    layer: Layer,
+    lang: Option<String>,
+    defaults: Map<String, Value>,
+}
+
+impl View {
+    fn modified(&self, key: &str, values: &Map<String, Value>) -> bool {
+        match (&self.lang, self.layer) {
+            (Some(id), layer) => layers::sets(layer, Some(id), key),
+            (None, Layer::Workspace) => layers::sets(Layer::Workspace, None, key),
+            (None, Layer::User) => values.get(key) != self.defaults.get(key),
+        }
+    }
+
+    fn notes(&self, key: &str) -> Vec<String> {
+        let mut notes = vec![];
+        if self.layer == Layer::User && self.lang.is_none() && layers::sets(Layer::Workspace, None, key) {
+            notes.push("Overridden by Workspace".to_owned());
+        }
+        if self.lang.is_none() {
+            let langs: Vec<String> = layers::languages()
+                .into_iter()
+                .filter(|id| [Layer::User, Layer::Workspace].iter().any(|l| layers::sets(*l, Some(id), key)))
+                .map(|id| format!("[{id}]"))
+                .collect();
+            if !langs.is_empty() {
+                notes.push(format!("Overridden for {}", langs.join(", ")));
+            }
+        }
+        if self.layer == Layer::User && self.lang.as_ref().is_some_and(|id| layers::sets(Layer::Workspace, Some(id), key)) {
+            notes.push("Overridden by Workspace".to_owned());
+        }
+        notes
+    }
+}
+
+impl SettingsPage {
+    pub fn find_key(&mut self, ctx: &egui::Context) {
+        if self.open && self.tab != 6 && ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::F))) {
+            self.focus = true;
+        }
+    }
+}
+
 impl Halo {
     pub(crate) fn settings_dialog(&mut self, ctx: &egui::Context) {
         let theme = self.theme.clone();
-        let mut edited = self.settings.clone();
         let mut close = false;
         let screen = ctx.content_rect();
         let size = vec2((screen.width() - 120.0).clamp(520.0, 920.0), (screen.height() - 120.0).clamp(320.0, 640.0));
+        let query = parse_query(&self.page.query);
+        let has_folder = self.session.folder.is_some();
+        if !has_folder {
+            self.page.layer = 0;
+        }
+        let layer = if self.page.layer == 1 { Layer::Workspace } else { Layer::User };
+        let view = View { layer, lang: query.lang.clone(), defaults: to_map(&Settings::default()) };
+        let before = layers::scoped(layer, view.lang.as_deref());
+        let mut edited = before.clone();
+        let mut values = to_map(&before);
+        let searching = !self.page.query.trim().is_empty();
+        let mut resets = vec![];
         let modal = ui::modal(ctx, "settings_page").show(ctx, |ui| {
             ui::outline(ui);
             ui.set_width(size.x);
             ui.set_height(size.y);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{}  Settings", icons::SLIDERS_HORIZONTAL)).size(15.0).color(theme.text));
+                ui.add_space(16.0);
+                if self.page.tab != 6 {
+                    let search = TextEdit::singleline(&mut self.page.query)
+                        .id(Id::new("settings_search"))
+                        .margin(ui::FIELD)
+                        .desired_width(300.0)
+                        .hint_text("Search settings (@modified, @lang:rust)");
+                    let resp = ui.add(search);
+                    if std::mem::take(&mut self.page.focus) {
+                        resp.request_focus();
+                    }
+                    let labels = ["User", "Workspace"];
+                    let mut picked = self.page.layer;
+                    ui.add_enabled_ui(has_folder, |ui| ui::tabs(ui, &theme, Id::new("settings_layer"), &labels, &mut picked))
+                        .response
+                        .on_disabled_hover_text("Open a folder to edit its .vscode/settings.json");
+                    self.page.layer = picked;
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     close |= ui::icon_button(ui, &theme, icons::X, 24.0, false, "Close").clicked();
                     if ui::icon_button(ui, &theme, icons::BRACKETS_CURLY, 24.0, false, "Open settings.json").clicked() {
-                        self.cmds.push(Command::OpenSettingsJson);
+                        match (layer, layers::workspace_path()) {
+                            (Layer::Workspace, Some(path)) => {
+                                if !path.exists() {
+                                    crate::settings::write(&path, &json!({}));
+                                }
+                                self.cmds.push(Command::OpenPath(path));
+                            }
+                            _ => self.cmds.push(Command::OpenSettingsJson),
+                        }
                         close = true;
                     }
                 });
@@ -69,9 +371,12 @@ impl Halo {
                     let (r, resp) = ui.allocate_exact_size(vec2(nav.width(), 32.0), Sense::click());
                     if resp.clicked() {
                         self.page.tab = index;
-                        self.page.recording = None;
+                        self.page.keys.stop();
+                        if index != 6 {
+                            self.page.query.clear();
+                        }
                     }
-                    let on = ui::anim(ui, resp.id.with("on"), self.page.tab == index);
+                    let on = ui::anim(ui, resp.id.with("on"), self.page.tab == index && !searching);
                     let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
                     let fill = ui::mix(ui::mix(Color32::TRANSPARENT, theme.hover, h), theme.selection, on);
                     ui.painter().rect_filled(r, CornerRadius::same(5), fill);
@@ -83,69 +388,140 @@ impl Halo {
             let content = Rect::from_min_max(pos2(nav.right() + 34.0, body.top() + 1.0), body.max);
             ui.scope_builder(UiBuilder::new().max_rect(content), |ui| {
                 ui.set_clip_rect(content.intersect(ui.clip_rect()));
-                ScrollArea::both().id_salt(("settings_tab", self.page.tab)).auto_shrink(false).show(ui, |ui| {
+                let salt = if searching { 99 } else { self.page.tab };
+                ScrollArea::both().id_salt(("settings_tab", salt)).auto_shrink(false).show(ui, |ui| {
                     ui.set_width(ui.available_width() - 16.0);
                     ui.add_space(14.0);
-                    ui.label(RichText::new(TABS[self.page.tab].1).size(22.0).color(theme.text));
-                    match self.page.tab {
-                        0 => editor_tab(ui, &theme, &mut edited, &mut self.page),
-                        1 => {
-                            let about = "Save changed files one second after the last edit.";
-                            toggle(ui, &theme, "Files", "Auto Save", about, &mut edited.auto_save);
-                            let about = "Keep unsaved and untitled files when Halo closes and bring them back the next time it opens.";
-                            toggle(ui, &theme, "Files", "Hot Exit", about, &mut edited.hot_exit);
-                            let about = "When Halo opens, look for a newer release, install it in the background and use it the next time Halo opens.";
-                            toggle(ui, &theme, "Application", "Auto Update", about, &mut edited.auto_update);
-                            let about = "Remove spaces and tabs at the ends of lines when a file is saved.";
-                            toggle(ui, &theme, "Files", "Trim Trailing Whitespace", about, &mut edited.trim_trailing_whitespace);
-                            let about = "End the file with a line break when it is saved.";
-                            toggle(ui, &theme, "Files", "Insert Final Newline", about, &mut edited.insert_final_newline);
-                            let about = "Show a chain of folders that each hold only one folder as a single row in the Explorer.";
-                            toggle(ui, &theme, "Explorer", "Compact Folders", about, &mut edited.compact_folders);
-                            let about = "Ask before moving files and folders by dragging them in the Explorer.";
-                            toggle(ui, &theme, "Explorer", "Confirm Drag And Drop", about, &mut edited.confirm_drag_and_drop);
-                            let about = "Glob patterns of files and folders the Explorer hides. Supports *, **, ?, [abc] and {a,b}.";
-                            item(ui, &theme, "Files", "Exclude", about);
-                            exclude_editor(ui, &theme, &mut edited.files_exclude, &mut self.page.new_exclude);
+                    if self.page.tab == 6 && !searching {
+                        ui.label(RichText::new(TABS[6].1).size(22.0).color(theme.text));
+                        close |= crate::shortcuts::page(ui, &theme, &mut self.page.keys, &mut self.cmds);
+                        return;
+                    }
+                    let mut shown: Vec<(&Meta, u32)> = SETTINGS
+                        .iter()
+                        .filter(|meta| searching || meta.tab == self.page.tab)
+                        .filter(|meta| !query.modified || view.modified(meta.key, &values))
+                        .filter(|meta| view.lang.as_ref().is_none_or(|_| !query.words.is_empty() || query.modified || layers::sets(Layer::User, view.lang.as_deref(), meta.key) || layers::sets(Layer::Workspace, view.lang.as_deref(), meta.key)))
+                        .filter_map(|meta| score(meta, &query.words).map(|s| (meta, s)))
+                        .collect();
+                    if searching {
+                        shown.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+                        let found = match shown.len() {
+                            1 => "1 setting found".to_owned(),
+                            n => format!("{n} settings found"),
+                        };
+                        let scope = match &view.lang {
+                            Some(id) => format!("{found} in [{id}] of the {} settings", if layer == Layer::User { "User" } else { "Workspace" }),
+                            None => found,
+                        };
+                        ui.label(RichText::new(scope).size(13.0).color(theme.text_dim));
+                    } else {
+                        ui.label(RichText::new(TABS[self.page.tab].1).size(22.0).color(theme.text));
+                    }
+                    for (meta, _) in shown {
+                        if let Some(key) = row(ui, &theme, meta, &view, &query.words, &mut values, &mut edited, &mut self.page) {
+                            resets.push((key.to_owned(), None));
                         }
-                        2 => appearance_tab(ui, &theme, &mut edited, &mut self.page),
-                        3 => terminal_tab(ui, &theme, &mut edited),
-                        4 => run_tab(ui, &theme, &mut edited, &mut self.page),
-                        5 => languages_tab(ui, &theme, &mut edited, &mut self.page),
-                        _ => close |= keys_tab(ui, &theme, &mut self.page, &mut self.cmds),
+                    }
+                    if self.page.tab == 5 && !searching {
+                        installed(ui, &theme);
                     }
                     ui.add_space(18.0);
                 });
             });
         });
-        if edited != self.settings {
-            self.settings = edited;
-            self.settings.save();
+        let original = to_map(&before);
+        let mut edits = layers::changes(&original, &edited);
+        edits.extend(values.into_iter().filter(|(k, v)| original.get(k) != Some(v)).map(|(k, v)| (k, Some(v))));
+        edits.extend(resets);
+        if !edits.is_empty() {
+            layers::write(layer, view.lang.as_deref(), &edits);
+            self.settings = Settings::load();
             self.apply_settings(ctx);
         }
         if close || modal.should_close() {
             self.page.open = false;
-            self.page.recording = None;
+            self.page.keys.stop();
         }
     }
 }
 
-fn item(ui: &mut Ui, theme: &Theme, group: &str, name: &str, about: &str) {
+#[allow(clippy::too_many_arguments)]
+fn row(ui: &mut Ui, theme: &Theme, meta: &Meta, view: &View, query: &[String], values: &mut Map<String, Value>, s: &mut Settings, page: &mut SettingsPage) -> Option<&'static str> {
+    let modified = view.modified(meta.key, values);
+    let mut reset = None;
     ui.add_space(20.0);
-    ui.horizontal(|ui| {
+    let header = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 5.0;
-        ui.label(RichText::new(format!("{group}:")).size(13.5).color(theme.text_dim));
-        ui.label(RichText::new(name).size(13.5).color(theme.text));
+        if modified {
+            let (r, _) = ui.allocate_exact_size(vec2(3.0, 16.0), Sense::hover());
+            ui.painter().rect_filled(r, CornerRadius::same(1), theme.accent);
+        }
+        ui.label(highlight(&format!("{}:", meta.group), query, theme.text_dim, theme.accent, 13.5));
+        ui.label(highlight(meta.title, query, theme.text, theme.accent, 13.5));
+        if modified {
+            ui.label(RichText::new("Modified").size(11.5).color(theme.accent));
+        }
+        for note in view.notes(meta.key) {
+            ui.label(RichText::new(note).size(11.5).color(theme.text_dim));
+        }
+        let gear = ui::icon_button(ui, theme, icons::GEAR, 20.0, false, "More actions");
+        egui::Popup::menu(&gear).show(|ui| {
+            ui::menu_pad(ui);
+            if ui.add_enabled(modified, egui::Button::new("Reset to Default")).clicked() {
+                reset = Some(meta.key);
+                ui.close();
+            }
+            if ui.button("Copy Setting ID").clicked() {
+                ui.ctx().copy_text(layers::vscode_key(meta.key).unwrap_or_else(|| meta.key.to_owned()));
+                ui.close();
+            }
+        });
     });
-    if !about.is_empty() {
-        ui.add(egui::Label::new(RichText::new(about).color(theme.text_dim)).wrap());
+    let id_text = match layers::vscode_key(meta.key) {
+        Some(code) => format!("{} (VS Code: {code})", meta.key),
+        None => meta.key.to_owned(),
+    };
+    header.response.on_hover_text(id_text);
+    let toggle = matches!(meta.kind, Kind::Toggle);
+    if !toggle && !meta.about.is_empty() {
+        ui.add(egui::Label::new(highlight(meta.about, query, theme.text_dim, theme.accent, 13.0)).wrap());
     }
     ui.add_space(5.0);
-}
-
-fn toggle(ui: &mut Ui, theme: &Theme, group: &str, name: &str, about: &str, value: &mut bool) {
-    item(ui, theme, group, name, "");
-    ui::checkbox(ui, theme, value, RichText::new(about).color(theme.text_dim));
+    let value = values.entry(meta.key.to_owned()).or_insert(Value::Null);
+    match meta.kind {
+        Kind::Toggle => {
+            let mut on = value.as_bool().unwrap_or(false);
+            if ui::checkbox(ui, theme, &mut on, highlight(meta.about, query, theme.text_dim, theme.accent, 13.0)).changed() {
+                *value = json!(on);
+            }
+        }
+        Kind::Int(min, max) => {
+            let mut n = value.as_i64().unwrap_or(min);
+            if ui.add(egui::DragValue::new(&mut n).range(min..=max).speed(0.1)).changed() {
+                *value = json!(n);
+            }
+        }
+        Kind::Float(min, max) => {
+            let mut n = value.as_f64().unwrap_or(min);
+            if ui.add(egui::DragValue::new(&mut n).range(min..=max).speed(0.25)).changed() {
+                *value = json!(n);
+            }
+        }
+        Kind::Choice(choices) => {
+            let current = value.as_str().unwrap_or_default().to_owned();
+            let shown = choices.iter().find(|c| c.0 == current).map_or(current.clone(), |c| c.1.to_owned());
+            egui::ComboBox::from_id_salt(("setting", meta.key)).width(240.0).selected_text(shown).show_ui(ui, |ui| {
+                for (option, label) in choices {
+                    if ui.selectable_label(current == *option, *label).clicked() {
+                        *value = json!(option);
+                    }
+                }
+            });
+        }
+        Kind::Custom => custom(ui, theme, meta.key, s, page),
+    }
+    reset
 }
 
 fn field(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> egui::Response {
@@ -160,62 +536,72 @@ fn remove_button(ui: &mut Ui, theme: &Theme) -> bool {
     ui::icon_button(ui, theme, icons::TRASH, 24.0, false, "Remove").clicked()
 }
 
-fn font_files() -> Vec<(&'static str, String)> {
-    let windows = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_default().join("Fonts");
-    [
-        ("Consolas", windows.join("consola.ttf")),
-        ("Cascadia Code", windows.join("CascadiaCode.ttf")),
-        ("Cascadia Mono", windows.join("CascadiaMono.ttf")),
-        ("Courier New", windows.join("cour.ttf")),
-        ("Lucida Console", windows.join("lucon.ttf")),
-        ("Menlo", "/System/Library/Fonts/Menlo.ttc".into()),
-        ("Monaco", "/System/Library/Fonts/Monaco.ttf".into()),
-        ("DejaVu Sans Mono", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf".into()),
-        ("Liberation Mono", "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf".into()),
-        ("Ubuntu Mono", "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf".into()),
-    ]
-    .into_iter()
-    .filter(|(_, file)| file.is_file())
-    .map(|(name, file)| (name, file.to_string_lossy().into_owned()))
-    .collect()
+fn custom(ui: &mut Ui, theme: &Theme, key: &str, s: &mut Settings, page: &mut SettingsPage) {
+    match key {
+        "font_family" => font_family(ui, &mut s.font_family, "Default (Hack)", page),
+        "terminal_font_family" => font_family(ui, &mut s.terminal_font_family, "Editor font", page),
+        "rulers" => rulers(ui, s),
+        "word_separators" => drop(field(ui, &mut s.word_separators, 320.0, "separators")),
+        "colors" => colors(ui, theme, s),
+        "theme" | "icon_theme" => {
+            let (themes, icon_themes) = page
+                .themes
+                .get_or_insert_with(|| {
+                    let config = crate::settings::dir();
+                    (crate::theme_import::installed(&config), crate::icon_theme::installed(&config))
+                })
+                .clone();
+            let removed = match key {
+                "theme" => choose(ui, "color_theme", &mut s.theme, &[("dark", "Dark"), ("light", "Light")], &themes, &mut page.confirm, crate::theme_import::remove),
+                _ => choose(ui, "icon_theme", &mut s.icon_theme, &[("builtin", "Halo (default)"), ("none", "None")], &icon_themes, &mut page.confirm, crate::icon_theme::remove),
+            };
+            if removed {
+                page.themes = None;
+            }
+        }
+        "files_exclude" => exclude_editor(ui, theme, &mut s.files_exclude, &mut page.new_exclude),
+        "default_terminal" => {
+            let names: Vec<String> = s.terminals.iter().map(|p| p.name.clone()).collect();
+            egui::ComboBox::from_id_salt("default_terminal").width(240.0).selected_text(s.default_terminal.clone()).show_ui(ui, |ui| {
+                for name in names {
+                    ui.selectable_value(&mut s.default_terminal, name.clone(), name);
+                }
+            });
+        }
+        "terminals" => profiles(ui, theme, s),
+        "run" => map_editor(ui, theme, "settings_run", &mut s.run, &mut page.new_run, "command"),
+        "tasks" => tasks(ui, theme, s),
+        "grammars" => grammars(ui, s),
+        "associations" => map_editor(ui, theme, "settings_associations", &mut s.associations, &mut page.new_association, "language"),
+        "servers" => map_editor(ui, theme, "settings_servers", &mut s.servers, &mut page.new_server, "command"),
+        "debug_adapters" => map_editor(ui, theme, "settings_adapters", &mut s.debug_adapters, &mut page.new_adapter, "command"),
+        _ => {}
+    }
 }
 
-fn editor_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsPage) {
-    item(ui, theme, "Editor", "Font Family", "The font of the editor and the terminal.");
-    let fonts = page.fonts.get_or_insert_with(font_files);
-    let shown = match fonts.iter().find(|font| font.1 == s.font_family) {
+fn font_family(ui: &mut Ui, value: &mut String, empty: &str, page: &mut SettingsPage) {
+    let fonts = page.fonts.get_or_insert_with(crate::settings::font_files);
+    let shown = match fonts.iter().find(|font| font.1 == *value) {
         Some(font) => font.0.to_owned(),
-        None if s.font_family.is_empty() => "Default (Hack)".to_owned(),
-        None => Path::new(&s.font_family).file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        None if value.is_empty() => empty.to_owned(),
+        None => Path::new(value.as_str()).file_name().unwrap_or_default().to_string_lossy().into_owned(),
     };
     ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("font_family").width(240.0).selected_text(shown).show_ui(ui, |ui| {
-            ui.selectable_value(&mut s.font_family, String::new(), "Default (Hack)");
+        egui::ComboBox::from_id_salt(("font_family", empty)).width(240.0).selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(value, String::new(), empty);
             for (name, file) in fonts.iter() {
-                ui.selectable_value(&mut s.font_family, file.clone(), *name);
+                ui.selectable_value(value, file.clone(), *name);
             }
         });
         if ui.button("Browse...").clicked()
             && let Some(file) = rfd::FileDialog::new().add_filter("Fonts", &["ttf", "otf", "ttc"]).pick_file()
         {
-            s.font_family = file.to_string_lossy().into_owned();
+            *value = file.to_string_lossy().into_owned();
         }
     });
-    item(ui, theme, "Editor", "Font Size", "The font size in pixels.");
-    ui.add(egui::DragValue::new(&mut s.font_size).range(8.0..=32.0).speed(0.25));
-    item(ui, theme, "Editor", "Tab Size", "The number of spaces a tab is equal to.");
-    ui.add(egui::DragValue::new(&mut s.tab_size).range(1..=8).speed(0.1));
-    item(ui, theme, "Editor", "Large File Size (MB)", "Files above this size open without highlighting, language servers, minimap, git gutter, blame, word wrap and local history.");
-    ui.add(egui::DragValue::new(&mut s.large_mb).range(1..=250).speed(0.5));
-    toggle(ui, theme, "Editor", "Insert Spaces", "Insert spaces when pressing Tab.", &mut s.insert_spaces);
-    toggle(ui, theme, "Editor", "Word Wrap", "Wrap long lines at the width of the editor (Alt+Z).", &mut s.word_wrap);
-    toggle(ui, theme, "Editor", "Auto Closing Pairs", "Close brackets and quotes as they are typed, and wrap a selection in them.", &mut s.auto_close);
-    toggle(ui, theme, "Editor", "Render Whitespace", "Draw spaces as dots and tabs as arrows.", &mut s.render_whitespace);
-    toggle(ui, theme, "Editor", "Sticky Scroll", "Keep the lines that open the current scopes at the top while scrolling.", &mut s.sticky_scroll);
-    toggle(ui, theme, "Editor", "Bracket Pair Colors", "Color brackets by how deeply they are nested.", &mut s.bracket_colors);
-    toggle(ui, theme, "Editor", "Guides", "Draw indentation guides and highlight the guide of the bracket pair around the cursor.", &mut s.guides);
-    toggle(ui, theme, "Editor", "Side by Side Diff", "Open changes in two columns. Off shows one column with the removed lines above the added ones.", &mut s.diff_side_by_side);
-    item(ui, theme, "Editor", "Rulers", "Columns that get a vertical line, separated by commas.");
+}
+
+fn rulers(ui: &mut Ui, s: &mut Settings) {
     let parse = |text: &str| text.split(',').filter_map(|part| part.trim().parse().ok()).collect::<Vec<usize>>();
     let id = Id::new("settings_rulers");
     let kept = ui.data_mut(|d| d.get_temp::<String>(id)).filter(|text| parse(text) == s.rulers);
@@ -224,17 +610,6 @@ fn editor_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsP
         s.rulers = parse(&text);
     }
     ui.data_mut(|d| d.insert_temp(id, text));
-    toggle(ui, theme, "Editor", "Minimap", "Show the minimap beside the editor.", &mut s.minimap);
-    toggle(ui, theme, "Editor", "Breadcrumbs", "Show the path and the enclosing symbols above the text.", &mut s.breadcrumbs);
-    toggle(ui, theme, "Editor", "Code Lens", "Show reference counts above declarations. Click one to list the places.", &mut s.code_lens);
-    toggle(ui, theme, "Editor", "Inlay Hints", "Show inferred types and parameter names inside the line.", &mut s.inlay_hints);
-    toggle(ui, theme, "Editor", "Semantic Highlighting", "Color types, functions and constants as the language server reports them.", &mut s.semantic_highlighting);
-    toggle(ui, theme, "Editor", "Inline blame", "Show the commit beside the caret line.", &mut s.inline_blame);
-    toggle(ui, theme, "Editor", "Local history", "Keep up to 50 saved versions of each file in the Timeline.", &mut s.local_history);
-    toggle(ui, theme, "Editor", "Format On Save", "Format the file with its language server when it is saved by hand.", &mut s.format_on_save);
-    toggle(ui, theme, "Editor", "Format On Paste", "Format pasted text with the language server.", &mut s.format_on_paste);
-    toggle(ui, theme, "Problems", "Diagnostics", "Underline errors and warnings, and list them in the Problems panel.", &mut s.diagnostics);
-    toggle(ui, theme, "Problems", "Status Bar Counts", "Show the number of errors and warnings in the status bar.", &mut s.status_problems);
 }
 
 fn choose(
@@ -275,22 +650,7 @@ fn choose(
     removed
 }
 
-fn appearance_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsPage) {
-    let (themes, icon_themes) = page.themes.get_or_insert_with(|| {
-        let config = crate::settings::dir();
-        (crate::theme_import::installed(&config), crate::icon_theme::installed(&config))
-    }).clone();
-    item(ui, theme, "Workbench", "Color Theme", "The base theme. Custom colors are kept for each theme. Import more with Preferences: Import VS Code Theme.");
-    let fixed = [("dark", "Dark"), ("light", "Light")];
-    if choose(ui, "color_theme", &mut s.theme, &fixed, &themes, &mut page.confirm, crate::theme_import::remove) {
-        page.themes = None;
-    }
-    item(ui, theme, "Workbench", "File Icon Theme", "The icons shown next to files and folders. Import more with Preferences: Import VS Code Icon Theme.");
-    let fixed = [("builtin", "Halo (default)"), ("none", "None")];
-    if choose(ui, "icon_theme", &mut s.icon_theme, &fixed, &icon_themes, &mut page.confirm, crate::icon_theme::remove) {
-        page.themes = None;
-    }
-    item(ui, theme, "Workbench", "Colors", "Interface colors on the left, syntax colors on the right.");
+fn colors(ui: &mut Ui, theme: &Theme, s: &mut Settings) {
     let mut custom = s.colors.get(&s.theme).cloned().unwrap_or_default();
     let list: Vec<(&str, Color32)> = theme.clone().colors().into_iter().map(|(name, color)| (name, *color)).collect();
     grid(ui, "settings_colors", 7, |ui| {
@@ -331,17 +691,7 @@ fn args_edit(ui: &mut Ui, id: Id, args: &mut Vec<String>, width: f32) {
     ui.data_mut(|d| d.insert_temp(id, text));
 }
 
-fn terminal_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings) {
-    item(ui, theme, "Terminal", "Default Profile", "The shell a new terminal starts with.");
-    let names: Vec<String> = s.terminals.iter().map(|p| p.name.clone()).collect();
-    egui::ComboBox::from_id_salt("default_terminal").width(240.0).selected_text(s.default_terminal.clone()).show_ui(ui, |ui| {
-        for name in names {
-            ui.selectable_value(&mut s.default_terminal, name.clone(), name);
-        }
-    });
-    let about = "Let PowerShell, bash and zsh report their prompts, commands, exit codes and folder, for command marks and navigation.";
-    toggle(ui, theme, "Terminal", "Shell Integration", about, &mut s.shell_integration);
-    item(ui, theme, "Terminal", "Profiles", "The name, program and arguments of each shell.");
+fn profiles(ui: &mut Ui, theme: &Theme, s: &mut Settings) {
     let mut remove = None;
     grid(ui, "settings_profiles", 4, |ui| {
         for (index, profile) in s.terminals.iter_mut().enumerate() {
@@ -410,11 +760,7 @@ fn exclude_editor(ui: &mut Ui, theme: &Theme, patterns: &mut Vec<String>, new: &
     }
 }
 
-fn run_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsPage) {
-    let about = "The command Run File uses for each file extension. {file} is replaced by the path of the file.";
-    item(ui, theme, "Run", "Commands", about);
-    map_editor(ui, theme, "settings_run", &mut s.run, &mut page.new_run, "command");
-    item(ui, theme, "Run", "Tasks", "Named commands that are listed in the Run menu.");
+fn tasks(ui: &mut Ui, theme: &Theme, s: &mut Settings) {
     let mut remove = None;
     grid(ui, "settings_tasks", 3, |ui| {
         for (index, task) in s.tasks.iter_mut().enumerate() {
@@ -435,9 +781,7 @@ fn run_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsPage
     }
 }
 
-fn languages_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsPage) {
-    let about = "A folder of .sublime-syntax grammars. New grammars and associations are loaded when Halo starts.";
-    item(ui, theme, "Languages", "Grammars Folder", about);
+fn grammars(ui: &mut Ui, s: &mut Settings) {
     ui.horizontal(|ui| {
         field(ui, &mut s.grammars, 320.0, "folder");
         if ui.button("Browse...").clicked()
@@ -455,19 +799,14 @@ fn languages_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut Settin
             }
         }
     });
-    let about = "Open files with an extension as another language, given by its name or its extension.";
-    item(ui, theme, "Languages", "File Associations", about);
-    map_editor(ui, theme, "settings_associations", &mut s.associations, &mut page.new_association, "language");
-    let about = "Start the language server of a file for diagnostics, completion, hover, navigation, rename and formatting.";
-    toggle(ui, theme, "Language Servers", "Enabled", about, &mut s.lsp);
-    let about = "The command that starts the server for each file extension. It must be on PATH and speak LSP over standard input and output.";
-    item(ui, theme, "Language Servers", "Commands", about);
-    map_editor(ui, theme, "settings_servers", &mut s.servers, &mut page.new_server, "command");
-    let about = "The command that starts the debug adapter for each launch.json type. {port} makes Halo connect to it over TCP.";
-    item(ui, theme, "Debugging", "Debug Adapters", about);
-    map_editor(ui, theme, "settings_adapters", &mut s.debug_adapters, &mut page.new_adapter, "command");
+}
+
+fn installed(ui: &mut Ui, theme: &Theme) {
     let languages = crate::editor::languages();
-    item(ui, theme, "Languages", "Installed", &format!("{} languages are installed.", languages.len()));
+    ui.add_space(20.0);
+    ui.label(RichText::new("Languages: Installed").size(13.5).color(theme.text));
+    ui.label(RichText::new(format!("{} languages are installed.", languages.len())).color(theme.text_dim));
+    ui.add_space(5.0);
     for (name, extensions) in languages {
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
         let names = ui.painter().with_clip_rect(rect.with_max_x(rect.left() + 218.0));
@@ -477,66 +816,36 @@ fn languages_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut Settin
     }
 }
 
-fn keys_tab(ui: &mut Ui, theme: &Theme, page: &mut SettingsPage, cmds: &mut Vec<Command>) -> bool {
-    let ctx = ui.ctx().clone();
-    if let Some(cmd) = page.recording.clone() {
-        let pressed = ctx.input_mut(|i| {
-            let found = i.events.iter().find_map(|event| match event {
-                egui::Event::Key { key, pressed: true, modifiers, .. } => Some(KeyboardShortcut::new(*modifiers, *key)),
-                _ => None,
-            });
-            i.events.retain(|event| !matches!(event, egui::Event::Key { .. } | egui::Event::Text(_)));
-            found
-        });
-        if let Some(shortcut) = pressed {
-            page.recording = None;
-            if shortcut.logical_key != Key::Escape || shortcut.modifiers.any() {
-                command::rebind(&cmd, Some(command::key_text(&shortcut)));
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rank(text: &str) -> Vec<&'static str> {
+        let query = parse_query(text);
+        let mut found: Vec<(&'static str, u32)> = SETTINGS.iter().filter_map(|m| score(m, &query.words).map(|s| (m.key, s))).collect();
+        found.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+        found.into_iter().map(|(key, _)| key).collect()
     }
-    let mut close = false;
-    ui.add_space(12.0);
-    ui.horizontal(|ui| {
-        field(ui, &mut page.filter, 300.0, "Search commands");
-        if ui.button("Open keybindings.json").clicked() {
-            cmds.push(Command::OpenKeybindings);
-            close = true;
-        }
-    });
-    ui.add_space(4.0);
-    let about = "Click a key and press the new one. Escape cancels. Two-step chords are edited in keybindings.json.";
-    ui.add(egui::Label::new(RichText::new(about).color(theme.text_dim)).wrap());
-    ui.add_space(10.0);
-    let filter = page.filter.to_lowercase();
-    grid(ui, "settings_keys", 3, |ui| {
-        let mut category = "";
-        for cmd in command::all().into_iter().filter(|c| c.label().to_lowercase().contains(&filter)) {
-            if cmd.category() != category {
-                category = cmd.category();
-                ui.vertical(|ui| ui::section_header(ui, theme, category));
-                ui.end_row();
-            }
-            ui.label(RichText::new(cmd.label()).color(theme.text));
-            let recording = page.recording.as_ref() == Some(&cmd);
-            let (text, color) = match command::shortcut_text(&ctx, &cmd) {
-                _ if recording => ("Press a key...".to_owned(), theme.accent),
-                Some(keys) => (keys, theme.text),
-                None => ("Not set".to_owned(), theme.text_dim),
-            };
-            if ui.add(egui::Button::new(RichText::new(text).color(color)).min_size(vec2(170.0, 0.0))).clicked() {
-                page.recording = (!recording).then(|| cmd.clone());
-            }
-            ui.horizontal(|ui| {
-                if ui::icon_button(ui, theme, icons::X, 24.0, false, "Remove this key").clicked() {
-                    command::rebind(&cmd, Some(String::new()));
-                }
-                if ui::icon_button(ui, theme, icons::ARROW_COUNTER_CLOCKWISE, 24.0, false, "Reset to the default key").clicked() {
-                    command::rebind(&cmd, None);
-                }
-            });
-            ui.end_row();
-        }
-    });
-    close
+
+    #[test]
+    fn search_ranks_titles_first_matches_keys_fuzzily_and_reads_filters() {
+        let query = parse_query("@modified Tab @lang:Rust size");
+        assert!(query.modified);
+        assert_eq!(query.lang.as_deref(), Some("rust"));
+        assert_eq!(query.words, ["tab", "size"]);
+        assert_eq!(parse_query("@lang:").lang, None);
+        assert_eq!(words("editor.tabSize trim_trailing"), ["editor", "tab", "size", "trim", "trailing"]);
+        assert_eq!(rank("tab size")[0], "tab_size");
+        assert_eq!(rank("editor.tabSize")[0], "tab_size");
+        assert_eq!(rank("files.autoSave")[0], "auto_save");
+        assert_eq!(rank("render whitespace")[0], "render_whitespace");
+        assert_eq!(rank("wrd wrp")[0], "word_wrap");
+        assert!(rank("whitespace").starts_with(&["render_whitespace", "trim_trailing_whitespace"]));
+        assert!(rank("font").iter().take(2).all(|k| k.starts_with("font")));
+        assert!(rank("zzzz").is_empty());
+        assert_eq!(rank("").len(), SETTINGS.len());
+        let job = highlight("Tab Size", &["size".to_owned()], Color32::WHITE, Color32::RED, 13.0);
+        assert_eq!(job.sections.len(), 2);
+        assert_eq!(job.sections[1].format.color, Color32::RED);
+    }
 }

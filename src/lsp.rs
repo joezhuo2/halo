@@ -126,7 +126,7 @@ pub fn path_of(uri: &str) -> Option<PathBuf> {
     Some(PathBuf::from(if cfg!(windows) { text.replace('/', "\\") } else { text }))
 }
 
-fn language_id(path: &Path) -> String {
+pub fn language_id(path: &Path) -> String {
     let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     match ext.as_str() {
         "rs" => "rust",
@@ -142,6 +142,7 @@ fn language_id(path: &Path) -> String {
         "md" => "markdown",
         "sh" | "bash" => "shellscript",
         "yml" => "yaml",
+        "txt" | "" => "plaintext",
         other => other,
     }
     .to_owned()

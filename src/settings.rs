@@ -16,6 +16,8 @@ pub struct Task {
     pub command: String,
 }
 
+pub const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -26,9 +28,19 @@ pub struct Settings {
     pub tab_size: usize,
     pub insert_spaces: bool,
     pub minimap: bool,
-    pub auto_save: bool,
+    pub auto_save: String,
+    pub auto_save_delay: u64,
     pub colors: BTreeMap<String, BTreeMap<String, String>>,
     pub default_terminal: String,
+    pub terminal_font_family: String,
+    pub terminal_font_size: f32,
+    pub terminal_line_height: f32,
+    pub terminal_cursor_style: String,
+    pub terminal_cursor_blinking: bool,
+    pub terminal_scrollback: usize,
+    pub terminal_copy_on_selection: bool,
+    pub terminal_right_click: String,
+    pub send_keybindings_to_shell: bool,
     pub terminals: Vec<ShellProfile>,
     pub shell_integration: bool,
     pub grammars: String,
@@ -48,22 +60,51 @@ pub struct Settings {
     pub local_history: bool,
     pub format_on_save: bool,
     pub format_on_paste: bool,
-    pub word_wrap: bool,
+    pub word_wrap: String,
+    pub word_wrap_column: usize,
+    pub line_numbers: String,
+    pub cursor_style: String,
+    pub cursor_blinking: String,
+    pub line_height: f32,
+    pub render_line_highlight: String,
+    pub scroll_beyond_last_line: bool,
+    pub smooth_scrolling: bool,
+    pub cursor_surrounding_lines: usize,
+    pub mouse_wheel_zoom: bool,
+    pub multi_cursor_modifier: String,
+    pub word_separators: String,
+    pub match_brackets: String,
+    pub selection_highlight: bool,
+    pub minimap_side: String,
+    pub detect_indentation: bool,
     pub auto_close: bool,
+    pub auto_close_quotes: bool,
+    pub auto_surround: bool,
+    pub auto_indent: String,
+    pub trim_final_newlines: bool,
+    pub eol: String,
     pub trim_trailing_whitespace: bool,
     pub insert_final_newline: bool,
-    pub render_whitespace: bool,
+    pub render_whitespace: String,
     pub rulers: Vec<usize>,
     pub sticky_scroll: bool,
     pub bracket_colors: bool,
     pub guides: bool,
     pub diff_side_by_side: bool,
     pub hot_exit: bool,
+    pub tab_close_button: String,
+    pub enable_preview: bool,
+    pub confirm_delete: bool,
+    pub explorer_sort: String,
+    pub zoom_level: f32,
+    pub restore_session: bool,
     pub large_mb: u64,
     pub auto_update: bool,
     pub files_exclude: Vec<String>,
     pub compact_folders: bool,
     pub confirm_drag_and_drop: bool,
+    #[serde(skip)]
+    pub langs: BTreeMap<String, Settings>,
 }
 
 impl Default for Settings {
@@ -77,9 +118,19 @@ impl Default for Settings {
             tab_size: 4,
             insert_spaces: true,
             minimap: true,
-            auto_save: false,
+            auto_save: "off".into(),
+            auto_save_delay: 1000,
             colors: BTreeMap::new(),
             default_terminal: terminals.first().map(|p| p.name.clone()).unwrap_or_default(),
+            terminal_font_family: String::new(),
+            terminal_font_size: 0.0,
+            terminal_line_height: 1.15,
+            terminal_cursor_style: "block".into(),
+            terminal_cursor_blinking: true,
+            terminal_scrollback: 5000,
+            terminal_copy_on_selection: false,
+            terminal_right_click: "default".into(),
+            send_keybindings_to_shell: false,
             terminals,
             shell_integration: true,
             grammars: dir().join("grammars").to_string_lossy().into_owned(),
@@ -148,22 +199,50 @@ impl Default for Settings {
             local_history: true,
             format_on_save: false,
             format_on_paste: false,
-            word_wrap: false,
+            word_wrap: "off".into(),
+            word_wrap_column: 80,
+            line_numbers: "on".into(),
+            cursor_style: "line".into(),
+            cursor_blinking: "smooth".into(),
+            line_height: 0.0,
+            render_line_highlight: "line".into(),
+            scroll_beyond_last_line: true,
+            smooth_scrolling: true,
+            cursor_surrounding_lines: 0,
+            mouse_wheel_zoom: false,
+            multi_cursor_modifier: "alt".into(),
+            word_separators: WORD_SEPARATORS.into(),
+            match_brackets: "always".into(),
+            selection_highlight: true,
+            minimap_side: "right".into(),
+            detect_indentation: true,
             auto_close: true,
+            auto_close_quotes: true,
+            auto_surround: true,
+            auto_indent: "full".into(),
+            trim_final_newlines: false,
+            eol: "auto".into(),
             trim_trailing_whitespace: false,
             insert_final_newline: false,
-            render_whitespace: false,
+            render_whitespace: "none".into(),
             rulers: vec![],
             sticky_scroll: true,
             bracket_colors: true,
             guides: true,
             diff_side_by_side: true,
             hot_exit: true,
+            tab_close_button: "right".into(),
+            enable_preview: true,
+            confirm_delete: true,
+            explorer_sort: "default".into(),
+            zoom_level: 0.0,
+            restore_session: true,
             large_mb: 20,
             auto_update: true,
             files_exclude: ["**/.git", "**/.svn", "**/.hg", "**/.DS_Store", "**/Thumbs.db"].map(str::to_owned).into(),
             compact_folders: true,
             confirm_drag_and_drop: true,
+            langs: BTreeMap::new(),
         }
     }
 }
@@ -228,13 +307,35 @@ fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
         .ok()
 }
 
-fn write<T: Serialize>(path: &Path, value: &T) {
+pub(crate) fn write<T: Serialize>(path: &Path, value: &T) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(text) = serde_json::to_string_pretty(value) {
-        let _ = std::fs::write(path, text);
+    if let Ok(text) = serde_json::to_string_pretty(value)
+        && let Err(error) = std::fs::write(path, text)
+    {
+        crate::ui::notify(format!("{} could not be written: {error}", path.display()));
     }
+}
+
+pub fn font_files() -> Vec<(&'static str, String)> {
+    let windows = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_default().join("Fonts");
+    [
+        ("Consolas", windows.join("consola.ttf")),
+        ("Cascadia Code", windows.join("CascadiaCode.ttf")),
+        ("Cascadia Mono", windows.join("CascadiaMono.ttf")),
+        ("Courier New", windows.join("cour.ttf")),
+        ("Lucida Console", windows.join("lucon.ttf")),
+        ("Menlo", "/System/Library/Fonts/Menlo.ttc".into()),
+        ("Monaco", "/System/Library/Fonts/Monaco.ttf".into()),
+        ("DejaVu Sans Mono", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf".into()),
+        ("Liberation Mono", "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf".into()),
+        ("Ubuntu Mono", "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf".into()),
+    ]
+    .into_iter()
+    .filter(|(_, file)| file.is_file())
+    .map(|(name, file)| (name, file.to_string_lossy().into_owned()))
+    .collect()
 }
 
 impl Settings {
@@ -243,17 +344,22 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        let path = Self::path();
-        if !path.exists() {
-            let settings = Self::default();
-            settings.save();
-            return settings;
-        }
-        read(&path).unwrap_or_default()
+        crate::layers::load()
     }
 
-    pub fn save(&self) {
-        write(&Self::path(), self);
+    pub fn save(&mut self) {
+        *self = crate::layers::save(self);
+    }
+
+    pub fn lang(&self, id: &str) -> &Settings {
+        self.langs.get(id).unwrap_or(self)
+    }
+
+    pub fn of(&self, path: Option<&Path>) -> &Settings {
+        match path {
+            Some(path) if !self.langs.is_empty() => self.lang(&crate::lsp::language_id(path)),
+            _ => self,
+        }
     }
 
     pub fn terminal(&self, name: &str) -> Option<&ShellProfile> {

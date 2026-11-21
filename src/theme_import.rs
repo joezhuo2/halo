@@ -29,46 +29,7 @@ impl Default for Jobs {
     }
 }
 
-pub fn jsonc(text: &str) -> Result<Value, String> {
-    let chars: Vec<char> = text.trim_start_matches('\u{feff}').chars().collect();
-    let mut out = String::with_capacity(text.len());
-    let (mut i, mut string) = (0, false);
-    while i < chars.len() {
-        let c = chars[i];
-        if string {
-            out.push(c);
-            if c == '\\' {
-                if let Some(next) = chars.get(i + 1) {
-                    out.push(*next);
-                    i += 1;
-                }
-            } else if c == '"' {
-                string = false;
-            }
-        } else if c == '/' && chars.get(i + 1) == Some(&'/') {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-            continue;
-        } else if c == '/' && chars.get(i + 1) == Some(&'*') {
-            i += 2;
-            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
-                i += 1;
-            }
-            i += 2;
-            out.push(' ');
-            continue;
-        } else {
-            if matches!(c, '}' | ']') && out.trim_end().ends_with(',') {
-                out.truncate(out.trim_end().len() - 1);
-            }
-            string = c == '"';
-            out.push(c);
-        }
-        i += 1;
-    }
-    serde_json::from_str(&out).map_err(|e| e.to_string())
-}
+pub use crate::jsonc::parse as jsonc;
 
 pub fn color(text: &str) -> Option<Color32> {
     let hex = text.trim().strip_prefix('#')?;

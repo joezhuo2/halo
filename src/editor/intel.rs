@@ -407,6 +407,10 @@ pub(super) struct Intel {
 }
 
 impl Intel {
+    pub fn suggesting(&self) -> bool {
+        self.suggest.is_some()
+    }
+
     pub fn dismiss(&mut self) {
         self.suggest = None;
         self.signature = None;
@@ -808,7 +812,8 @@ impl Editors {
     }
 
     pub(super) fn save_formatted(&mut self, id: u64, settings: &Settings, ctx: &egui::Context) -> bool {
-        let Some(doc) = self.docs.get_mut(&id).filter(|_| settings.format_on_save) else { return false };
+        let Some(doc) = self.docs.get_mut(&id).filter(|d| settings.of(d.buf.path.as_deref()).format_on_save) else { return false };
+        let settings = settings.of(doc.buf.path.as_deref());
         sync(&mut self.lsp, &doc.buf, &mut doc.lang, ctx);
         let Some(path) = doc.buf.path.clone().filter(|_| doc.lang.attached) else { return false };
         let options = json!({"tabSize": settings.tab_size, "insertSpaces": settings.insert_spaces});
