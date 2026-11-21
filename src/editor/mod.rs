@@ -1001,7 +1001,7 @@ impl Editors {
 
     pub fn open_paths(&self) -> Vec<PathBuf> {
         let mut out: Vec<PathBuf> = vec![];
-        for tab in self.groups.iter().flat_map(|g| &g.tabs) {
+        for tab in self.groups.iter().flat_map(|g| &g.tabs).filter(|t| !t.preview) {
             if let Some(path) = self.docs.get(&tab.doc).and_then(|d| d.buf.path.clone())
                 && !out.contains(&path)
             {
@@ -1009,6 +1009,38 @@ impl Editors {
             }
         }
         out
+    }
+
+    pub fn pinned_paths(&self) -> Vec<(usize, PathBuf)> {
+        let mut out = vec![];
+        for (g, group) in self.groups.iter().enumerate() {
+            for tab in group.tabs.iter().filter(|t| t.pinned && t.diff.is_none()) {
+                out.extend(self.docs.get(&tab.doc).and_then(|d| d.buf.path.clone()).map(|path| (g, path)));
+            }
+        }
+        out
+    }
+
+    pub fn restore_pins(&mut self, pins: &[(usize, PathBuf)]) {
+        for (g, path) in pins {
+            while self.groups.len() <= *g {
+                self.groups.push(Group::default());
+            }
+            let id = match self.find_doc(path) {
+                Some(id) => id,
+                None => match Document::load(path) {
+                    Ok(buf) => self.insert_doc(buf),
+                    Err(error) => {
+                        self.banner = Some((error, None));
+                        continue;
+                    }
+                },
+            };
+            self.active = *g;
+            self.add_tab(id, vec![Sel::caret(0)]);
+            self.groups[*g].tabs.last_mut().into_iter().for_each(|tab| tab.pinned = true);
+        }
+        self.active = 0;
     }
 
     pub fn active_path(&self) -> Option<PathBuf> {
@@ -2782,6 +2814,20 @@ end", "word ".repeat(100)))], &settings);
         assert!(tab.sels[0].head > 0 && tab.sels[0].head < 500);
         frame_with(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default()); rows[1] as usize], &settings);
         assert_eq!(editors.status().unwrap().line, 2);
+    }
+
+    #[test]
+    fn pinned_tabs_restore_in_order_and_group() {
+        let dir = std::env::temp_dir().join(format!("halo-pins-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let files: Vec<PathBuf> = ["a.txt", "b.txt", "c.txt"].iter().map(|n| dir.join(n)).collect();
+        files.iter().for_each(|f| std::fs::write(f, "x").unwrap());
+        let mut editors = Editors::new();
+        editors.restore_pins(&[(0, files[1].clone()), (1, files[2].clone()), (0, files[0].clone())]);
+        assert_eq!(editors.groups.len(), 2);
+        assert_eq!(editors.pinned_paths(), vec![(0, files[1].clone()), (0, files[0].clone()), (1, files[2].clone())]);
+        assert!(editors.groups.iter().flat_map(|g| &g.tabs).all(|t| t.pinned && !t.preview));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -114,6 +114,7 @@ impl Halo {
         }
 
         let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().or_else(|_| std::path::absolute(&p)).ok()).map(strip_unc);
+        let arg_is_none = arg.is_none();
         let (folder, files) = match arg {
             Some(path) if path.is_dir() => (Some(path), vec![]),
             Some(path) => (app.session.folder.clone().filter(|f| f.is_dir()), vec![path]),
@@ -122,8 +123,14 @@ impl Halo {
         let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
         app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
         app.set_folder(folder, ctx);
+        if arg_is_none {
+            let pins: Vec<_> = app.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
+            app.editors.restore_pins(&pins);
+        }
         for file in files.iter().filter(|f| f.is_file()) {
-            app.editors.open_kept(file);
+            if !app.editors.open_paths().contains(file) {
+                app.editors.open_kept(file);
+            }
         }
         app.editors.restore(&app.session.backups);
         app
@@ -156,6 +163,7 @@ impl Halo {
     fn save_session(&mut self) {
         let backups = crate::settings::dir().join("backups");
         self.session.files = self.editors.open_paths();
+        self.session.pinned = self.editors.pinned_paths();
         self.session.backups = if self.settings.hot_exit { self.editors.backup(&backups) } else { vec![] };
         if !self.settings.hot_exit {
             let _ = std::fs::remove_dir_all(backups);
