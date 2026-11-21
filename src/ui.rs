@@ -492,6 +492,92 @@ pub fn reveal(ui: &Ui, id: Id, open: bool) -> f32 {
     cubic_out(animate(ui, id, open, ANIM * 1.4))
 }
 
+pub const SECTION: f32 = 24.0;
+const SECTION_MIN: f32 = 66.0;
+
+pub fn splitter(ui: &mut Ui, theme: &Theme, id: Id, line: Rect, vertical: bool) -> Response {
+    let resp = ui.interact(line.expand(3.0), id, Sense::click_and_drag());
+    let hot = resp.hovered() || resp.dragged();
+    if hot {
+        ui.ctx().set_cursor_icon(if vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
+    }
+    let t = anim(ui, id.with("hot"), hot);
+    ui.painter().rect_filled(line.expand(t), CornerRadius::ZERO, mix(theme.border, theme.accent, t));
+    resp
+}
+
+pub fn stack(ui: &mut Ui, theme: &Theme, id: Id, panes: &[(bool, Option<f32>)], sizes: &mut [Option<f32>], mut add: impl FnMut(&mut Ui, usize)) {
+    let area = ui.available_rect_before_wrap();
+    let open: Vec<f32> = panes.iter().enumerate().map(|(i, p)| reveal(ui, id.with(("reveal", i)), p.0)).collect();
+    let wants: Vec<Option<f32>> = panes.iter().zip(sizes.iter()).map(|(p, size)| size.or(p.1)).collect();
+    let avail = (area.height() - panes.len() as f32 * SECTION).max(0.0);
+    let min = SECTION_MIN.min(avail / open.iter().sum::<f32>().max(1.0));
+    let heights = stack_heights(avail, min, &open, &wants);
+    let (mut tops, mut top) = (vec![], area.top());
+    for (i, height) in heights.iter().enumerate() {
+        let rect = Rect::from_min_size(egui::pos2(area.left(), top), egui::vec2(area.width(), SECTION + height));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect).id_salt((id, i)), |ui| {
+            ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            add(ui, i);
+        });
+        tops.push(top);
+        top = rect.bottom();
+    }
+    for i in 1..panes.len() {
+        let Some(prev) = panes[..i].iter().rposition(|p| p.0).filter(|_| panes[i].0) else { continue };
+        let line = Rect::from_x_y_ranges(area.x_range(), tops[i] - 0.5..=tops[i] + 0.5);
+        let resp = splitter(ui, theme, id.with(("split", i)), line, false);
+        if resp.double_clicked() {
+            (sizes[prev], sizes[i]) = (None, None);
+        } else if resp.dragged() {
+            stack_resize(sizes, &heights, &open, &wants, (prev, i), resp.drag_delta().y, min);
+        }
+    }
+    ui.advance_cursor_after_rect(area);
+}
+
+pub fn stack_heights(avail: f32, min: f32, open: &[f32], wants: &[Option<f32>]) -> Vec<f32> {
+    let total = avail * open.iter().sum::<f32>().min(1.0);
+    let flex: f32 = open.iter().zip(wants).filter(|(_, w)| w.is_none()).map(|(t, _)| t).sum();
+    let fixed: f32 = open.iter().zip(wants).filter_map(|(t, w)| w.map(|w| w * t)).sum();
+    let mut heights: Vec<f32> = open.iter().zip(wants).map(|(&t, w)| match w {
+        Some(w) => w * t,
+        None => ((total - fixed).max(0.0) * t / flex).max(min * t),
+    }).collect();
+    let sum: f32 = heights.iter().sum();
+    if sum < total {
+        let count: f32 = open.iter().sum();
+        for (h, t) in heights.iter_mut().zip(open) {
+            *h += (total - sum) * if sum > 0.0 { *h / sum } else { t / count };
+        }
+    } else if sum > total {
+        let room: Vec<f32> = heights.iter().zip(open).map(|(h, t)| (h - min * t).max(0.0)).collect();
+        let spare: f32 = room.iter().sum();
+        if spare > 0.0 {
+            let take = (sum - total).min(spare);
+            heights.iter_mut().zip(&room).for_each(|(h, r)| *h -= r * take / spare);
+        }
+        let left: f32 = heights.iter().sum();
+        if left > total {
+            heights.iter_mut().for_each(|h| *h *= total / left);
+        }
+    }
+    heights
+}
+
+fn stack_resize(sizes: &mut [Option<f32>], heights: &[f32], open: &[f32], wants: &[Option<f32>], (prev, next): (usize, usize), dy: f32, min: f32) {
+    let dy = dy.clamp((min - heights[prev]).min(0.0), (heights[next] - min).max(0.0));
+    if dy == 0.0 {
+        return;
+    }
+    for (((size, &h), &t), want) in sizes.iter_mut().zip(heights).zip(open).zip(wants) {
+        if t >= 1.0 && want.is_some_and(|w| w != h) {
+            *size = Some(h);
+        }
+    }
+    (sizes[prev], sizes[next]) = (Some(heights[prev] + dy), Some(heights[next] - dy));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,6 +608,97 @@ mod tests {
     fn high_contrast_themes_draw_borders() {
         assert_eq!(shapes(&Theme::hc_dark()), shapes(&Theme::dark()) + 2);
         assert_eq!(shapes(&Theme::hc_light()), shapes(&Theme::light()) + 2);
+    }
+
+    #[test]
+    fn stack_heights_fill_the_space_and_respect_the_minimum() {
+        let sum = |h: &[f32]| h.iter().sum::<f32>();
+        assert_eq!(stack_heights(400.0, 66.0, &[1.0; 3], &[Some(100.0), None, Some(50.0)]), [100.0, 250.0, 50.0]);
+        assert_eq!(stack_heights(300.0, 66.0, &[1.0; 3], &[None; 3]), [100.0; 3]);
+        let collapsed = stack_heights(400.0, 66.0, &[1.0, 0.0, 1.0], &[Some(100.0), None, Some(50.0)]);
+        assert!((sum(&collapsed) - 400.0).abs() < 1e-3 && collapsed[1] == 0.0 && collapsed[0] > 2.0 * collapsed[2] - 1e-3);
+        let squeezed = stack_heights(400.0, 66.0, &[1.0; 3], &[Some(300.0), None, Some(200.0)]);
+        assert!((sum(&squeezed) - 400.0).abs() < 1e-3 && squeezed[1] == 66.0 && squeezed.iter().all(|&h| h >= 66.0));
+        let tiny = stack_heights(60.0, 20.0, &[1.0; 3], &[Some(300.0), None, Some(200.0)]);
+        assert!((sum(&tiny) - 60.0).abs() < 1e-3);
+        assert_eq!(stack_heights(400.0, 66.0, &[1.0, 1.0], &[Some(0.0), None]), [0.0, 400.0]);
+        assert_eq!(stack_heights(400.0, 66.0, &[0.0; 2], &[Some(10.0), None]), [0.0; 2]);
+    }
+
+    #[test]
+    fn stack_resize_moves_one_border_and_clamps() {
+        let (open, wants) = ([1.0; 3], [Some(100.0), None, None]);
+        let heights = stack_heights(400.0, 66.0, &open, &wants);
+        let mut sizes = [None; 3];
+        stack_resize(&mut sizes, &heights, &open, &wants, (1, 2), 500.0, 66.0);
+        assert_eq!(sizes, [None, Some(234.0), Some(66.0)]);
+        let wants = [Some(100.0), sizes[1], sizes[2]];
+        assert_eq!(stack_heights(400.0, 66.0, &open, &wants), [100.0, 234.0, 66.0]);
+        stack_resize(&mut sizes, &stack_heights(400.0, 66.0, &open, &wants), &open, &wants, (1, 2), 66.0, 66.0);
+        assert_eq!(sizes, [None, Some(234.0), Some(66.0)]);
+    }
+
+    fn run_stack(ctx: &egui::Context, open: &mut [bool; 3], sizes: &mut [Option<f32>], events: Vec<egui::Event>) -> Vec<f32> {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(200.0, 400.0))),
+            events,
+            ..Default::default()
+        };
+        let mut heights = vec![0.0; 3];
+        let mut out = ctx.run_ui(input, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let panes = [(open[0], Some(60.0)), (open[1], None), (open[2], Some(100.0))];
+            stack(ui, &Theme::dark(), Id::new("stack"), &panes, sizes, |ui, i| {
+                section(ui, &Theme::dark(), "PANE", &mut open[i]);
+                heights[i] = ui.max_rect().height();
+            });
+        });
+        out.textures_delta.clear();
+        heights
+    }
+
+    #[test]
+    fn dragging_a_stack_border_resizes_its_neighbours() {
+        let ctx = egui::Context::default();
+        let (mut open, mut sizes) = ([true; 3], [None; 3]);
+        let rest = |ctx: &egui::Context, open: &mut [bool; 3], sizes: &mut [Option<f32>]| (0..30).map(|_| run_stack(ctx, open, sizes, vec![])).last().unwrap();
+        let start = rest(&ctx, &mut open, &mut sizes);
+        assert_eq!(start, [84.0, 192.0, 124.0]);
+        let total: f32 = start.iter().sum();
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        let drag = |ctx: &egui::Context, open: &mut [bool; 3], sizes: &mut [Option<f32>], from: egui::Pos2, dy: f32| {
+            let to = from + Vec2::new(0.0, dy);
+            run_stack(ctx, open, sizes, vec![egui::Event::PointerMoved(from)]);
+            run_stack(ctx, open, sizes, vec![button(from, true)]);
+            run_stack(ctx, open, sizes, vec![egui::Event::PointerMoved(to)]);
+            run_stack(ctx, open, sizes, vec![button(to, false)]);
+        };
+        let border = egui::pos2(100.0, start[0] + start[1]);
+        drag(&ctx, &mut open, &mut sizes, border, -40.0);
+        let moved = rest(&ctx, &mut open, &mut sizes);
+        assert_eq!(moved, [84.0, 152.0, 164.0]);
+        assert_eq!(moved.iter().sum::<f32>(), total);
+
+        drag(&ctx, &mut open, &mut sizes, border - Vec2::new(0.0, 40.0), -500.0);
+        let squeezed = rest(&ctx, &mut open, &mut sizes);
+        assert_eq!(squeezed[1], SECTION + SECTION_MIN);
+        assert_eq!(squeezed.iter().sum::<f32>(), total);
+
+        open[2] = false;
+        let collapsed = rest(&ctx, &mut open, &mut sizes);
+        assert_eq!(collapsed[2], SECTION);
+        assert!((collapsed.iter().sum::<f32>() - total).abs() < 0.01);
+        open[2] = true;
+        assert_eq!(rest(&ctx, &mut open, &mut sizes), squeezed);
+
+        let line = egui::pos2(100.0, squeezed[0] + squeezed[1]);
+        run_stack(&ctx, &mut open, &mut sizes, vec![egui::Event::PointerMoved(line)]);
+        for _ in 0..2 {
+            run_stack(&ctx, &mut open, &mut sizes, vec![button(line, true)]);
+            run_stack(&ctx, &mut open, &mut sizes, vec![button(line, false)]);
+        }
+        assert_eq!(sizes, [None; 3]);
+        assert_eq!(rest(&ctx, &mut open, &mut sizes), start);
     }
 
     #[test]

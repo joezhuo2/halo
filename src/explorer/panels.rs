@@ -38,11 +38,9 @@ impl Explorer {
                 }
             });
         }
-        let t = ui::reveal(ui, Id::new("explorer_open_reveal"), self.open_editors);
         let groups = tabs.iter().filter(|g| !g.is_empty()).count();
-        let lines = count + if groups > 1 { groups } else { 0 };
-        let height = ((lines as f32).min(OPEN_ROWS) * ROW).min(ui.available_height() * 0.5) * t;
-        if height <= 0.0 {
+        let height = ui.available_height();
+        if height < 1.0 {
             self.open_focus = false;
             return;
         }

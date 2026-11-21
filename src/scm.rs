@@ -13,8 +13,6 @@ use eframe::egui::{
 use std::path::{Path, PathBuf};
 
 const ROW: f32 = 22.0;
-const HEADER: f32 = 24.0;
-const MIN_BODY: f32 = 60.0;
 const STAGED: [(&str, &str); 2] = [(icons::MINUS, "Unstage"), (icons::FILE, "Open File")];
 const STAGED_ALL: [(&str, &str); 1] = [(icons::MINUS, "Unstage All")];
 const UNSTAGED: [(&str, &str); 3] =
@@ -45,7 +43,7 @@ enum Action {
 
 pub struct Scm {
     open: [bool; 3],
-    shares: [f32; 3],
+    sizes: [Option<f32>; 4],
     message: String,
     committing: bool,
     discard: Option<Option<String>>,
@@ -59,7 +57,7 @@ pub struct Scm {
 impl Scm {
     pub fn new() -> Self {
         Self {
-            open: [true; 3], shares: [1.0; 3], message: String::new(), committing: false, discard: None,
+            open: [true; 3], sizes: [None; 4], message: String::new(), committing: false, discard: None,
             new_branch: None, commit: None, review: None, new_pr: None, ops: ops::Ops::default(),
         }
     }
@@ -138,10 +136,8 @@ impl Scm {
             ui.add_space(4.0);
         });
 
-        self.stashes(ui, theme, git, cmds);
-        let available = (ui.available_height() - 3.0 * HEADER).max(0.0);
-        let reveal = std::array::from_fn(|i| ui::reveal(ui, ui.id().with(("scm_reveal", i)), self.open[i]));
-        let heights = section_heights(available, self.shares, reveal);
+        let stashes = git.details().and_then(|d| d.as_ref().ok()).map_or(1, |d| d.stashes.len().max(1));
+        let stash_height = (stashes as f32 * ui.spacing().interact_size.y).min(132.0);
         let staged = git.changes(true);
         let unstaged = git.changes(false);
         let pr_title = match git.prs() {
@@ -149,7 +145,11 @@ impl Scm {
             _ => "PULL REQUESTS".to_owned(),
         };
         let titles = [format!("CHANGES  {}", staged.len() + unstaged.len()), pr_title, "COMMITS".to_owned()];
-        for (i, title) in titles.iter().enumerate() {
+        let panes = [(self.ops.stashes_open, Some(stash_height)), (self.open[0], None), (self.open[1], None), (self.open[2], None)];
+        let mut sizes = self.sizes;
+        ui::stack(ui, theme, Id::new("scm_stack"), &panes, &mut sizes, |ui, pane| {
+            let Some(i) = pane.checked_sub(1) else { return self.stashes(ui, theme, git, cmds) };
+            let title = &titles[i];
             ui.push_id(("scm_section", i), |ui| {
                 let header = ui::section(ui, theme, title, &mut self.open[i]);
                 let rect = header.rect;
@@ -169,24 +169,10 @@ impl Scm {
                 } else if i == 1 && buttons(ui, theme, rect, !busy, &[(icons::PLUS, "Create Pull Request")]).is_some() {
                     action = Some(Action::NewPr);
                 }
-                if self.open[i] && let Some(prev) = self.open[..i].iter().rposition(|&open| open) {
-                    let strip = Rect::from_center_size(rect.center_top(), vec2(rect.width(), 5.0));
-                    let drag = ui.interact(strip, header.id.with("resize"), Sense::drag());
-                    if drag.hovered() || drag.dragged() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                        ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, theme.accent));
-                    }
-                    if drag.dragged() {
-                        self.resize(available, prev, i, drag.drag_delta().y);
-                    }
-                }
-                if heights[i] <= 0.0 {
+                if ui.available_height() < 1.0 {
                     return;
                 }
-                let (_, body) = ui.allocate_space(vec2(ui.available_width(), heights[i]));
-                let mut child = ui.new_child(UiBuilder::new().max_rect(body));
-                child.shrink_clip_rect(body);
-                ScrollArea::vertical().id_salt("body").min_scrolled_height(0.0).auto_shrink(false).show(&mut child, |ui| {
+                ScrollArea::vertical().id_salt("body").min_scrolled_height(0.0).auto_shrink(false).show(ui, |ui| {
                     match i {
                         0 => changes(ui, theme, git, &top, &mut action, cmds),
                         1 => pull_requests(ui, theme, git, busy, &mut action),
@@ -194,25 +180,10 @@ impl Scm {
                     }
                 });
             });
-        }
+        });
+        self.sizes = sizes;
         self.dialogs(ui, git, &top, cmds);
         self.apply(action, git, ui);
-    }
-
-    fn resize(&mut self, available: f32, prev: usize, next: usize, dy: f32) {
-        let mut heights = section_heights(available, self.shares, self.open.map(f32::from));
-        let dy = dy.clamp((MIN_BODY - heights[prev]).min(0.0), (heights[next] - MIN_BODY).max(0.0));
-        if dy == 0.0 {
-            return;
-        }
-        heights[prev] += dy;
-        heights[next] -= dy;
-        let total: f32 = (0..3).filter(|&i| self.open[i]).map(|i| self.shares[i]).sum();
-        for (i, height) in heights.iter().enumerate() {
-            if self.open[i] {
-                self.shares[i] = height / available * total;
-            }
-        }
     }
 
     fn apply(&mut self, action: Option<Action>, git: &mut Git, ui: &Ui) {
@@ -348,23 +319,6 @@ fn prompt(ui: &Ui, heading: &str, note: &str, fields: &mut [(&str, &mut String, 
         choice = Some(false);
     }
     choice
-}
-
-fn section_heights(available: f32, shares: [f32; 3], reveal: [f32; 3]) -> [f32; 3] {
-    let count: f32 = reveal.iter().sum();
-    let min = MIN_BODY.min(available / count.max(1.0));
-    let mut remaining = available * count.min(1.0);
-    let mut order = [0, 1, 2];
-    order.sort_unstable_by(|&a, &b| shares[a].total_cmp(&shares[b]));
-    let mut heights = [0.0; 3];
-    for (index, i) in order.into_iter().enumerate() {
-        if reveal[i] > 0.0 {
-            let weight: f32 = order[index..].iter().map(|&j| shares[j] * reveal[j]).sum();
-            heights[i] = (remaining * (shares[i] * reveal[i] / weight)).max(min * reveal[i]);
-            remaining -= heights[i];
-        }
-    }
-    heights
 }
 
 fn pull_requests(ui: &mut Ui, theme: &Theme, git: &Git, busy: bool, action: &mut Option<Action>) {
@@ -788,18 +742,6 @@ mod tests {
     }
 
     #[test]
-    fn section_sizes_share_space_and_clamp_dragging() {
-        let mut scm = Scm::new();
-        scm.resize(360.0, 0, 1, 200.0);
-        assert_eq!(section_heights(360.0, scm.shares, [1.0; 3]), [180.0, 60.0, 120.0]);
-        assert_eq!(section_heights(120.0, scm.shares, [1.0; 3]), [40.0; 3]);
-        scm.open[1] = false;
-        scm.resize(300.0, 0, 2, -200.0);
-        assert_eq!(section_heights(300.0, scm.shares, [1.0, 0.0, 1.0]), [60.0, 0.0, 240.0]);
-        assert_eq!(section_heights(300.0, scm.shares, [0.0, 0.5, 0.0]), [0.0, 150.0, 0.0]);
-    }
-
-    #[test]
     fn stages_discards_and_commits_from_the_side_bar() {
         let dir = std::env::temp_dir().join(format!("halo-scm-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -867,14 +809,14 @@ mod tests {
         git.wait(|g| g.files(&head).is_some());
         assert_eq!(git.files(&head).unwrap(), [Change { path: "a.txt".into(), state: FileState::Modified }]);
         frame(&ctx, &mut scm, &mut git, vec![]);
-        let split = row - vec2(0.0, ROW * 0.5 + HEADER);
+        let split = row - vec2(0.0, ROW * 0.5 + ui::SECTION);
         let moved = split + vec2(0.0, 18.0);
         frame(&ctx, &mut scm, &mut git, vec![Event::PointerMoved(split)]);
         frame(&ctx, &mut scm, &mut git, vec![button(split, true)]);
         frame(&ctx, &mut scm, &mut git, vec![Event::PointerMoved(moved)]);
         frame(&ctx, &mut scm, &mut git, vec![button(moved, false)]);
-        assert!(scm.shares[1] > scm.shares[2]);
-        click(&ctx, &mut scm, &mut git, moved.x, moved.y + HEADER * 0.5);
+        assert!(scm.sizes[2] > scm.sizes[3]);
+        click(&ctx, &mut scm, &mut git, moved.x, moved.y + ui::SECTION * 0.5);
         assert_eq!(scm.open, [true, true, false]);
         let _ = std::fs::remove_dir_all(&dir);
     }

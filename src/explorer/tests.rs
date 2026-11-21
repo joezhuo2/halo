@@ -244,7 +244,7 @@ mod headless {
             ..Settings::default()
         };
         let git = Git::new();
-        let mut out = ctx.run_ui(input, |ui| explorer.ui(ui, &Theme::dark(), &git, None, &settings, &[], &mut cmds));
+        let mut out = ctx.run_ui(input, |ui| explorer.ui(ui, &Theme::dark(), &git, None, &settings, &[], &mut cmds, &[], &mut [None; 2], |_, _, _| {}));
         out.textures_delta.clear();
         cmds
     }
@@ -299,7 +299,7 @@ mod headless {
         frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
         let input = RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 600.0))), ..Default::default() };
         let (settings, git) = (Settings { files_exclude: vec![], compact_folders: false, ..Settings::default() }, Git::new());
-        let mut out = ctx.run_ui(input, |ui| explorer.ui(ui, &Theme::dark(), &git, None, &settings, &[], &mut vec![]));
+        let mut out = ctx.run_ui(input, |ui| explorer.ui(ui, &Theme::dark(), &git, None, &settings, &[], &mut vec![], &[], &mut [None; 2], |_, _, _| {}));
         let nodes = crate::a11y::tree(&mut out);
         let src = crate::a11y::node(&nodes, Role::TreeItem, "src");
         assert_eq!((src.level(), src.is_expanded()), (Some(1), Some(true)));
@@ -321,7 +321,7 @@ mod headless {
         let color = |explorer: &mut Explorer, name: &str| {
             let input = RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 600.0))), ..Default::default() };
             let (settings, git) = (Settings { files_exclude: vec![], compact_folders: false, ..Settings::default() }, Git::new());
-            let out = ctx.run_ui(input, |ui| explorer.ui(ui, &theme, &git, None, &settings, &[], &mut vec![]));
+            let out = ctx.run_ui(input, |ui| explorer.ui(ui, &theme, &git, None, &settings, &[], &mut vec![], &[], &mut [None; 2], |_, _, _| {}));
             out.shapes.into_iter().find_map(|s| match s.shape {
                 egui::Shape::Text(t) if t.galley.text() == name => Some(t.fallback_color),
                 _ => None,

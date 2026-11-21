@@ -382,15 +382,7 @@ fn edge_line(rect: Rect, edge: Edge) -> Rect {
 }
 
 fn splitter(ui: &mut Ui, theme: &Theme, id: Id, rect: Rect, edge: Edge) -> Response {
-    let line = edge_line(rect, edge);
-    let resp = ui.interact(line.expand(3.0), id, Sense::click_and_drag());
-    let hot = resp.hovered() || resp.dragged();
-    if hot {
-        ui.ctx().set_cursor_icon(if edge.vertical() { CursorIcon::ResizeHorizontal } else { CursorIcon::ResizeVertical });
-    }
-    let t = ui::anim(ui, id.with("hot"), hot);
-    ui.painter().rect_filled(line.expand(t), CornerRadius::ZERO, ui::mix(theme.border, theme.accent, t));
-    resp
+    ui::splitter(ui, theme, id, edge_line(rect, edge), edge.vertical())
 }
 
 fn resize(ui: &mut Ui, theme: &Theme, id: &str, rect: Rect, edge: Edge, size: &mut f32, range: (f32, f32)) {
@@ -766,39 +758,38 @@ impl Halo {
     fn explorer_view(&mut self, ui: &mut Ui, active: Option<&std::path::Path>) {
         let views = self.session.layout.views(self.session.layout.place(Explorer));
         let (has_outline, has_timeline) = (views.contains(&Outline), views.contains(&Timeline));
-        let full = ui.available_rect_before_wrap();
-        let timeline_t = if has_timeline { ui::reveal(ui, Id::new("timeline_reveal"), self.session.timeline) } else { 0.0 };
-        let outline_t = ui::reveal(ui, Id::new("outline_reveal"), self.session.outline);
-        let size = |t: f32, share: f32| 24.0 + t * (full.height() * share - 24.0).max(0.0);
-        let lower = match has_timeline {
-            true => (full.bottom() - size(timeline_t, 0.3)).max(full.top() + 104.0).min(full.bottom() - 24.0),
-            false => full.bottom(),
-        };
-        let split = match has_outline {
-            true => (lower - size(outline_t, 0.4 - 0.1 * timeline_t)).max(full.top() + 80.0).min(lower - 24.0),
-            false => lower,
-        };
-        ui.scope_builder(UiBuilder::new().max_rect(full.with_max_y(split)), |ui| {
-            ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-            let tabs = self.editors.open_tabs();
-            self.explorer.problems = self.editors.severities();
-            self.explorer.ui(ui, &self.theme, &self.git, active, &self.settings, &tabs, &mut self.cmds);
-        });
-        let sections = [(Outline, has_outline, full.with_min_y(split).with_max_y(lower)), (Timeline, has_timeline, full.with_min_y(lower))];
-        for (view, _, region) in sections.into_iter().filter(|s| s.1) {
+        let full = ui.available_rect_before_wrap().height();
+        let timeline_open = has_timeline && self.session.timeline;
+        let mut slots = vec![0, 1];
+        let mut others = vec![];
+        if has_outline {
+            slots.push(2);
+            others.push((Outline, self.session.outline, full * if timeline_open { 0.3 } else { 0.4 } - ui::SECTION));
+        }
+        if has_timeline {
+            slots.push(3);
+            others.push((Timeline, self.session.timeline, full * 0.3 - ui::SECTION));
+        }
+        let panes: Vec<_> = others.iter().map(|&(_, open, size)| (open, Some(size.max(0.0)))).collect();
+        let mut sizes: Vec<_> = slots.iter().map(|&k| self.session.explorer_sizes[k]).collect();
+        let tabs = self.editors.open_tabs();
+        self.explorer.problems = self.editors.severities();
+        let (theme, editors, session, timeline, dragging) = (&self.theme, &self.editors, &mut self.session, &mut self.timeline, &mut self.dragging);
+        self.explorer.ui(ui, theme, &self.git, active, &self.settings, &tabs, &mut self.cmds, &panes, &mut sizes, |ui, i, cmds| {
+            let view = others[i].0;
             // registered under the header so its click still toggles; only a real drag moves the view
-            let header = Rect::from_min_size(region.min, vec2(region.width(), 24.0));
+            let header = Rect::from_min_size(ui.max_rect().min, vec2(ui.max_rect().width(), ui::SECTION));
             let handle = ui.interact(header, Id::new(("view_drag", view as u8)), Sense::drag());
-            if handle.dragged() && self.dragging.is_none() && ui.input(|i| i.pointer.is_decidedly_dragging()) {
-                self.dragging = Some(view);
+            if handle.dragged() && dragging.is_none() && ui.input(|i| i.pointer.is_decidedly_dragging()) {
+                *dragging = Some(view);
             }
-            ui.scope_builder(UiBuilder::new().max_rect(region), |ui| {
-                ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                match view {
-                    Outline => self.outline_view(ui),
-                    _ => self.timeline.ui(ui, &self.theme, active, &mut self.session.timeline, &mut self.cmds),
-                }
-            });
+            match view {
+                Outline => crate::app::outline(ui, theme, editors.outline(), !editors.is_empty(), editors.outline_loading(), &mut session.outline, cmds),
+                _ => timeline.ui(ui, theme, active, &mut session.timeline, cmds),
+            }
+        });
+        for (&k, size) in slots.iter().zip(sizes) {
+            self.session.explorer_sizes[k] = size;
         }
     }
 

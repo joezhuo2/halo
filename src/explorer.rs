@@ -1093,17 +1093,26 @@ impl Explorer {
         settings: &Settings,
         tabs: &[Vec<OpenTab>],
         cmds: &mut Vec<Command>,
+        others: &[(bool, Option<f32>)],
+        sizes: &mut [Option<f32>],
+        mut more: impl FnMut(&mut Ui, usize, &mut Vec<Command>),
     ) {
         ui.spacing_mut().item_spacing.y = 0.0;
         ui::section_header(ui, theme, "Explorer");
+        let stack = Id::new("explorer_stack");
         let Some(root) = self.root.clone().or_else(|| self.roots.first().map(|(r, _)| r.clone())) else {
-            ui.vertical_centered(|ui| {
-                ui.add_space(16.0);
-                ui.label(RichText::new("You have not opened a folder yet.").color(theme.text_dim));
-                ui.add_space(8.0);
-                if ui.button(RichText::new("Open Folder").color(theme.accent)).clicked() {
-                    cmds.push(Command::OpenFolder);
+            ui::stack(ui, theme, stack, &[&[(true, None)][..], others].concat(), &mut sizes[1..], |ui, i| match i {
+                0 => {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(RichText::new("You have not opened a folder yet.").color(theme.text_dim));
+                        ui.add_space(8.0);
+                        if ui.button(RichText::new("Open Folder").color(theme.accent)).clicked() {
+                            cmds.push(Command::OpenFolder);
+                        }
+                    });
                 }
+                _ => more(ui, i - 1, cmds),
             });
             return;
         };
@@ -1132,14 +1141,23 @@ impl Explorer {
         }
 
         let mut action = None;
-        self.open_editors(ui, theme, &root, tabs, cmds);
-        self.header(ui, theme, &root, &mut action);
-        self.tree(ui, theme, git, active, &root, &mut action, cmds);
-        if let Some(action) = action {
-            self.apply(action, ui, cmds);
-            ui.ctx().request_repaint();
-        }
-        self.overlays(ui, theme);
+        let groups = tabs.iter().filter(|g| !g.is_empty()).count();
+        let lines = tabs.iter().map(Vec::len).sum::<usize>() + if groups > 1 { groups } else { 0 };
+        let open = ((lines as f32).min(OPEN_ROWS) * ROW).min(ui.available_height() * 0.5);
+        let panes = [&[(self.open_editors, Some(open)), (!self.collapsed, None)][..], others].concat();
+        ui::stack(ui, theme, stack, &panes, sizes, |ui, i| match i {
+            0 => self.open_editors(ui, theme, &root, tabs, cmds),
+            1 => {
+                self.header(ui, theme, &root, &mut action);
+                self.tree(ui, theme, git, active, &root, &mut action, cmds);
+                if let Some(action) = action.take() {
+                    self.apply(action, ui, cmds);
+                    ui.ctx().request_repaint();
+                }
+                self.overlays(ui, theme);
+            }
+            _ => more(ui, i - 2, cmds),
+        });
     }
 
     fn header(&mut self, ui: &mut Ui, theme: &Theme, root: &Path, action: &mut Option<Action>) {

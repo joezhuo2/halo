@@ -22,7 +22,7 @@ pub(super) struct Ops {
     root: Option<PathBuf>,
     pending: Option<(Op, Option<String>)>,
     dialog: Option<Dialog>,
-    stashes_open: bool,
+    pub(super) stashes_open: bool,
 }
 
 fn entry(ui: &mut Ui, op: Op, cmds: &mut Vec<Command>) {
@@ -222,7 +222,7 @@ impl Scm {
         if d.stashes.is_empty() {
             ui.weak("No stashes.");
         }
-        ScrollArea::vertical().id_salt("stash_rows").max_height(132.0).show(ui, |ui| {
+        ScrollArea::vertical().id_salt("stash_rows").min_scrolled_height(0.0).auto_shrink(false).show(ui, |ui| {
             for s in &d.stashes {
                 let row = ui.horizontal(|ui| {
                     ui.add_space(10.0);
