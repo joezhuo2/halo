@@ -1975,7 +1975,7 @@ impl Editors {
             self.focused = true;
             self.active = g;
             ui.memory_mut(|m| {
-                m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
+                m.set_focus_lock_filter(id, EventFilter { tab: !crate::a11y::tab_moves_focus(), horizontal_arrows: true, vertical_arrows: true, escape: true });
             });
             let keys = command::context();
             for binding in command::bindings().iter().filter(|b| b.scope == Scope::Editor && b.chord.is_none() && b.active(&keys)) {
@@ -1985,6 +1985,7 @@ impl Editors {
             }
             let page = ((text_rect.height() / line_h) as usize).saturating_sub(2).max(1);
             let mut events = ui.input(|i| i.events.clone());
+            events.retain(|e| !crate::a11y::tab_moves_focus() || !matches!(e, Event::Key { key: Key::Tab, .. }));
             let unit = indent_unit(buf, settings).2;
             self.intel.unit = unit.clone();
             self.popup_keys(&mut events, doc_id, buf, tab);

@@ -17,11 +17,13 @@ struct Marks {
     pass: u64,
     current: Option<usize>,
     first: [Option<Id>; 4],
+    anchored: [bool; 4],
     focused: Option<usize>,
 }
 
 thread_local! {
     static REDUCED: Cell<bool> = const { Cell::new(false) };
+    static TAB_FOCUS: Cell<bool> = const { Cell::new(false) };
     static MARKS: RefCell<(Marks, Marks)> = RefCell::default();
 }
 
@@ -40,15 +42,35 @@ pub fn region(ctx: &Context, region: Option<Region>) {
 }
 
 pub fn mark(ui: &Ui, id: Id) {
+    note(ui, id, false);
+}
+
+pub fn anchor(ui: &Ui, id: Id) {
+    note(ui, id, true);
+}
+
+fn note(ui: &Ui, id: Id, anchor: bool) {
     let focused = ui.memory(|m| m.has_focus(id));
     marks(ui.ctx(), |now, _| {
         if let Some(at) = now.current {
+            if anchor && !now.anchored[at] {
+                (now.first[at], now.anchored[at]) = (Some(id), true);
+            }
             now.first[at].get_or_insert(id);
             if focused {
                 now.focused = Some(at);
             }
         }
     });
+}
+
+pub fn tab_moves_focus() -> bool {
+    TAB_FOCUS.get()
+}
+
+pub fn toggle_tab_focus() -> bool {
+    TAB_FOCUS.set(!TAB_FOCUS.get());
+    TAB_FOCUS.get()
 }
 
 pub fn text_node(ui: &mut Ui, id: Id, name: &str, rope: &ropey::Rope, (anchor, head): (usize, usize), prefix: &str) {
@@ -64,6 +86,7 @@ pub fn text_node(ui: &mut Ui, id: Id, name: &str, rope: &ropey::Rope, (anchor, h
 }
 
 pub fn line_node(ui: &mut Ui, id: Id, role: crate::ui::Role, name: &str, caret: impl FnOnce() -> (String, usize, usize, (usize, usize), usize)) {
+    anchor(ui, id);
     if ui.ctx().accesskit_node_builder(id, |_| ()).is_none() {
         return;
     }
@@ -182,6 +205,38 @@ mod tests {
     use super::*;
     use crate::ui::{self, Role};
     use eframe::egui::accesskit::Toggled;
+
+    #[test]
+    fn f6_cycles_focus_through_every_region() {
+        let ctx = Context::default();
+        let theme = crate::theme::Theme::dark();
+        let draw = |ctx: &Context| {
+            let mut out = ctx.run_ui(Default::default(), |ui| {
+                let parts = [(None, "Menu"), (Some(Region::Status), "Branch"), (Some(Region::Sidebar), "Files"), (Some(Region::Panel), "Problems"), (Some(Region::Editor), "Tab")];
+                for (at, name) in parts {
+                    region(ui.ctx(), at);
+                    ui::icon_button(ui, &theme, ui::icons::X, 20.0, false, name);
+                }
+                let text = ui.allocate_response(eframe::egui::vec2(50.0, 50.0), eframe::egui::Sense::click());
+                anchor(ui, text.id);
+                region(ui.ctx(), None);
+            });
+            out.textures_delta.clear();
+            ctx.memory(|m| m.focused())
+        };
+        draw(&ctx);
+        let mut seen = vec![];
+        for _ in 0..5 {
+            let region = cycle(&ctx, true).unwrap();
+            seen.push((region, draw(&ctx).is_some()));
+        }
+        assert_eq!(seen.iter().map(|s| s.0).collect::<Vec<_>>(), [Region::Editor, Region::Sidebar, Region::Panel, Region::Status, Region::Editor]);
+        assert!(seen.iter().all(|s| s.1));
+        assert_eq!(cycle(&ctx, false), Some(Region::Status));
+        draw(&ctx);
+        assert_eq!(cycle(&ctx, false), Some(Region::Panel));
+        assert!(!tab_moves_focus() && toggle_tab_focus() && !toggle_tab_focus());
+    }
 
     #[test]
     fn shared_widgets_expose_roles_names_and_states() {

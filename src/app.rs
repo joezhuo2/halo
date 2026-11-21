@@ -372,6 +372,14 @@ impl Halo {
             ClearOutput => crate::output::clear_current(),
             OpenOutputInEditor => self.editors.open_untitled(&crate::output::current_text()),
             ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => crate::notifications::exec(&cmd),
+            FocusNextRegion | FocusPrevRegion => {
+                if crate::a11y::cycle(ctx, cmd == FocusNextRegion) == Some(crate::a11y::Region::Editor) {
+                    self.editors.focus();
+                }
+            }
+            ToggleTabFocus => {
+                crate::a11y::toggle_tab_focus();
+            }
             Git(op) | GitAt(op, _) => {
                 let target = if let GitAt(_, value) = cmd { Some(value) } else { None };
                 (self.session.sidebar, self.session.source_control, self.session.search) = (true, true, false);
@@ -868,12 +876,19 @@ impl eframe::App for Halo {
 
         crate::notifications::show(&ctx, &self.theme, &mut self.cmds);
         self.titlebar(ui);
+        crate::a11y::region(&ctx, Some(crate::a11y::Region::Status));
         self.statusbar(ui);
+        crate::a11y::region(&ctx, None);
         self.activity_bar(ui);
+        crate::a11y::region(&ctx, Some(crate::a11y::Region::Sidebar));
         self.sidebar(ui);
+        crate::a11y::region(&ctx, None);
         self.ai_panel(ui);
+        crate::a11y::region(&ctx, Some(crate::a11y::Region::Panel));
         self.bottom_panel(ui);
+        crate::a11y::region(&ctx, Some(crate::a11y::Region::Editor));
         self.central(ui);
+        crate::a11y::region(&ctx, None);
         self.debug_frame(&ctx, window.top() + 44.0);
         self.testing_frame(&ctx);
         self.dialogs(&ctx);
@@ -890,7 +905,7 @@ impl eframe::App for Halo {
         }
 
         if let Some((start, color)) = self.theme_fade {
-            let t = ((ctx.input(|i| i.time) - start) / 0.3) as f32;
+            let t = if crate::a11y::reduced() { 1.0 } else { ((ctx.input(|i| i.time) - start) / 0.3) as f32 };
             if t < 1.0 {
                 let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("theme_fade")));
                 painter.rect_filled(window, CornerRadius::ZERO, ui::with_alpha(color, (1.0 - t).powi(2)));
