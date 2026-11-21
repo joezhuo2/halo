@@ -86,6 +86,7 @@ impl Explorer {
                         let focused = self.open_focus && flat_index == self.open_cursor;
                         flat_index += 1;
                         ui::row_bg(ui, theme, r, resp.id, resp.hovered(), tab.active || focused);
+                        ui::list_item(ui, &resp, &tab.title, tab.active, (flat_index - 1, tabs.iter().map(Vec::len).sum()));
                         let close = Rect::from_center_size(pos2(r.right() - 14.0, r.center().y), vec2(18.0, 18.0));
                         let x = ui.interact(close, resp.id.with("close"), Sense::click());
                         let painter = ui.painter().with_clip_rect(r.with_max_x(close.left() - 2.0));

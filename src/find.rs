@@ -269,6 +269,7 @@ impl FindPanel {
                     let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
                     ui::row_bg(ui, theme, r, row.id, row.hovered(), false);
                     let (dir, name) = file.path.rsplit_once('/').unwrap_or(("", &file.path));
+                    ui::tree_item(ui, &row, &format!("{name} {dir}, {} matches", file.hits.len()), false, 0, Some(file.open));
                     let painter = ui.painter().with_clip_rect(r.with_max_x(r.right() - 52.0));
                     let caret = if file.open { icons::CARET_DOWN } else { icons::CARET_RIGHT };
                     painter.text(pos2(r.left() + 8.0, r.center().y), Align2::CENTER_CENTER, caret, FontId::proportional(10.0), theme.text_dim);
@@ -291,6 +292,7 @@ impl FindPanel {
                         let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
                         ui::row_bg(ui, theme, r, row.id, row.hovered(), false);
                         let byte = |col: usize| hit.text.char_indices().nth(col).map_or(hit.text.len(), |c| c.0);
+                        ui::tree_item(ui, &row, hit.text.trim(), false, 1, None);
                         let (from, to) = (byte(hit.mark.0), byte(hit.mark.1));
                         let plain = TextFormat::simple(FontId::monospace(12.0), theme.text);
                         let found = TextFormat { background: ui::with_alpha(theme.accent, 0.3), ..plain.clone() };

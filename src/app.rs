@@ -123,6 +123,7 @@ impl Halo {
     }
 
     pub(crate) fn build(ctx: &egui::Context, settings: Settings, session: Session) -> Self {
+        crate::a11y::configure(&settings);
         ctx.set_fonts(crate::theme::fonts(&settings.font_family, &settings.terminal_font_family));
         crate::terminal::configure(&settings);
         crate::editor::configure(&settings);
@@ -296,6 +297,7 @@ impl Halo {
     }
 
     pub(crate) fn apply_settings(&mut self, ctx: &egui::Context) {
+        crate::a11y::configure(&self.settings);
         if self.zoom_level != Some(self.settings.zoom_level) {
             self.zoom_level = Some(self.settings.zoom_level);
             ctx.set_zoom_factor(1.2f32.powf(self.settings.zoom_level).clamp(0.5, 3.0));
@@ -472,6 +474,30 @@ impl Halo {
             ClearOutput => crate::output::clear_current(),
             OpenOutputInEditor => self.editors.open_untitled(&crate::output::current_text()),
             ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => crate::notifications::exec(&cmd),
+            FocusNextRegion | FocusPrevRegion => {
+                if let Some(region) = crate::a11y::cycle(ctx, cmd == FocusNextRegion) {
+                    if region == crate::a11y::Region::Editor {
+                        self.editors.focus();
+                    }
+                    crate::a11y::announce(region.label(), false);
+                }
+            }
+            ToggleTabFocus => crate::a11y::announce(if crate::a11y::toggle_tab_focus() { "Tab moves focus" } else { "Tab inserts a tab" }, true),
+            ShowAccessibilityHelp => crate::a11y::show_help(),
+            AnnounceCursorPosition => match self.editors.status() {
+                Some(s) => {
+                    let file = self.editors.active_path().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+                    let selected = if s.selected > 0 { format!(", {} selected", s.selected) } else { String::new() };
+                    crate::a11y::announce(format!("Line {}, Column {}{selected} {file}", s.line, s.column), true);
+                }
+                None => crate::a11y::announce("No active editor", true),
+            },
+            ToggleScreenReaderMode => {
+                self.settings.accessibility_support = if crate::a11y::optimized() { "off" } else { "on" }.into();
+                self.settings.save();
+                self.apply_settings(ctx);
+                crate::a11y::announce(if crate::a11y::optimized() { "Screen reader optimized mode on" } else { "Screen reader optimized mode off" }, true);
+            }
             Git(op) | GitAt(op, _) => {
                 let target = if let GitAt(_, value) = cmd { Some(value) } else { None };
                 self.reveal(View::SourceControl);
@@ -568,6 +594,7 @@ impl Halo {
     }
 
     fn after_save(&mut self, ctx: &egui::Context) {
+        crate::a11y::saved(ctx.input(|i| i.time));
         self.git.refresh(ctx);
         self.explorer.refresh();
         let active = self.editors.active_path();
@@ -846,6 +873,10 @@ impl Halo {
             ctx.send_viewport_cmd(ViewportCommand::Icon(Some(std::sync::Arc::new(egui::IconData { rgba, width: 128, height: 128 }))));
         }
         command::set_context(self.when_keys(&ctx));
+        if crate::a11y::frame(&ctx, self.editors.lsp.counts()) {
+            self.apply_settings(&ctx);
+        }
+        crate::a11y::watch("tests", self.testing.status().map(|s| s.1).unwrap_or_default().split(" (").next().unwrap_or_default());
         self.page.find_key(&ctx);
         if self.session.layout.zen.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             let now = ctx.input(|i| i.time);
@@ -872,13 +903,17 @@ impl Halo {
         crate::notifications::show(&ctx, &self.theme, &mut self.cmds);
         self.titlebar(ui);
         if self.session.layout.zen.is_none() {
+            crate::a11y::region(&ctx, Some(crate::a11y::Region::Status));
             self.statusbar(ui);
+            crate::a11y::region(&ctx, None);
         }
         self.workbench(ui);
+        crate::a11y::region(&ctx, None);
         self.floating(&ctx);
         self.debug_frame(&ctx, window.top() + 44.0);
         self.testing_frame(&ctx);
         self.dialogs(&ctx);
+        crate::a11y::help_ui(&ctx, &self.theme);
 
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false));
         if !maximized {
@@ -892,7 +927,7 @@ impl Halo {
         }
 
         if let Some((start, color)) = self.theme_fade {
-            let t = ((ctx.input(|i| i.time) - start) / 0.3) as f32;
+            let t = if crate::a11y::reduced() { 1.0 } else { ((ctx.input(|i| i.time) - start) / 0.3) as f32 };
             if t < 1.0 {
                 let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("theme_fade")));
                 painter.rect_filled(window, CornerRadius::ZERO, ui::with_alpha(color, (1.0 - t).powi(2)));
@@ -973,6 +1008,7 @@ pub(crate) fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol
         for (index, symbol) in symbols.iter().enumerate() {
             let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
             ui::row_bg(ui, theme, r, row.id, row.hovered(), current == Some(index));
+            ui::tree_item(ui, &row, &symbol.name, current == Some(index), symbol.depth, None);
             let x = r.left() + 12.0 + symbol.depth as f32 * 12.0;
             let painter = ui.painter().with_clip_rect(r);
             painter.text(pos2(x, r.center().y), Align2::LEFT_CENTER, lsp::symbol_icon(symbol.kind), FontId::proportional(13.0), theme.accent);

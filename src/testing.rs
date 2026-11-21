@@ -741,6 +741,7 @@ impl Testing {
             let state = summary(groups.iter().flat_map(|g| &g.1).map(|i| self.tests[*i].state));
             let count: usize = groups.iter().map(|g| g.1.len()).sum();
             let (r, resp) = Self::row(ui, theme, 0, state, kind.label(), &format!("{count}"), false);
+            ui::tree_item(ui, &resp, &format!("{}, {state:?}", kind.label()), false, 0, Some(open));
             ui::caret(ui.painter(), pos2(r.left() + 12.0, r.center().y), ui::anim(ui, resp.id.with("open"), open), theme.text_dim);
             if resp.hovered() && hover_button(ui, theme, r, 0, icons::PLAY, &format!("Run {} Tests", kind.label())) {
                 let ids: Vec<(Kind, String)> = groups.iter().flat_map(|g| &g.1).map(|i| (kind, self.tests[*i].id.clone())).collect();
@@ -756,6 +757,7 @@ impl Testing {
                 let open = !self.collapsed.contains(&gkey);
                 let state = summary(indices.iter().map(|i| self.tests[*i].state));
                 let (r, resp) = Self::row(ui, theme, 1, state, &group, &format!("{}", indices.len()), false);
+                ui::tree_item(ui, &resp, &format!("{group}, {state:?}"), false, 1, Some(open));
                 ui::caret(ui.painter(), pos2(r.left() + 26.0, r.center().y), ui::anim(ui, resp.id.with("open"), open), theme.text_dim);
                 let file = self.tests[indices[0]].file.clone().filter(|_| self.tests[indices[0]].group != group || indices.iter().all(|i| self.tests[*i].file == self.tests[indices[0]].file));
                 let mut used = false;
@@ -790,6 +792,7 @@ impl Testing {
         let id = (test.kind, test.id.clone());
         let selected = self.selected.as_ref() == Some(&id);
         let (r, resp) = Self::row(ui, theme, 2, test.state, &test.name, detail, selected);
+        ui::tree_item(ui, &resp, &format!("{}, {:?}", test.name, test.state), selected, 2, None);
         let goto = |cmds: &mut Vec<Command>| {
             if let Some(file) = &test.file {
                 cmds.push(Command::OpenPath(file.clone()));
@@ -865,6 +868,7 @@ impl Testing {
         for (share, path, covered, total) in files {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
             ui::row_bg(ui, theme, r, resp.id, resp.hovered(), false);
+            ui::item(ui, &resp, ui::Role::ListItem, &format!("{}, {covered} of {total} lines", path.display()), false);
             let painter = ui.painter().with_clip_rect(r);
             let color = match share {
                 s if s >= 0.8 => theme.added,

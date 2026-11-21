@@ -213,11 +213,13 @@ fn item(ui: &mut Ui, theme: &Theme, text: &str, active: bool, tip: &str) -> Resp
     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 14.0, HEIGHT), Sense::click());
     let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
     let a = ui::anim(ui, resp.id.with("active"), active);
+    ui::access(ui, resp.id, ui::Role::Button, &ui::plain(text), |n| n.set_description(tip));
     if ui.is_rect_visible(rect) {
         ui.painter().rect_filled(rect, CornerRadius::ZERO, ui::mix(Color32::TRANSPARENT, theme.hover, h));
         let color = ui::mix(ui::mix(theme.text_dim, theme.text, h), theme.accent, a);
         let pos = rect.center() - galley.size() / 2.0;
         ui.painter().galley(pos, galley, color);
+        ui::focus_ring(ui, theme, rect, resp.id);
     }
     resp.on_hover_text(tip)
 }

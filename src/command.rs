@@ -271,6 +271,12 @@ pub enum Command {
     ClearNotifications,
     ToggleDoNotDisturb,
     FocusNotification,
+    FocusNextRegion,
+    FocusPrevRegion,
+    ToggleTabFocus,
+    ShowAccessibilityHelp,
+    AnnounceCursorPosition,
+    ToggleScreenReaderMode,
 
     GitSync,
     Git(GitCommand),
@@ -503,6 +509,10 @@ fn defaults() -> Vec<Binding> {
         g(Modifiers::SHIFT, Key::F5, StopDebugging),
         g(Modifiers::SHIFT, Key::F11, StepOut),
         g(NONE, Key::F6, PauseDebugging),
+        g(NONE, Key::F6, FocusNextRegion),
+        g(Modifiers::SHIFT, Key::F6, FocusPrevRegion),
+        e(C, Key::M, ToggleTabFocus),
+        g(Modifiers::ALT, Key::F1, ShowAccessibilityHelp),
         g(NONE, Key::F9, ToggleBreakpoint),
         g(NONE, Key::F10, StepOver),
         g(NONE, Key::F11, StepInto),
@@ -557,6 +567,9 @@ fn defaults() -> Vec<Binding> {
             (b.when, b.cond) = (SEND_TO_SHELL.to_owned(), shell.clone());
         }
     }
+    for b in list.iter_mut().filter(|b| b.command == PauseDebugging) {
+        (b.when, b.cond) = ("debugState == 'running'".to_owned(), crate::when::parse("debugState == 'running'").ok().map(Arc::new));
+    }
     let text = crate::when::parse(NOT_TEXT).ok().map(Arc::new);
     for b in list.iter_mut().filter(|b| matches!(b.command, MoveEditorUp | MoveEditorDown)) {
         (b.when, b.cond) = (NOT_TEXT.to_owned(), text.clone());
@@ -605,6 +618,7 @@ pub fn all() -> Vec<Command> {
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.extend([ShowOutput, ShowOutputChannels, ClearOutput, OpenOutputInEditor, ShowNotifications, ClearNotifications, ToggleDoNotDisturb, FocusNotification]);
+    commands.extend([FocusNextRegion, FocusPrevRegion, ToggleTabFocus, ShowAccessibilityHelp, AnnounceCursorPosition, ToggleScreenReaderMode]);
     commands.extend([About, InstallInPath]);
     commands
 }
@@ -805,6 +819,7 @@ impl Command {
             | MergeNextConflict | MergePrevConflict | MergeToggleBase | MergeComplete => "Source Control",
             ShowOutput | ShowOutputChannels | ClearOutput | OpenOutputInEditor | SelectOutputChannel(_) => "Output",
             ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => "Notifications",
+            FocusNextRegion | FocusPrevRegion | ToggleTabFocus | ShowAccessibilityHelp | AnnounceCursorPosition | ToggleScreenReaderMode => "Help",
             About | InstallInPath | ConfirmInstallInPath => "Help",
         }
     }
@@ -1065,6 +1080,12 @@ impl Command {
             ClearNotifications => "Notifications: Clear All Notifications",
             ToggleDoNotDisturb => "Notifications: Toggle Do Not Disturb",
             FocusNotification => "Notifications: Focus Notification Toast",
+            FocusNextRegion => "View: Focus Next Part",
+            FocusPrevRegion => "View: Focus Previous Part",
+            ToggleTabFocus => "Toggle Tab Key Moves Focus",
+            ShowAccessibilityHelp => "Accessibility: Show Accessibility Help",
+            AnnounceCursorPosition => "Accessibility: Announce Cursor Position",
+            ToggleScreenReaderMode => "Accessibility: Toggle Screen Reader Optimized Mode",
             GitSync => "Synchronize Changes",
             RefreshExplorer => "Refresh Explorer",
             CutFiles => "File: Cut",

@@ -200,6 +200,10 @@ fn list_popup(
                 for (index, (icon, label, detail)) in rows.iter().enumerate() {
                     let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                     ui::row_bg(ui, theme, r, row.id, row.hovered(), index == selected);
+                    ui::list_item(ui, &row, label, index == selected, (index, rows.len()));
+                    if index == selected {
+                        crate::a11y::watch("completion", label);
+                    }
                     let painter = ui.painter().with_clip_rect(r.shrink2(vec2(6.0, 0.0)));
                     painter.text(r.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, *icon, FontId::proportional(13.0), theme.accent);
                     let end = painter.text(r.left_center() + vec2(28.0, 0.0), Align2::LEFT_CENTER, *label, font.clone(), theme.text);
@@ -1299,6 +1303,7 @@ impl Editors {
                 for (index, item) in peek.items.iter().enumerate() {
                     let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                     ui::row_bg(ui, theme, r, row.id, row.hovered(), index == peek.selected);
+                    ui::list_item(ui, &row, &item.label, index == peek.selected, (index, peek.items.len()));
                     let p = ui.painter().with_clip_rect(r.shrink2(vec2(6.0, 0.0)));
                     let end = p.text(r.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, &item.label, FontId::proportional(12.5), theme.text);
                     let place = format!("{}:{}", file_name(&item.path), item.start.0 + 1);
