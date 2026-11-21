@@ -61,6 +61,7 @@ struct Doc {
     conflicts: (u64, Vec<[usize; 4]>),
     lang: Lang,
     folds: Vec<(usize, usize)>,
+    depths: (u64, Vec<u32>),
 }
 
 #[derive(Default)]
@@ -73,6 +74,8 @@ struct Tab {
     pinned: bool,
     rows: (u64, Vec<u32>),
     preview: bool,
+    pair: ((u64, usize), Option<(usize, usize)>),
+    stuck: usize,
     box_anchor: Option<usize>,
     snippet: Option<snippet::Session>,
     grown: Vec<(Vec<Sel>, Vec<Sel>)>,
@@ -458,7 +461,7 @@ impl Editors {
             self.banner = Some(note.clone());
         }
         let hl = Highlighter::new(buf.path.as_deref(), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![] });
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]) });
         id
     }
 
@@ -1401,7 +1404,7 @@ impl Editors {
         let font = FontId::monospace(settings.font_size);
         let (char_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
         let line_h = (row_h * 1.25).round();
-        let Doc { buf, hl, max_cols, conflicts, lang, folds } = doc;
+        let Doc { buf, hl, max_cols, conflicts, lang, folds, depths } = doc;
         settle(buf, hl, lang, &mut self.lsp, folds);
         buf.clamp(&mut tab.sels);
 
@@ -1473,6 +1476,41 @@ impl Editors {
         if max_cols.0 != buf.version {
             *max_cols = (buf.version, (0..total).map(|l| buf.line_len(l)).max().unwrap_or(0).min(MAX_COLS));
         }
+        // shortcut: nesting counts brackets in strings and comments too, upgrade to syntax scopes if the colors drift
+        let colored = settings.bracket_colors && buf.rope.len_bytes() < 1_000_000;
+        if colored && depths.0 != buf.version {
+            let mut depth = 0u32;
+            let per_line = buf.rope.lines().map(|line| {
+                let before = depth;
+                for c in line.chars() {
+                    match c {
+                        '(' | '[' | '{' => depth += 1,
+                        ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                        _ => {}
+                    }
+                }
+                before
+            });
+            *depths = (buf.version, per_line.collect());
+        }
+        let depths: &[u32] = if colored { &depths.1 } else { &[] };
+        let hex = |rgb: u32| Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
+        let brackets = if theme.dark { [0xFFD700, 0xDA70D6, 0x179FFF] } else { [0x0431FA, 0x319331, 0x7B3814] }.map(hex);
+        let lead_cols = |buf: &Document, line: usize| {
+            let lead = buf.rope.line(line).chars().take_while(|c| *c == ' ' || *c == '\t');
+            lead.fold(0, |width, c| width + if c == '\t' { 4 } else { 1 })
+        };
+        let head = tab.sels[0].head;
+        if tab.pair.0 != (buf.version, head) {
+            tab.pair = ((buf.version, head), buf.enclosing(head, head));
+        }
+        let pair_lines = tab.pair.1.map(|(open, close)| (buf.line_of(open), buf.line_of(close))).filter(|(open, close)| close > open);
+        let active_guide = pair_lines.map(|(open, close)| (open, close, lead_cols(buf, open)));
+        let guide_step = match indent_unit(buf, settings) {
+            (true, size, _) => size.max(1),
+            _ => 4,
+        };
+        let stuck = tab.stuck;
         let mut lens_rows: Vec<(usize, usize)> = match settings.code_lens && lang.attached {
             true => lang.lens.iter().enumerate().filter_map(|(index, lens)| Some((lang.symbols.get(lens.symbol)?.line.min(total - 1), index))).collect(),
             false => vec![],
@@ -1567,6 +1605,26 @@ impl Editors {
                             if from < to && over.last().is_none_or(|last| last.1 <= from) {
                                 over.push((from, to, intel::tone_color(theme, *tone)));
                             }
+                        }
+                        if let Some(mut depth) = depths.get(line).copied() {
+                            let spans = hl.get(line).map(|spans| spans.as_slice()).unwrap_or_default();
+                            let (mut index, mut end) = (0, 0);
+                            for (at, c) in text.char_indices().filter(|c| "([{)]}".contains(c.1)) {
+                                let open = "([{".contains(c);
+                                depth = if open { depth } else { depth.saturating_sub(1) };
+                                let shade = brackets[depth as usize % 3];
+                                depth += open as u32;
+                                while index < spans.len() && end + spans[index].0 <= at {
+                                    end += spans[index].0;
+                                    index += 1;
+                                }
+                                let syntax = spans.get(index).map(|span| span.1);
+                                if syntax != Some(theme.syntax.string) && syntax != Some(theme.syntax.comment) {
+                                    over.push((at, at + 1, shade));
+                                }
+                            }
+                            over.sort_unstable_by_key(|o| o.0);
+                            over.dedup_by(|next, kept| next.0 < kept.1);
                         }
                         let (mut inserts, mut hints) = (vec![], vec![]);
                         let from = lang_ref.hints.partition_point(|h| h.line < line);
@@ -1718,6 +1776,9 @@ impl Editors {
                     let current_line = single.then(|| buf_ref.line_of(tab.sels[0].head));
                     let bracket = if single { buf_ref.matching_bracket(tab.sels[0].head) } else { None };
 
+                    for column in &settings.rulers {
+                        painter.vline(text_x + *column as f32 * char_w, clip.y_range(), Stroke::new(1.0, ui::with_alpha(theme.border, 0.8)));
+                    }
                     for line in (first..last).filter(|line| starts[line + 1] > starts[*line]) {
                         let y = origin.y + top_of(line) as f32 * line_h;
                         let start = buf_ref.line_start(line);
@@ -1766,6 +1827,15 @@ impl Editors {
                             let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
                             painter.rect_filled(band, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
                         }
+                        if settings.guides {
+                            let blank = |l: &usize| buf_ref.indent_of(*l) >= buf_ref.line_len(*l);
+                            let model = if blank(&line) { (line + 1..(line + 40).min(total)).find(|l| !blank(l)) } else { Some(line) };
+                            for column in (0..model.map_or(0, |l| lead_cols(buf_ref, l))).step_by(guide_step) {
+                                let lit = active_guide.is_some_and(|(open, close, at)| line > open && line < close && at == column);
+                                let color = if lit { ui::with_alpha(theme.accent, 0.7) } else { ui::with_alpha(theme.border, 0.7) };
+                                painter.vline(text_x + column as f32 * char_w, y..=bottom, Stroke::new(1.0, color));
+                            }
+                        }
                         for (x0, x1, y) in scope.into_iter().flat_map(|(a, b)| spans(a.saturating_sub(start), b.saturating_sub(start))) {
                             painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), CornerRadius::ZERO, ui::with_alpha(theme.accent, 0.09));
                         }
@@ -1795,6 +1865,21 @@ impl Editors {
                         for (index, piece) in row.pieces.iter().enumerate() {
                             let top = y + index as f32 * line_h + (line_h - piece.galley.size().y) / 2.0;
                             painter.galley(pos2(text_x, top), piece.galley.clone(), theme.text);
+                        }
+                        if settings.render_whitespace {
+                            let dim = Stroke::new(1.0, ui::with_alpha(theme.text_dim, 0.5));
+                            for (column, c) in buf_ref.rope.line(line).chars().take(len).enumerate().filter(|c| c.1 == ' ' || c.1 == '\t') {
+                                let piece = row.piece(column);
+                                let (x0, x1) = (text_x + row.x(piece, column), text_x + row.x(piece, column + 1));
+                                let mid = y + piece as f32 * line_h + line_h / 2.0;
+                                if c == ' ' {
+                                    painter.circle_filled(pos2((x0 + x1) / 2.0, mid), 1.0, dim.color);
+                                } else {
+                                    painter.hline(x0 + 2.0..=x1 - 2.0, mid, dim);
+                                    painter.line_segment([pos2(x1 - 5.0, mid - 3.0), pos2(x1 - 2.0, mid)], dim);
+                                    painter.line_segment([pos2(x1 - 5.0, mid + 3.0), pos2(x1 - 2.0, mid)], dim);
+                                }
+                            }
                         }
                         if folded.iter().any(|f| f.0 == line) {
                             let end = at(len);
@@ -1871,13 +1956,61 @@ impl Editors {
                         let piece = cuts.partition_point(|cut| *cut <= column) - 1;
                         let x = text_x + (column - cuts[piece]) as f32 * char_w;
                         let top = origin.y + (top_of(line) + piece) as f32 * line_h;
-                        let target = Rect::from_min_max(pos2(x - gutter_w - char_w * 3.0, top - line_h), pos2(x + char_w * 4.0, top + line_h * 2.0));
+                        let above = top - line_h * (stuck + 1) as f32;
+                        let target = Rect::from_min_max(pos2(x - gutter_w - char_w * 3.0, above), pos2(x + char_w * 4.0, top + line_h * 2.0));
                         ui.scroll_to_rect(target, None);
                     }
                 })
             })
             .inner;
         let scroll_y = out.state.offset.y;
+        // shortcut: sticky scopes follow indentation, upgrade to document symbols if a language indents oddly
+        tab.stuck = 0;
+        if settings.sticky_scroll && scroll_y > 0.0 {
+            let blank = |l: usize| buf.indent_of(l) >= buf.line_len(l);
+            let scopes = |from: usize| {
+                let mut indent = (from..total.min(from + 40)).find(|l| !blank(*l)).map_or(0, |l| buf.indent_of(l));
+                let mut chain = vec![];
+                for l in (0..from).rev().take(5000).filter(|l| !blank(*l)) {
+                    if indent == 0 {
+                        break;
+                    }
+                    if buf.indent_of(l) < indent {
+                        indent = buf.indent_of(l);
+                        chain.push(l);
+                    }
+                }
+                chain.reverse();
+                chain.truncate(5);
+                chain
+            };
+            let top_row = (scroll_y / line_h) as usize;
+            let covered = scopes(visible.0).len();
+            let chain = scopes(locate((top_row + covered).min(rows - 1)).0);
+            let number_font = FontId::monospace(settings.font_size - 1.0);
+            for (index, line) in chain.iter().enumerate() {
+                let r = Rect::from_min_size(pos2(text_rect.left(), text_rect.top() + index as f32 * line_h), vec2(text_rect.width() - 14.0, line_h));
+                let resp = ui.interact(r, id.with(("sticky", index)), Sense::click());
+                hl.ensure(&buf.rope, *line..line + 1, theme, Duration::from_millis(2));
+                let p = ui.painter().with_clip_rect(r);
+                p.rect_filled(r, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, if resp.hovered() { 0.8 } else { 0.3 }));
+                let text = visible_text(buf, *line);
+                let galley = p.layout_job(job(&text, 0..text.len(), hl.get(*line), &font, theme.text, &[], &[], &hint_format));
+                let left = r.left() + gutter_w;
+                p.with_clip_rect(r.with_min_x(left - 4.0)).galley(pos2(left - out.state.offset.x, r.center().y - galley.size().y / 2.0), galley, theme.text);
+                p.text(pos2(left - 14.0 - char_w, r.center().y), Align2::RIGHT_CENTER, line + 1, number_font.clone(), ui::with_alpha(theme.text_dim, 0.75));
+                if resp.clicked() {
+                    tab.sels = vec![Sel::caret(buf.line_start(*line))];
+                    tab.set_scroll = Some(top_of(*line).saturating_sub(index) as f32 * line_h);
+                    self.want_focus = true;
+                }
+            }
+            if !chain.is_empty() {
+                let y = text_rect.top() + chain.len() as f32 * line_h;
+                ui.painter().hline(text_rect.left()..=text_rect.right() - 14.0, y, Stroke::new(1.0, theme.border));
+            }
+            tab.stuck = chain.len();
+        }
         if activated {
             self.active = g;
         }
@@ -2254,6 +2387,31 @@ end", "word ".repeat(100)))], &settings);
         assert!(tab.sels[0].head > 0 && tab.sels[0].head < 500);
         frame_with(&ctx, &mut editors, vec![key(Key::ArrowDown, Default::default()); rows[1] as usize], &settings);
         assert_eq!(editors.status().unwrap().line, 2);
+    }
+
+    #[test]
+    fn draws_whitespace_rulers_guides_and_sticky_scopes() {
+        let ctx = egui::Context::default();
+        let settings = Settings { render_whitespace: true, rulers: vec![20, 40], ..Settings::default() };
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        let body: String = (0..200).map(|i| format!("        call({i}, [a, \"(\"]);\n")).collect();
+        frame_with(&ctx, &mut editors, vec![Event::Paste(format!("mod m {{\n    fn f() {{\n\t{body}    }}\n}}\n"))], &settings);
+        editors.exec(&Command::GoTo(100, 5), &settings, &ctx);
+        for _ in 0..4 {
+            frame_with(&ctx, &mut editors, vec![], &settings);
+        }
+        let tab = &editors.groups[0].tabs[0];
+        assert_eq!(tab.stuck, 2);
+        assert!(tab.pair.1.is_some());
+        let click = Event::PointerButton { pos: pos2(200.0, TAB_H + 22.0 + 6.0), button: PointerButton::Primary, pressed: true, modifiers: Default::default() };
+        frame_with(&ctx, &mut editors, vec![Event::PointerMoved(pos2(200.0, TAB_H + 22.0 + 6.0))], &settings);
+        frame_with(&ctx, &mut editors, vec![click.clone()], &settings);
+        let Event::PointerButton { pos, button, modifiers, .. } = click else { unreachable!() };
+        frame_with(&ctx, &mut editors, vec![Event::PointerButton { pos, button, pressed: false, modifiers }], &settings);
+        assert_eq!(editors.status().unwrap().line, 1);
     }
 
     #[test]

@@ -47,6 +47,11 @@ pub struct Settings {
     pub auto_close: bool,
     pub trim_trailing_whitespace: bool,
     pub insert_final_newline: bool,
+    pub render_whitespace: bool,
+    pub rulers: Vec<usize>,
+    pub sticky_scroll: bool,
+    pub bracket_colors: bool,
+    pub guides: bool,
 }
 
 impl Default for Settings {
@@ -120,6 +125,11 @@ impl Default for Settings {
             auto_close: true,
             trim_trailing_whitespace: false,
             insert_final_newline: false,
+            render_whitespace: false,
+            rulers: vec![],
+            sticky_scroll: true,
+            bracket_colors: true,
+            guides: true,
         }
     }
 }

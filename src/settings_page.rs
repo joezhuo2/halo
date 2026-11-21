@@ -193,6 +193,19 @@ fn editor_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsP
     toggle(ui, theme, "Editor", "Insert Spaces", "Insert spaces when pressing Tab.", &mut s.insert_spaces);
     toggle(ui, theme, "Editor", "Word Wrap", "Wrap long lines at the width of the editor (Alt+Z).", &mut s.word_wrap);
     toggle(ui, theme, "Editor", "Auto Closing Pairs", "Close brackets and quotes as they are typed, and wrap a selection in them.", &mut s.auto_close);
+    toggle(ui, theme, "Editor", "Render Whitespace", "Draw spaces as dots and tabs as arrows.", &mut s.render_whitespace);
+    toggle(ui, theme, "Editor", "Sticky Scroll", "Keep the lines that open the current scopes at the top while scrolling.", &mut s.sticky_scroll);
+    toggle(ui, theme, "Editor", "Bracket Pair Colors", "Color brackets by how deeply they are nested.", &mut s.bracket_colors);
+    toggle(ui, theme, "Editor", "Guides", "Draw indentation guides and highlight the guide of the bracket pair around the cursor.", &mut s.guides);
+    item(ui, theme, "Editor", "Rulers", "Columns that get a vertical line, separated by commas.");
+    let parse = |text: &str| text.split(',').filter_map(|part| part.trim().parse().ok()).collect::<Vec<usize>>();
+    let id = Id::new("settings_rulers");
+    let kept = ui.data_mut(|d| d.get_temp::<String>(id)).filter(|text| parse(text) == s.rulers);
+    let mut text = kept.unwrap_or_else(|| s.rulers.iter().map(usize::to_string).collect::<Vec<_>>().join(", "));
+    if field(ui, &mut text, 200.0, "80, 120").changed() {
+        s.rulers = parse(&text);
+    }
+    ui.data_mut(|d| d.insert_temp(id, text));
     toggle(ui, theme, "Editor", "Minimap", "Show the minimap beside the editor.", &mut s.minimap);
     toggle(ui, theme, "Editor", "Breadcrumbs", "Show the path and the enclosing symbols above the text.", &mut s.breadcrumbs);
     toggle(ui, theme, "Editor", "Code Lens", "Show reference counts above declarations. Click one to list the places.", &mut s.code_lens);
