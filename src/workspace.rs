@@ -34,6 +34,11 @@ pub fn is_workspace_file(path: &Path) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case("code-workspace"))
 }
 
+pub fn resolve(roots: &[(PathBuf, String)], relative: &str) -> Option<PathBuf> {
+    let found = roots.iter().filter(|(_, prefix)| relative.starts_with(prefix.as_str())).max_by_key(|(_, prefix)| prefix.len());
+    found.map(|(root, prefix)| root.join(&relative[prefix.len()..]))
+}
+
 fn base_name(path: &Path) -> String {
     path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
 }
@@ -142,6 +147,11 @@ impl Workspace {
             (true, true) => self.names()[index].clone(),
             (true, false) => format!("{}/{rest}", self.names()[index]),
         })
+    }
+
+    pub fn prefixed(&self) -> Vec<(PathBuf, String)> {
+        let multi = self.folders.len() > 1;
+        self.roots().into_iter().zip(self.names()).map(|(path, name)| (path, if multi { format!("{name}/") } else { String::new() })).collect()
     }
 
     pub fn section(&self, key: &str) -> Option<&Value> {

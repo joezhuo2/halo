@@ -689,8 +689,8 @@ impl Halo {
                     return self.testing_view(ui);
                 }
                 if self.session.search {
-                    let folder = self.session.folder.clone();
-                    return self.find.ui(ui, &self.theme, folder.as_deref(), &mut self.editors, &mut self.cmds);
+                    let roots = self.session.workspace.prefixed();
+                    return self.find.ui(ui, &self.theme, &roots, &mut self.editors, &mut self.cmds);
                 }
                 if self.session.source_control {
                     return self.scm.ui(ui, &self.theme, &mut self.git, &mut self.cmds);

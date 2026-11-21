@@ -66,8 +66,8 @@ impl Halo {
                 search.max.x = search.max.x.min(bar.right() - 44.0 * 3.0 - 12.0);
                 if self.search.is_open() {
                     let rect = Rect::from_center_size(bar.center(), vec2((bar.width() - 24.0).min(600.0), 26.0));
-                    let folder = self.session.folder.clone();
-                    if self.search.ui(ui, &theme, rect, folder.as_deref(), &mut self.editors, &mut self.cmds) && self.zone == Zone::Editor {
+                    let roots = self.session.workspace.prefixed();
+                    if self.search.ui(ui, &theme, rect, &roots, &mut self.editors, &mut self.cmds) && self.zone == Zone::Editor {
                         self.editors.focus();
                     }
                 } else if search.width() > 90.0 {
