@@ -60,13 +60,15 @@ impl Timeline {
     pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, active: Option<&Path>, open: &mut bool, cmds: &mut Vec<Command>) {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         let rect = ui::section(ui, theme, "TIMELINE", open).on_hover_text("Commits that changed the active file").rect;
-        if !*open {
+        if ui.available_height() < 1.0 {
             return;
         }
-        let mut child = ui.new_child(UiBuilder::new().max_rect(Rect::from_center_size(pos2(rect.right() - 14.0, rect.center().y), Vec2::splat(20.0))));
-        let refresh = ui::icon_button(&mut child, theme, icons::ARROW_CLOCKWISE, 20.0, false, "Refresh").clicked();
-        if refresh || !self.loaded || self.path.as_deref() != active {
-            self.load(active, ui.ctx());
+        if *open {
+            let mut child = ui.new_child(UiBuilder::new().max_rect(Rect::from_center_size(pos2(rect.right() - 14.0, rect.center().y), Vec2::splat(20.0))));
+            let refresh = ui::icon_button(&mut child, theme, icons::ARROW_CLOCKWISE, 20.0, false, "Refresh").clicked();
+            if refresh || !self.loaded || self.path.as_deref() != active {
+                self.load(active, ui.ctx());
+            }
         }
         if let Some(entries) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             (self.entries, self.rx) = (Some(entries), None);

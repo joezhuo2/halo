@@ -431,9 +431,11 @@ impl Halo {
                 }
                 let full = ui.available_rect_before_wrap();
                 let symbols = self.editors.outline();
-                let size = |open: bool, share: f32| if open { (full.height() * share).max(24.0) } else { 24.0 };
-                let lower = full.bottom() - size(self.session.timeline, 0.3);
-                let split = lower - size(self.session.outline, if self.session.timeline { 0.3 } else { 0.4 });
+                let timeline_t = ui::reveal(ui, Id::new("timeline_reveal"), self.session.timeline);
+                let outline_t = ui::reveal(ui, Id::new("outline_reveal"), self.session.outline);
+                let size = |t: f32, share: f32| 24.0 + t * (full.height() * share - 24.0).max(0.0);
+                let lower = (full.bottom() - size(timeline_t, 0.3)).max(full.top() + 104.0).min(full.bottom() - 24.0);
+                let split = (lower - size(outline_t, 0.4 - 0.1 * timeline_t)).max(full.top() + 80.0).min(lower - 24.0);
                 ui.scope_builder(UiBuilder::new().max_rect(full.with_max_y(split)), |ui| {
                     ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                     self.explorer.ui(ui, &self.theme, &self.git, active.as_deref(), &mut self.cmds);
@@ -740,7 +742,7 @@ fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>,
     if loading {
         ui::spinner(ui, pos2(rect.right() - 14.0, rect.center().y), 5.0, theme.text_dim);
     }
-    if !*open {
+    if ui.available_height() < 1.0 {
         return;
     }
     let Some((symbols, line)) = symbols else {
