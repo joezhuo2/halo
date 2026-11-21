@@ -929,7 +929,7 @@ fn auto_save(mode: &str, due: impl FnOnce() -> bool, was: (bool, bool), now: (bo
     }
 }
 
-fn strip_unc(path: PathBuf) -> PathBuf {
+pub(crate) fn strip_unc(path: PathBuf) -> PathBuf {
     match path.to_str().map(|s| (s.strip_prefix(r"\\?\UNC\"), s.strip_prefix(r"\\?\"))) {
         Some((Some(share), _)) => PathBuf::from(format!(r"\\{share}")),
         Some((_, Some(rest))) => PathBuf::from(rest),

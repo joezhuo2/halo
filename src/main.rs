@@ -4,6 +4,7 @@ mod accounts;
 mod ai;
 mod app;
 mod blame;
+mod cli;
 mod command;
 mod dap;
 mod debug;
