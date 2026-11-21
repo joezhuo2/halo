@@ -213,6 +213,7 @@ impl Halo {
                     self.git.diff(title, args);
                 }
             }
+            OpenMerge(path) => self.editors.open_merge(&path, ctx),
             CloseFolder => self.set_folder(None, ctx),
             OpenSettings => self.page.open = true,
             OpenSnippets => {

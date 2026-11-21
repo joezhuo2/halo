@@ -4,6 +4,8 @@ mod diff_view;
 mod emmet;
 mod highlight;
 mod intel;
+mod merge;
+mod merge_view;
 mod open_tabs;
 pub use open_tabs::OpenTab;
 mod snippet;
@@ -89,6 +91,7 @@ struct Tab {
     trail: Vec<Vec<Sel>>,
     seen: (u64, Vec<Sel>),
     diff: Option<Box<diff_view::DiffTab>>,
+    merge: Option<Box<merge_view::MergeTab>>,
 }
 
 #[derive(Default)]
@@ -232,6 +235,7 @@ pub struct Editors {
     pub history: crate::history::Recorder,
     disk_jobs: Vec<(u64, bool)>,
     diffs: diff_view::Diffs,
+    merges: merge_view::Merges,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -549,6 +553,7 @@ impl Editors {
             history: Default::default(),
             disk_jobs: vec![],
             diffs: Default::default(),
+            merges: Default::default(),
         }
     }
 
@@ -841,7 +846,7 @@ impl Editors {
             }
             _ => {}
         }
-        if self.diff_exec(cmd, ctx) {
+        if self.merge_exec(cmd, ctx) || self.diff_exec(cmd, ctx) {
             self.last_input = ctx.input(|i| i.time);
             return true;
         }
@@ -1295,6 +1300,7 @@ impl Editors {
         self.tidy = (settings.trim_trailing_whitespace, settings.insert_final_newline);
         self.history.context = settings.local_history.then(|| ui.ctx().clone());
         self.poll_diffs(ui.ctx());
+        self.poll_merges();
         self.process(settings, ui.ctx());
         let rect = ui.available_rect_before_wrap();
         let count = self.groups.len();
@@ -1325,7 +1331,7 @@ impl Editors {
             }
         }
         self.after_views();
-        if self.take_git_refresh() {
+        if self.take_git_refresh() | self.take_merge_refresh() {
             cmds.push(Command::RefreshExplorer);
         }
         for (id, compare) in std::mem::take(&mut self.disk_jobs) {
@@ -1387,6 +1393,7 @@ impl Editors {
             }
         }
         self.dialogs(ui.ctx());
+        self.merge_dialog(ui.ctx());
         if self.groups.len() > 1 && self.closing.is_none() {
             let before = self.groups.len();
             let mut index = 0;
@@ -1433,8 +1440,10 @@ impl Editors {
             }
             if let Some(mut doc) = self.docs.remove(&doc_id) {
                 let area = self.diff_frame(ui, body, theme, &doc, &mut tab, pending);
+                let area = self.merge_frame(ui, area, theme, &doc, &mut tab, pending);
                 self.view(ui, g, area, theme, settings, git, pending, &mut doc, &mut tab);
                 self.diff_after(ui, body, theme, settings, &mut tab, pending);
+                self.merge_after(ui, body, theme, settings, &mut doc, &mut tab);
                 self.docs.insert(doc_id, doc);
             }
             self.groups[g].tabs[t] = tab;
@@ -1466,7 +1475,7 @@ impl Editors {
                 let faces: Vec<_> = group.tabs.iter().map(|tab| {
                     let buf = &self.docs[&tab.doc].buf;
                     let dirty = buf.is_dirty();
-                    let title = tab.diff.as_ref().map_or(&buf.title, |d| &d.title).clone();
+                    let title = tab.diff.as_ref().map(|d| &d.title).or(tab.merge.as_ref().map(|m| &m.title)).unwrap_or(&buf.title).clone();
                     let mut name = LayoutJob::simple_singleline(title, FontId::proportional(13.0), Color32::PLACEHOLDER);
                     name.sections[0].format.italics = tab.preview && !dirty;
                     TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned }
@@ -1680,10 +1689,11 @@ impl Editors {
         }
         buf.clamp(&mut tab.sels);
         let mut shown = tab.diff.take();
-        let diffed = shown.is_some();
+        let mut merging = tab.merge.take();
+        let diffed = shown.is_some() || merging.is_some();
 
         ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
-        let minimap_w = if diffed { diff_view::RULER } else if settings.minimap && body.width() > 420.0 { 78.0 } else { 0.0 };
+        let minimap_w = if shown.is_some() { diff_view::RULER } else if settings.minimap && !diffed && body.width() > 420.0 { 78.0 } else { 0.0 };
         let text_rect = Rect::from_min_max(body.min, pos2(body.right() - minimap_w, body.bottom()));
         let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 5.0) * char_w + 6.0;
         let wrap_cols = (settings.word_wrap && !diffed).then(|| (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20));
@@ -1795,7 +1805,14 @@ impl Editors {
         };
         lens_rows.sort_unstable();
         lens_rows.dedup_by_key(|row| row.0);
-        let pads = shown.as_ref().map_or(vec![], |d| d.pads());
+        let pads = match (&shown, merging.as_mut()) {
+            (Some(d), _) => d.pads(),
+            (None, Some(m)) => {
+                m.sync(buf);
+                m.pads.clone()
+            }
+            _ => vec![],
+        };
         let change_anchor = if diffed { None } else { self.change_anchor(doc_id, buf) };
         let row_folds: &[(usize, usize)] = if diffed { &[] } else { folds };
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -2147,6 +2164,9 @@ impl Editors {
                         if let Some(d) = &shown {
                             diff_view::tint(&painter, theme, d, line, Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom)), &|column| at(column).x);
                         }
+                        if let Some(m) = &merging {
+                            merge_view::tint(&painter, theme, m, line, Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom)));
+                        }
                         if settings.guides {
                             let blank = |l: &usize| buf_ref.indent_of(*l) >= buf_ref.line_len(*l);
                             let model = if blank(&line) { (line + 1..(line + 40).min(total)).find(|l| !blank(l)) } else { Some(line) };
@@ -2295,6 +2315,9 @@ impl Editors {
                         let numbers = (text_x, gutter.right() - 10.0 - char_w);
                         diff_view::paint_pads(&painter, theme, d, &pads, &pad_top, (first, last), clip, numbers, &font, line_h);
                     }
+                    if merging.is_some() {
+                        merge_view::paint_pads(&painter, theme, &pads, &starts, (first, last), origin.y, clip, line_h);
+                    }
                     if let Some(changes) = &changes {
                         let from = changes.partition_point(|c| c.0 < first);
                         for (line, kind) in changes[from..].iter().take_while(|c| c.0 <= last) {
@@ -2330,6 +2353,9 @@ impl Editors {
         let scroll_y = out.state.offset.y;
         if let Some(d) = shown.as_mut() {
             (d.scroll, d.text_top, d.line_h) = (scroll_y, text_rect.top(), line_h);
+        }
+        if let Some(m) = merging.as_mut() {
+            (m.scroll, m.text_top, m.line_h) = (scroll_y, text_rect.top(), line_h);
         }
         // shortcut: sticky scopes follow indentation, upgrade to document symbols if a language indents oddly
         tab.stuck = 0;
@@ -2524,6 +2550,9 @@ impl Editors {
                     }
                 }
                 next = ui.button("Next").clicked();
+                if ui.button("Resolve in Merge Editor").clicked() {
+                    pending.push(Command::MergeOpen);
+                }
             });
             if let Some(take) = take {
                 buf.resolve(&mut tab.sels, conflicts.1[index], take);
@@ -2594,6 +2623,7 @@ impl Editors {
             });
         }
         tab.diff = shown;
+        tab.merge = merging;
     }
 
     fn find_ui(&mut self, ui: &mut Ui, area: Rect, t: f32, theme: &Theme, buf: &mut Document, tab: &mut Tab) {

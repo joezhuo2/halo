@@ -192,7 +192,7 @@ pub fn step(hunks: &[Hunk], line: usize, forward: bool) -> Option<usize> {
     })
 }
 
-fn join(lines: Vec<&str>) -> String {
+pub fn join(lines: Vec<&str>) -> String {
     let mut out = String::new();
     let count = lines.len();
     for (index, line) in lines.into_iter().enumerate() {

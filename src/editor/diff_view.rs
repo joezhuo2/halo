@@ -347,7 +347,7 @@ impl Diffs {
     }
 }
 
-fn hatch(painter: &Painter, rect: Rect, theme: &Theme) {
+pub(super) fn hatch(painter: &Painter, rect: Rect, theme: &Theme) {
     let rect = rect.intersect(painter.clip_rect());
     if !rect.is_positive() {
         return;
