@@ -121,9 +121,101 @@ pub enum Command {
     SetDefaultBuild(String),
 
     GitSync,
+    Git(GitCommand),
+    GitAt(GitCommand, String),
     RefreshExplorer,
     PathChanged(PathBuf, Option<PathBuf>),
     About,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GitCommand {
+    Amend,
+    AmendMessage,
+    UndoCommit,
+    Merge,
+    Rebase,
+    Continue,
+    Abort,
+    Skip,
+    CherryPick,
+    BranchAt,
+    Tags,
+    CreateTag,
+    DeleteTag,
+    PushTag,
+    PushTags,
+    Remotes,
+    AddRemote,
+    RemoveRemote,
+    RemoteUrl,
+    Fetch,
+    FetchPrune,
+    FetchAll,
+    Pull,
+    Push,
+    Clone,
+    Init,
+    Worktrees,
+    AddWorktree,
+    RemoveWorktree,
+    OpenWorktree,
+    Stash,
+    ApplyStash,
+    PopStash,
+    DropStash,
+    ShowStash,
+}
+
+impl GitCommand {
+    pub const ALL: &[Self] = &[
+        Self::Amend, Self::AmendMessage, Self::UndoCommit, Self::Merge, Self::Rebase, Self::Continue,
+        Self::Abort, Self::Skip, Self::CherryPick, Self::BranchAt, Self::Tags, Self::CreateTag,
+        Self::DeleteTag, Self::PushTag, Self::PushTags, Self::Remotes, Self::AddRemote, Self::RemoveRemote,
+        Self::RemoteUrl, Self::Fetch, Self::FetchPrune, Self::FetchAll, Self::Pull, Self::Push, Self::Clone,
+        Self::Init, Self::Worktrees, Self::AddWorktree, Self::RemoveWorktree, Self::OpenWorktree,
+        Self::Stash, Self::ApplyStash, Self::PopStash, Self::DropStash, Self::ShowStash,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Amend => "Git: Commit (Amend)",
+            Self::AmendMessage => "Git: Use Last Commit Message",
+            Self::UndoCommit => "Git: Undo Last Commit",
+            Self::Merge => "Git: Merge Branch into Current...",
+            Self::Rebase => "Git: Rebase Current onto...",
+            Self::Continue => "Git: Continue Operation",
+            Self::Abort => "Git: Abort Operation...",
+            Self::Skip => "Git: Skip Rebase Commit",
+            Self::CherryPick => "Git: Cherry Pick...",
+            Self::BranchAt => "Git: Create Branch Here...",
+            Self::Tags => "Git: Tags...",
+            Self::CreateTag => "Git: Create Tag...",
+            Self::DeleteTag => "Git: Delete Tag...",
+            Self::PushTag => "Git: Push Tag...",
+            Self::PushTags => "Git: Push All Tags...",
+            Self::Remotes => "Git: Remotes...",
+            Self::AddRemote => "Git: Add Remote...",
+            Self::RemoveRemote => "Git: Remove Remote...",
+            Self::RemoteUrl => "Git: Change Remote URL...",
+            Self::Fetch => "Git: Fetch",
+            Self::FetchPrune => "Git: Fetch (Prune)",
+            Self::FetchAll => "Git: Fetch All",
+            Self::Pull => "Git: Pull",
+            Self::Push => "Git: Push",
+            Self::Clone => "Git: Clone...",
+            Self::Init => "Git: Initialize Repository",
+            Self::Worktrees => "Git: Worktrees...",
+            Self::AddWorktree => "Git: Add Worktree...",
+            Self::RemoveWorktree => "Git: Remove Worktree...",
+            Self::OpenWorktree => "Git: Open Worktree...",
+            Self::Stash => "Git: Stash Changes",
+            Self::ApplyStash => "Git: Apply Stash...",
+            Self::PopStash => "Git: Pop Stash...",
+            Self::DropStash => "Git: Drop Stash...",
+            Self::ShowStash => "Git: Show Stash Changes...",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -240,7 +332,7 @@ fn defaults() -> Vec<Binding> {
 
 pub fn all() -> Vec<Command> {
     use Command::*;
-    vec![
+    let mut commands = vec![
         NewFile, OpenFile, OpenFolder, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, OpenSettings, OpenSettingsJson,
         OpenKeybindings, OpenSnippets, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
@@ -254,8 +346,11 @@ pub fn all() -> Vec<Command> {
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
         ShowHover, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
         RunFile, RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
-        OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, GitSync, About,
-    ]
+        OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, GitSync,
+    ];
+    commands.extend(GitCommand::ALL.iter().copied().map(Git));
+    commands.push(About);
+    commands
 }
 
 fn parse_key(text: &str) -> Option<KeyboardShortcut> {
@@ -373,6 +468,9 @@ pub fn shortcut_text(ctx: &egui::Context, command: &Command) -> Option<String> {
 
 impl Command {
     pub fn id(&self) -> String {
+        if let Self::Git(op) | Self::GitAt(op, _) = self {
+            return format!("git{op:?}");
+        }
         let name = format!("{self:?}");
         name[..1].to_lowercase() + &name[1..]
     }
@@ -396,7 +494,7 @@ impl Command {
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_) => "Run",
             NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal => "Terminal",
-            OpenDiff(..) | GitSync => "Source Control",
+            OpenDiff(..) | GitSync | Git(_) | GitAt(..) => "Source Control",
             About => "Help",
         }
     }
@@ -510,6 +608,7 @@ impl Command {
             TerminateTaskLabel(_) => "Tasks: Terminate Task",
             RevealTask(_) => "Tasks: Show Task",
             SetDefaultBuild(_) => "Tasks: Set Default Build Task",
+            Git(op) | GitAt(op, _) => op.label(),
             GitSync => "Synchronize Changes",
             RefreshExplorer => "Refresh Explorer",
             PathChanged(..) => "Path Changed",

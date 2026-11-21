@@ -288,6 +288,11 @@ impl Halo {
                 self.session.panel = !(self.session.panel && self.bottom.showing_problems());
                 self.bottom.show_problems();
             }
+            Git(op) | GitAt(op, _) => {
+                let target = if let GitAt(_, value) = cmd { Some(value) } else { None };
+                (self.session.sidebar, self.session.source_control, self.session.search) = (true, true, false);
+                self.scm.start(op, target, &mut self.git, ctx, &mut self.cmds);
+            }
             GitSync => self.git.sync(),
             RefreshExplorer => {
                 self.explorer.refresh();

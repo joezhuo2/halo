@@ -1,3 +1,6 @@
+#[path = "git_ops.rs"]
+pub mod ops;
+
 use eframe::egui;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -77,6 +80,7 @@ struct Entry {
 }
 
 struct Status {
+    details: Option<Result<ops::Details, String>>,
     top: PathBuf,
     branch: String,
     tracking: Option<(usize, usize)>,
@@ -91,7 +95,7 @@ struct Status {
 enum Msg {
     Status(PathBuf, Option<Status>),
     Diff(PathBuf, Vec<(usize, LineChange)>),
-    Done(Option<String>),
+    Done(Option<PathBuf>, Result<Option<PathBuf>, String>),
     Repos(PathBuf, Vec<PathBuf>, bool),
     Files(String, Vec<Change>),
     Text(String, String),
@@ -100,6 +104,7 @@ enum Msg {
 
 pub struct Git {
     folder: Option<PathBuf>,
+    folder_repo: Option<bool>,
     repos: Vec<PathBuf>,
     shown: Option<(String, Vec<Change>)>,
     texts: Vec<(String, String)>,
@@ -114,6 +119,8 @@ pub struct Git {
     rx: Receiver<Msg>,
     running: bool,
     pending: bool,
+    details_requested: bool,
+    cloned: Option<PathBuf>,
     busy: bool,
     error: Option<String>,
     diffs: RefCell<HashMap<PathBuf, Option<LineChanges>>>,
@@ -331,9 +338,9 @@ fn find_repos(folder: &Path) -> (Vec<PathBuf>, bool) {
     (repos, own)
 }
 
-fn load_status(root: &Path) -> Option<Status> {
+fn load_status(root: &Path, details: bool) -> Option<Status> {
     let top = crate::wsl::local(root, run(root, &["rev-parse", "--show-toplevel"])?.trim());
-    let text = run(root, &["status", "--porcelain=v1", "-z", "--branch", "--ignored"])?;
+    let text = run(root, &["--no-optional-locks", "status", "--porcelain=v1", "-z", "--branch", "--ignored"])?;
     let (branch, tracking, entries) = parse_status(&text);
     let branches = run(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]).unwrap_or_default();
     let branches = branches.lines().map(str::to_owned).collect();
@@ -370,7 +377,8 @@ fn load_status(root: &Path) -> Option<Status> {
         }
         files.insert(full, state);
     }
-    Some(Status { top, branch, tracking, branches, log, staged, unstaged, files, folders })
+    let details = details.then(|| ops::load(&top));
+    Some(Status { details, top, branch, tracking, branches, log, staged, unstaged, files, folders })
 }
 
 impl Git {
@@ -378,6 +386,7 @@ impl Git {
         let (tx, rx) = channel();
         Self {
             folder: None,
+            folder_repo: None,
             repos: vec![],
             shown: None,
             texts: vec![],
@@ -392,6 +401,8 @@ impl Git {
             rx,
             running: false,
             pending: false,
+            details_requested: false,
+            cloned: None,
             busy: false,
             error: None,
             diffs: RefCell::new(HashMap::new()),
@@ -400,6 +411,7 @@ impl Git {
 
     pub fn set_root(&mut self, root: Option<PathBuf>, ctx: &egui::Context) {
         self.folder = root.clone();
+        self.folder_repo = None;
         self.repos.clear();
         if let Some(folder) = root.clone() {
             let (tx, ctx) = (self.tx.clone(), ctx.clone());
@@ -421,6 +433,25 @@ impl Git {
         self.error = None;
         self.diffs.borrow_mut().clear();
         self.refresh(ctx);
+    }
+
+    pub fn can_init(&self) -> bool {
+        self.folder_repo == Some(false)
+    }
+
+    pub fn init(&mut self) {
+        let (Some(folder), Some(ctx)) = (self.folder.clone(), self.ctx.clone()) else { return };
+        if !self.can_init() || self.busy {
+            return;
+        }
+        self.select(Some(folder.clone()), &ctx);
+        let tx = self.tx.clone();
+        self.job(move || {
+            exec(&folder, &["init"])?;
+            let (repos, own) = find_repos(&folder);
+            let _ = tx.send(Msg::Repos(folder, repos, own));
+            Ok(None)
+        });
     }
 
     pub fn repos(&self) -> &[PathBuf] {
@@ -511,9 +542,10 @@ impl Git {
             return;
         }
         self.running = true;
+        let details = self.details_requested;
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let status = load_status(&root);
+            let status = load_status(&root, details);
             let _ = tx.send(Msg::Status(root, status));
             ctx.request_repaint();
         });
@@ -546,6 +578,7 @@ impl Git {
                 }
                 Msg::Repos(folder, repos, own) => {
                     if self.folder.as_ref() == Some(&folder) {
+                        self.folder_repo = Some(own);
                         if !own
                             && self.root == self.folder
                             && let (Some(first), Some(ctx)) = (repos.first(), self.ctx.clone())
@@ -563,13 +596,18 @@ impl Git {
                         self.prs = Some(prs);
                     }
                 }
-                Msg::Done(error) => {
+                Msg::Done(root, result) => {
                     acted = true;
                     self.busy = false;
                     if std::mem::take(&mut self.prs_stale) {
                         self.prs = None;
                     }
-                    self.error = error;
+                    match result {
+                        Ok(Some(path)) => self.cloned = Some(path),
+                        Ok(None) => {}
+                        Err(error) if root == self.root => self.error = Some(error),
+                        Err(error) => crate::ui::notify(error),
+                    }
                     if let Some(ctx) = self.ctx.clone() {
                         self.refresh(&ctx);
                     }
@@ -635,14 +673,6 @@ impl Git {
         self.act(&[&["commit", "-q", "-m", message]]);
     }
 
-    pub fn fetch(&mut self) {
-        self.act(&[&["fetch"]]);
-    }
-
-    pub fn pull(&mut self) {
-        self.act(&[&["pull"]]);
-    }
-
     pub fn push(&mut self) {
         match self.tracking() {
             Some(_) => self.act(&[&["push"]]),
@@ -664,26 +694,55 @@ impl Git {
         }
     }
 
-    fn act(&mut self, steps: &[&[&str]]) {
-        let (Some(status), Some(ctx)) = (&self.status, &self.ctx) else { return };
+    pub fn request_details(&mut self, ctx: &egui::Context) {
+        if !self.details_requested {
+            self.details_requested = true;
+            self.refresh(ctx);
+        }
+    }
+
+    pub fn loading(&self) -> bool {
+        self.running
+    }
+
+    pub fn details(&self) -> Option<&Result<ops::Details, String>> {
+        self.status.as_ref()?.details.as_ref()
+    }
+
+    pub fn take_cloned(&mut self) -> Option<PathBuf> {
+        self.cloned.take()
+    }
+
+    pub fn job(&mut self, work: impl FnOnce() -> Result<Option<PathBuf>, String> + Send + 'static) {
+        let Some(ctx) = self.ctx.clone() else { return };
         if self.busy {
             return;
         }
         self.busy = true;
         self.error = None;
-        self.prs_stale = steps.iter().any(|s| ["gh", "push", "pull", "fetch"].contains(&s[0]));
-        let (top, tx, ctx) = (status.top.clone(), self.tx.clone(), ctx.clone());
-        let steps: Vec<Vec<String>> = steps.iter().map(|s| s.iter().map(|a| a.to_string()).collect()).collect();
+        let (tx, root) = (self.tx.clone(), self.root.clone());
         std::thread::spawn(move || {
-            let error = steps.iter().find_map(|args| {
+            let _ = tx.send(Msg::Done(root, work()));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn act(&mut self, steps: &[&[&str]]) {
+        let Some(top) = self.top().map(Path::to_path_buf) else { return };
+        if self.busy {
+            return;
+        }
+        self.prs_stale = steps.iter().any(|s| ["gh", "push", "pull", "fetch"].contains(&s[0]));
+        let steps: Vec<Vec<String>> = steps.iter().map(|s| s.iter().map(|a| a.to_string()).collect()).collect();
+        self.job(move || {
+            for args in &steps {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 match args.split_first() {
-                    Some((&"gh", rest)) => command("gh", &top, rest).err(),
-                    _ => exec(&top, &args).err(),
-                }
-            });
-            let _ = tx.send(Msg::Done(error));
-            ctx.request_repaint();
+                    Some((&"gh", rest)) => command("gh", &top, rest)?,
+                    _ => exec(&top, &args)?,
+                };
+            }
+            Ok(None)
         });
     }
 
@@ -801,13 +860,13 @@ mod tests {
         std::fs::create_dir_all(dir.join("out")).unwrap();
         std::fs::write(dir.join("out/o.bin"), "x").unwrap();
 
-        let status = load_status(&dir.join("sub")).unwrap();
+        let status = load_status(&dir.join("sub"), false).unwrap();
         assert_eq!(status.branch, "trunk");
         let paths = |list: &[Change]| list.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
         assert!(status.staged.is_empty());
         assert_eq!(paths(&status.unstaged), ["sub/a.txt", "new.txt"]);
         git(&["add", "-A", "--", "new.txt"]);
-        let staged = load_status(&dir).unwrap();
+        let staged = load_status(&dir, false).unwrap();
         assert_eq!(staged.staged, [Change { path: "new.txt".into(), state: FileState::Added }]);
         assert_eq!(paths(&staged.unstaged), ["sub/a.txt"]);
         git(&["reset", "-q", "--", "new.txt"]);
@@ -822,7 +881,7 @@ mod tests {
 
         let diff = git(&["diff", "--no-color", "-U0", "HEAD", "--", "sub/a.txt"]);
         assert_eq!(parse_diff(&diff), vec![(1, LineChange::Modified), (2, LineChange::Modified)]);
-        assert!(load_status(&std::env::temp_dir()).is_none() || std::env::temp_dir().join(".git").exists());
+        assert!(load_status(&std::env::temp_dir(), false).is_none() || std::env::temp_dir().join(".git").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

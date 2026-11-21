@@ -1,4 +1,7 @@
-use crate::command::Command;
+#[path = "scm_ops.rs"]
+mod ops;
+
+use crate::command::{Command, GitCommand};
 use crate::explorer::{file_icon, state_badge, state_color};
 use crate::git::{Change, Commit, FileState, Git};
 use crate::theme::Theme;
@@ -24,13 +27,9 @@ enum Action {
     Unstage(Option<String>),
     Discard(Option<String>),
     Commit,
-    Fetch,
-    Pull,
-    Push,
     Switch(String),
     NewBranch,
     Refresh,
-    Stash(bool),
     SelectRepo(PathBuf),
     ShowCommit(String),
     Pr(Vec<String>),
@@ -48,25 +47,40 @@ pub struct Scm {
     commit: Option<String>,
     review: Option<(u64, bool, String)>,
     new_pr: Option<(String, String)>,
+    ops: ops::Ops,
 }
 
 impl Scm {
     pub fn new() -> Self {
         Self {
             open: [true; 3], shares: [1.0; 3], message: String::new(), committing: false, discard: None,
-            new_branch: None, commit: None, review: None, new_pr: None,
+            new_branch: None, commit: None, review: None, new_pr: None, ops: ops::Ops::default(),
         }
     }
 
     pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, git: &mut Git, cmds: &mut Vec<Command>) {
         ui.spacing_mut().item_spacing.y = 0.0;
         ui::section_header(ui, theme, "Source Control");
+        self.operation_dialogs(ui, theme, git, cmds);
         let mut action = None;
         repositories(ui, theme, git, &mut action);
         let Some(top) = git.top().map(Path::to_path_buf) else {
             ui.vertical_centered(|ui| {
                 ui.add_space(16.0);
-                ui.label(RichText::new("The open folder is not a git repository.").color(theme.text_dim));
+                if git.loading() || git.busy() {
+                    ui::skeleton(ui, theme, 2);
+                } else {
+                    ui.label(RichText::new("Open or initialize a Git repository.").color(theme.text_dim));
+                    if git.can_init() && ui.button("Initialize Repository").clicked() {
+                        cmds.push(Command::Git(GitCommand::Init));
+                    }
+                    if ui.button("Clone Repository...").clicked() {
+                        cmds.push(Command::Git(GitCommand::Clone));
+                    }
+                }
+                if let Some(error) = git.error() {
+                    ui.colored_label(theme.error, error);
+                }
             });
             self.apply(action, git, ui);
             return;
@@ -80,7 +94,8 @@ impl Scm {
 
         let busy = git.busy();
         git.load_prs();
-        toolbar(ui, theme, git, &mut action);
+        toolbar(ui, theme, git, &mut action, cmds);
+        ops::in_progress(ui, theme, git, cmds);
         Frame::new().inner_margin(Margin::symmetric(10, 4)).show(ui, |ui| {
             let id = Id::new("scm_message");
             let can_commit = !busy && !git.changes(true).is_empty() && !self.message.trim().is_empty();
@@ -97,12 +112,19 @@ impl Scm {
             );
             ui.add_space(6.0);
             let label = RichText::new(format!("{}  Commit", icons::CHECK)).color(theme.accent);
-            let button = ui
-                .add_enabled(can_commit, egui::Button::new(label).min_size(vec2(ui.available_width(), 26.0)))
-                .on_disabled_hover_text("Stage changes and type a message to commit.");
-            if can_commit && (button.clicked() || submit) {
-                action = Some(Action::Commit);
-            }
+            ui.horizontal(|ui| {
+                let width = (ui.available_width() - 65.0).max(50.0);
+                let button = ui.add_enabled(can_commit, egui::Button::new(label).min_size(vec2(width, 26.0)))
+                    .on_disabled_hover_text("Stage changes and type a message to commit.");
+                if can_commit && (button.clicked() || submit) {
+                    action = Some(Action::Commit);
+                }
+                let amend = git.details().and_then(|d| d.as_ref().ok()).is_some_and(|d| !d.head.is_empty() && d.operation.is_none());
+                if ui.add_enabled(amend && !busy, egui::Button::new("Amend"))
+                    .on_hover_text("Amend HEAD. Leave the message empty to keep the last message.").clicked() {
+                    cmds.push(Command::Git(GitCommand::Amend));
+                }
+            });
             if let Some(error) = git.error() {
                 ui.add_space(6.0);
                 ui.label(RichText::new(error).color(theme.error));
@@ -110,6 +132,7 @@ impl Scm {
             ui.add_space(4.0);
         });
 
+        self.stashes(ui, theme, git, cmds);
         let available = (ui.available_height() - 3.0 * HEADER).max(0.0);
         let reveal = std::array::from_fn(|i| ui::reveal(ui, ui.id().with(("scm_reveal", i)), self.open[i]));
         let heights = section_heights(available, self.shares, reveal);
@@ -195,9 +218,6 @@ impl Scm {
                 git.commit(self.message.trim());
                 self.committing = true;
             }
-            Some(Action::Fetch) => git.fetch(),
-            Some(Action::Pull) => git.pull(),
-            Some(Action::Push) => git.push(),
             Some(Action::Switch(branch)) => git.switch(&branch, false),
             Some(Action::NewBranch) => self.new_branch = Some(String::new()),
             Some(Action::Refresh) => {
@@ -210,7 +230,6 @@ impl Scm {
                 let title = git.log().first().map(|c| c.subject.clone()).unwrap_or_default();
                 self.new_pr = Some((title, String::new()));
             }
-            Some(Action::Stash(pop)) => git.stash(pop),
             Some(Action::SelectRepo(repo)) => {
                 self.commit = None;
                 git.select(Some(repo), ui.ctx());
@@ -426,7 +445,7 @@ fn discard(git: &mut Git, top: &Path, target: Option<&str>, cmds: &mut Vec<Comma
     }
 }
 
-fn toolbar(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>) {
+fn toolbar(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>, cmds: &mut Vec<Command>) {
     let busy = git.busy();
     Frame::new().inner_margin(Margin::symmetric(10, 2)).show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -459,27 +478,22 @@ fn toolbar(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>) {
                 }
                 ui.menu_button(RichText::new(icons::DOTS_THREE).color(theme.text_dim), |ui| {
                     ui::menu_pad(ui);
-                    if ui.button("Stash Changes").clicked() {
-                        *action = Some(Action::Stash(false));
-                    }
-                    if ui.button("Pop Stash").clicked() {
-                        *action = Some(Action::Stash(true));
-                    }
+                    ops::menu(ui, git, cmds);
                 });
                 let tracking = git.tracking();
                 let (ahead, behind) = tracking.unwrap_or_default();
                 let push = match tracking {
                     Some(_) => format!("Push ({ahead} ahead)"),
-                    None => "Publish Branch to origin".to_owned(),
+                    None => "Publish Branch".to_owned(),
                 };
                 if ui::icon_button(ui, theme, icons::ARROW_UP, 22.0, ahead > 0, &push).clicked() {
-                    *action = Some(Action::Push);
+                    cmds.push(Command::Git(GitCommand::Push));
                 }
                 if ui::icon_button(ui, theme, icons::ARROW_DOWN, 22.0, behind > 0, &format!("Pull ({behind} behind)")).clicked() {
-                    *action = Some(Action::Pull);
+                    cmds.push(Command::Git(GitCommand::Pull));
                 }
                 if ui::icon_button(ui, theme, icons::CLOUD_ARROW_DOWN, 22.0, false, "Fetch").clicked() {
-                    *action = Some(Action::Fetch);
+                    cmds.push(Command::Git(GitCommand::Fetch));
                 }
                 if ui::icon_button(ui, theme, icons::ARROWS_CLOCKWISE, 22.0, false, "Refresh").clicked() {
                     *action = Some(Action::Refresh);
@@ -555,6 +569,16 @@ fn graph(
             }
             painter.text(pos2(x, dot.y), Align2::LEFT_CENTER, &commit.subject, FontId::proportional(13.0), theme.text);
         }
+        resp.context_menu(|ui| {
+            ui::menu_pad(ui);
+            for (op, label) in [(GitCommand::CherryPick, "Cherry Pick..."), (GitCommand::CreateTag, "Create Tag Here..."),
+                (GitCommand::BranchAt, "Create Branch Here...")] {
+                if ui.add_enabled(!git.busy(), egui::Button::new(label)).clicked() {
+                    cmds.push(Command::GitAt(op, commit.hash.clone()));
+                    ui.close();
+                }
+            }
+        });
         let short = &commit.hash[..commit.hash.len().min(8)];
         if resp.on_hover_text(format!("{short}  {}, {}", commit.author, commit.date)).clicked() {
             *action = Some(Action::ShowCommit(commit.hash.clone()));
