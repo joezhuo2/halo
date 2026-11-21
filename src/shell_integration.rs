@@ -119,6 +119,7 @@ pub struct Integration {
     pub cwd: Option<String>,
     pub dropped: i64,
     pub seen: bool,
+    pub restored: Vec<String>,
 }
 
 impl Integration {
@@ -156,9 +157,9 @@ impl Integration {
 
     pub fn recent(&self) -> Vec<String> {
         let mut seen: Vec<String> = vec![];
-        for record in self.commands.iter().rev().filter(|r| !r.line.trim().is_empty()) {
-            if !seen.contains(&record.line) {
-                seen.push(record.line.clone());
+        for line in self.commands.iter().rev().map(|r| &r.line).chain(&self.restored).filter(|l| !l.trim().is_empty()) {
+            if !seen.contains(line) {
+                seen.push(line.clone());
             }
         }
         seen
@@ -475,6 +476,8 @@ mod tests {
         assert_eq!((c[2].end, c[2].output), (None, Some(9)));
         assert_eq!(integration.last_finished().map(|r| r.line.as_str()), Some("ls"));
         assert_eq!(integration.recent(), vec!["ls".to_owned(), "make".to_owned()]);
+        integration.restored = vec!["make".into(), "git status".into()];
+        assert_eq!(integration.recent(), vec!["ls".to_owned(), "make".to_owned(), "git status".to_owned()]);
     }
 
     #[test]

@@ -339,6 +339,7 @@ fn debug_build(root: &Path, test: &Test, ctl: &Shared) -> Result<Config, String>
 
 pub struct Testing {
     root: Option<PathBuf>,
+    parked: Vec<Testing>,
     loaded: bool,
     kinds: Vec<Kind>,
     tests: Vec<Test>,
@@ -366,6 +367,7 @@ impl Default for Testing {
     fn default() -> Self {
         Self {
             root: None,
+            parked: vec![],
             loaded: false,
             kinds: vec![],
             tests: vec![],
@@ -392,13 +394,22 @@ impl Default for Testing {
 }
 
 impl Testing {
-    fn set_root(&mut self, root: Option<&Path>) {
+    fn set_root(&mut self, root: Option<&Path>, park: bool) {
         if self.root.as_deref() == root {
             return;
         }
-        self.cancel();
         let show_coverage = self.show_coverage;
-        *self = Testing { root: root.map(Path::to_path_buf), show_coverage, ..Default::default() };
+        let mut parked = std::mem::take(&mut self.parked);
+        if park && self.root.is_some() {
+            parked.push(std::mem::take(self));
+        } else if !park {
+            self.cancel();
+            parked.iter_mut().for_each(Testing::cancel);
+            parked.clear();
+        }
+        let found = parked.iter().position(|t| t.root.as_deref() == root).map(|i| parked.remove(i));
+        *self = found.unwrap_or_else(|| Testing { root: root.map(Path::to_path_buf), show_coverage, ..Default::default() });
+        self.parked = parked;
     }
 
     fn ensure(&mut self, ctx: &egui::Context) {
@@ -936,8 +947,8 @@ impl Halo {
     }
 
     pub(crate) fn testing_frame(&mut self, ctx: &egui::Context) {
-        let folder = self.session.folder.clone();
-        self.testing.set_root(folder.as_deref());
+        let folder = self.active_root();
+        self.testing.set_root(folder.as_deref(), self.session.workspace.is_multi());
         self.testing.poll(ctx);
         for (path, line, delta) in std::mem::take(&mut self.editors.tests.edited) {
             self.testing.edited(&path, line, delta);
@@ -1080,6 +1091,17 @@ mod tests {
     }
 
     #[test]
+    fn each_root_keeps_its_own_tests_while_another_is_active() {
+        let mut testing = Testing { tests: sample(), root: Some(PathBuf::from("/w")), loaded: true, ..Default::default() };
+        testing.set_root(Some(Path::new("/api")), true);
+        assert!(testing.tests.is_empty() && !testing.loaded && testing.parked.len() == 1);
+        testing.set_root(Some(Path::new("/w")), true);
+        assert_eq!((testing.tests.len(), testing.loaded, testing.parked.len()), (sample().len(), true, 1));
+        testing.set_root(Some(Path::new("/other")), false);
+        assert!(testing.tests.is_empty() && testing.parked.is_empty());
+    }
+
+    #[test]
     fn finds_tests_at_the_cursor_and_follows_edits() {
         let mut testing = Testing { tests: sample(), root: Some(PathBuf::from("/w")), ..Default::default() };
         let lib = Path::new("/w/src/lib.rs");
@@ -1149,7 +1171,7 @@ mod tests {
         std::fs::write(root.join("src/lib.rs"), "#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() { assert_eq!(1 + 1, 2); }\n    #[test]\n    fn fails() { assert_eq!(1 + 1, 3); }\n}\n").unwrap();
         let ctx = egui::Context::default();
         let mut testing = Testing::default();
-        testing.set_root(Some(&root));
+        testing.set_root(Some(&root), false);
         testing.refresh(&ctx);
         let wait = |testing: &mut Testing, done: &dyn Fn(&Testing) -> bool| {
             let start = std::time::Instant::now();

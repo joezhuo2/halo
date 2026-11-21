@@ -31,6 +31,12 @@ impl Halo {
                         item(ui, &theme, &format!("{} WSL: {distro}", icons::LINUX_LOGO), true, "This folder is open in WSL");
                     }
 
+                    if let Some(name) = self.session.workspace.name().filter(|_| self.session.workspace.is_multi())
+                        && item(ui, &theme, &format!("{} {name}", icons::FOLDERS), false, "Workspace folders: show the Explorer").clicked()
+                    {
+                        self.cmds.push(Command::ShowExplorer);
+                    }
+
                     if self.settings.status_problems {
                         let (errors, warnings) = if self.settings.diagnostics { self.editors.lsp.counts() } else { (0, 0) };
                         let (task_errors, task_warnings) = self.tasks.counts();
@@ -207,8 +213,8 @@ fn item(ui: &mut Ui, theme: &Theme, text: &str, active: bool, tip: &str) -> Resp
     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 14.0, HEIGHT), Sense::click());
     let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
     let a = ui::anim(ui, resp.id.with("active"), active);
+    ui::access(ui, resp.id, ui::Role::Button, &ui::plain(text), |n| n.set_description(tip));
     if ui.is_rect_visible(rect) {
-            ui::access(ui, resp.id, ui::Role::Button, &ui::plain(text), |n| n.set_description(tip));
         ui.painter().rect_filled(rect, CornerRadius::ZERO, ui::mix(Color32::TRANSPARENT, theme.hover, h));
         let color = ui::mix(ui::mix(theme.text_dim, theme.text, h), theme.accent, a);
         let pos = rect.center() - galley.size() / 2.0;

@@ -647,7 +647,7 @@ pub fn debug_config(test: &Test, root: &Path, exe: Option<&Path>) -> Result<Conf
     for (key, value) in [("type", kind), ("request", "launch"), ("name", name.as_str())] {
         raw.insert(key.into(), json!(value));
     }
-    Ok(Config { name, kind: kind.into(), request: "launch".into(), pre_launch_task: None, raw })
+    Ok(Config { name, kind: kind.into(), request: "launch".into(), pre_launch_task: None, raw, folder: None })
 }
 
 #[cfg(test)]

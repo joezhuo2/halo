@@ -41,7 +41,9 @@ impl Halo {
                             for state in [&mut widgets.hovered, &mut widgets.open, &mut widgets.active] {
                                 state.corner_radius = CornerRadius::same(5);
                             }
-                            self.menus(ui);
+                            if self.session.layout.zen.is_none() {
+                                self.menus(ui);
+                            }
                             ui.cursor().left()
                         })
                         .inner;
@@ -66,8 +68,8 @@ impl Halo {
                 search.max.x = search.max.x.min(bar.right() - 44.0 * 3.0 - 12.0);
                 if self.search.is_open() {
                     let rect = Rect::from_center_size(bar.center(), vec2((bar.width() - 24.0).min(600.0), 26.0));
-                    let folder = self.session.folder.clone();
-                    if self.search.ui(ui, &theme, rect, folder.as_deref(), &mut self.editors, &mut self.cmds) && self.zone == Zone::Editor {
+                    let roots = self.session.workspace.prefixed();
+                    if self.search.ui(ui, &theme, rect, &roots, &mut self.editors, &mut self.cmds) && self.zone == Zone::Editor {
                         self.editors.focus();
                     }
                 } else if search.width() > 90.0 {
@@ -106,10 +108,11 @@ impl Halo {
     fn menus(&mut self, ui: &mut Ui) {
         use Command::*;
         self.menu(ui, "File", &[
-            Some(NewFile), Some(OpenFile), Some(OpenFolder), None,
+            Some(NewFile), Some(NewWindow), Some(OpenFile), Some(OpenFolder), Some(OpenFolderInNewWindow), Some(OpenWorkspaceFromFile), None,
+            Some(AddFolderToWorkspace), Some(SaveWorkspaceAs), None,
             Some(Save), Some(SaveAs), Some(SaveAll), None,
             Some(CompareFile), Some(CompareClipboard), Some(CompareSaved), None,
-            Some(CloseEditor), Some(CloseFolder), None,
+            Some(CloseEditor), Some(CloseFolder), Some(CloseWorkspace), None,
             Some(OpenSettings), Some(OpenSettingsJson), Some(OpenKeybindings), None,
             Some(SelectTheme), Some(SelectIconTheme), None,
             Some(Exit),
@@ -125,11 +128,18 @@ impl Halo {
             Some(SelectAll), None,
             Some(AddCursorAbove), Some(AddCursorBelow), Some(SelectNextOccurrence),
         ]);
-        self.menu(ui, "View", &[
+        self.menu_with(ui, "View", &[
             Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), Some(ShowTesting), None,
             Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), Some(ShowProblems), Some(ShowOutput), Some(ShowNotifications), None,
-            Some(SplitEditor), Some(ToggleMinimap), Some(MarkdownPreview), Some(MarkdownPreviewSide), None,
+            Some(SplitEditor), Some(SplitEditorDown), Some(ToggleMaximizeGroup), Some(ResetGroupSizes), Some(ToggleMinimap), Some(MarkdownPreview), Some(MarkdownPreviewSide), None,
             Some(ToggleTheme), Some(ZoomIn), Some(ZoomOut), Some(ZoomReset),
+        ], &[
+            Some(ToggleFullScreen), Some(ToggleZenMode), Some(ToggleCenteredLayout), None,
+            Some(ToggleSidebar), Some(ToggleSecondarySidebar), Some(TogglePanel), Some(ToggleSidebarPosition), None,
+            Some(MovePanelLeft), Some(MovePanelRight), Some(MovePanelBottom), Some(MovePanelTop), Some(TogglePanelPosition), Some(ToggleMaximizedPanel), None,
+            Some(AlignPanelCenter), Some(AlignPanelJustify), Some(AlignPanelLeft), Some(AlignPanelRight), None,
+            Some(ActivityBarSide), Some(ActivityBarTop), Some(ActivityBarHidden), None,
+            Some(MoveView), Some(ResetViewLocations),
         ]);
         self.menu(ui, "Go", &[
             Some(GoToFile), Some(GoToSymbol), Some(GoToWorkspaceSymbol), Some(GoToLine), Some(FindInFiles), Some(ShowCommands), None,
@@ -188,6 +198,7 @@ impl Halo {
             self.menu_item(ui, ChangeTerminalColor);
             self.menu_item(ui, RunRecentLine);
             self.menu_item(ui, CopyLastCommandOutput);
+            self.menu_item(ui, ClearRestoredHistory);
             ui.separator();
             let names: Vec<String> = self.settings.terminals.iter().map(|p| p.name.clone()).collect();
             for name in names {
@@ -197,13 +208,21 @@ impl Halo {
                 }
             }
         });
-        self.menu(ui, "Help", &[Some(About)]);
+        self.menu(ui, "Help", &[Some(InstallInPath), None, Some(About)]);
     }
 
     fn menu(&mut self, ui: &mut Ui, title: &str, items: &[Option<Command>]) {
+        self.menu_with(ui, title, items, &[]);
+    }
+
+    fn menu_with(&mut self, ui: &mut Ui, title: &str, items: &[Option<Command>], appearance: &[Option<Command>]) {
         ui.menu_button(title, |ui| {
             ui.set_min_width(230.0);
             ui::menu_pad(ui);
+            if !appearance.is_empty() {
+                self.menu(ui, "Appearance", appearance);
+                ui.separator();
+            }
             for item in items {
                 match item {
                     Some(cmd) => self.menu_item(ui, cmd.clone()),

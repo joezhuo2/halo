@@ -5,7 +5,8 @@ use crate::ui::{self, icons};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Align, Align2, Color32, FontId, Key, Layout, RichText, ScrollArea, Sense, TextEdit, Ui, UiBuilder, pos2, vec2};
 use fancy_regex::Regex;
-use std::path::Path;
+use crate::workspace::resolve;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 
 const ROW: f32 = 22.0;
@@ -102,15 +103,16 @@ fn scan(text: &str, pattern: &Pattern, limit: usize) -> Vec<Hit> {
 }
 
 // shortcut: files are read from disk, so unsaved edits are not searched, upgrade to reading open buffers if that matters
-fn search(folder: &Path, query: &Query) -> Vec<FileHits> {
+fn search(roots: &[(PathBuf, String)], query: &Query) -> Vec<FileHits> {
     let Ok(pattern) = Pattern::new(&query.text, query.case, query.word, query.regex) else { return vec![] };
     let (include, exclude) = (globs(&query.include), globs(&query.exclude));
     let (mut out, mut total) = (vec![], 0);
-    for path in crate::search::list_files(folder) {
+    let files = roots.iter().flat_map(|(root, prefix)| crate::search::list_files(root).into_iter().map(move |p| (root.join(&p), format!("{prefix}{p}"))));
+    for (full, path) in files {
         if (!include.is_empty() && !listed(&include, &path)) || listed(&exclude, &path) {
             continue;
         }
-        let Ok(bytes) = std::fs::read(folder.join(&path)) else { continue };
+        let Ok(bytes) = std::fs::read(full) else { continue };
         if bytes.len() > 4 * 1024 * 1024 || bytes.iter().take(8192).any(|b| *b == 0) {
             continue;
         }
@@ -131,7 +133,7 @@ impl FindPanel {
         self.focus = true;
     }
 
-    fn start(&mut self, folder: &Path, ctx: &egui::Context) {
+    fn start(&mut self, roots: &[(PathBuf, String)], ctx: &egui::Context) {
         self.searched = self.query.clone();
         self.results.clear();
         self.rx = None;
@@ -144,9 +146,9 @@ impl FindPanel {
             return;
         }
         let (tx, rx) = channel();
-        let (folder, query, ctx) = (folder.to_path_buf(), self.query.clone(), ctx.clone());
+        let (roots, query, ctx) = (roots.to_vec(), self.query.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(search(&folder, &query));
+            let _ = tx.send(search(&roots, &query));
             ctx.request_repaint();
         });
         self.rx = Some(rx);
@@ -163,20 +165,20 @@ impl FindPanel {
         out
     }
 
-    fn run_replace(&mut self, target: Option<usize>, folder: &Path, editors: &mut Editors, cmds: &mut Vec<Command>, ctx: &egui::Context) {
+    fn run_replace(&mut self, target: Option<usize>, roots: &[(PathBuf, String)], editors: &mut Editors, cmds: &mut Vec<Command>, ctx: &egui::Context) {
         let q = &self.searched;
         let Ok(pattern) = Pattern::new(&q.text, q.case, q.word, q.regex) else { return };
         let files = self.results.iter().enumerate().filter(|(index, _)| target.is_none_or(|only| only == *index));
-        let failed: Vec<String> =
-            files.filter_map(|(_, file)| editors.replace_in(&folder.join(&file.path), &pattern, &self.with, self.preserve).err()).collect();
+        let paths: Vec<PathBuf> = files.filter_map(|(_, file)| resolve(roots, &file.path)).collect();
+        let failed: Vec<String> = paths.iter().filter_map(|path| editors.replace_in(path, &pattern, &self.with, self.preserve).err()).collect();
         if !failed.is_empty() {
             ui::notify(failed.join("\n"));
         }
         cmds.push(Command::RefreshExplorer);
-        self.start(folder, ctx);
+        self.start(roots, ctx);
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, folder: Option<&Path>, editors: &mut Editors, cmds: &mut Vec<Command>) {
+    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, roots: &[(PathBuf, String)], editors: &mut Editors, cmds: &mut Vec<Command>) {
         let ctx = ui.ctx().clone();
         if let Some(found) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             let (hits, files) = (found.iter().map(|file| file.hits.len()).sum::<usize>(), found.len());
@@ -192,11 +194,11 @@ impl FindPanel {
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
         ui.painter().rect_filled(rect, 0, ui::mix(theme.panel, theme.bar, 0.5));
         ui.painter().text(pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, "SEARCH", FontId::proportional(11.5), theme.text);
-        let Some(folder) = folder else {
+        if roots.is_empty() {
             ui.add_space(12.0);
             ui.label(RichText::new("   Open a folder to search in files.").color(theme.text_dim));
             return;
-        };
+        }
         let mut go = false;
         let body = ui.available_rect_before_wrap().shrink2(vec2(8.0, 6.0));
         ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
@@ -302,7 +304,7 @@ impl FindPanel {
                         let galley = painter.layout_job(job);
                         painter.galley(pos2(r.left() + 26.0, r.center().y - galley.size().y / 2.0), galley, Color32::PLACEHOLDER);
                         if row.on_hover_text(format!("{}:{}", file.path, hit.line)).clicked() {
-                            cmds.push(Command::OpenPath(folder.join(&file.path)));
+                            cmds.extend(resolve(roots, &file.path).map(Command::OpenPath));
                             cmds.push(Command::GoTo(hit.line, hit.col));
                         }
                     }
@@ -310,7 +312,7 @@ impl FindPanel {
             });
         });
         if go {
-            self.start(folder, &ctx);
+            self.start(roots, &ctx);
         }
         let Some(target) = self.confirm else { return };
         let chosen = || self.results.iter().enumerate().filter(|(index, _)| target.is_none_or(|only| only == *index)).map(|(_, file)| file.hits.len());
@@ -341,7 +343,7 @@ impl FindPanel {
         if let Some(replace) = choice {
             self.confirm = None;
             if replace {
-                self.run_replace(target, folder, editors, cmds, &ctx);
+                self.run_replace(target, roots, editors, cmds, &ctx);
             }
         }
     }
@@ -368,8 +370,19 @@ mod tests {
         std::fs::write(dir.join("sub/a.txt"), "one foo\r\nFoo two\r\n").unwrap();
         std::fs::write(dir.join("b.md"), "foo").unwrap();
         let query = Query { text: "foo".into(), include: "*.txt".into(), ..Default::default() };
-        let found = search(&dir, &query);
+        let found = search(&[(dir.clone(), String::new())], &query);
         assert_eq!((found.len(), found[0].path.as_str(), found[0].hits.len()), (1, "sub/a.txt", 2));
+        let other = std::env::temp_dir().join(format!("halo-find-other-{}", std::process::id()));
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("c.txt"), "foo").unwrap();
+        let roots = [(dir.clone(), "api/".to_owned()), (other.clone(), "web/".to_owned())];
+        let found = search(&roots, &Query { text: "foo".into(), ..Default::default() });
+        let paths: Vec<&str> = found.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.starts_with(&["api/b.md"]) && paths.contains(&"api/sub/a.txt") && paths.last() == Some(&"web/c.txt"));
+        let only = search(&roots, &Query { text: "foo".into(), include: "./web/**".into(), ..Default::default() });
+        assert_eq!(only.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["web/c.txt"]);
+        assert_eq!(resolve(&roots, "web/c.txt"), Some(other.join("c.txt")));
+        let _ = std::fs::remove_dir_all(&other);
         let mut editors = Editors::new();
         let any = Pattern::new("foo", false, false, false).unwrap();
         assert_eq!(editors.replace_in(&dir.join("sub/a.txt"), &any, "bar", true), Ok(2));

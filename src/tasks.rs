@@ -4,6 +4,7 @@ use crate::lsp::Diagnostic;
 use crate::settings::Settings;
 use crate::terminal::BottomPanel;
 use crate::ui;
+use crate::workspace::Workspace;
 use eframe::egui;
 use fancy_regex::{Captures, Regex};
 use serde_json::{Value, json};
@@ -18,6 +19,7 @@ const POLL: Duration = Duration::from_millis(150);
 struct Vars {
     workspace: PathBuf,
     file: Option<PathBuf>,
+    all: Workspace,
 }
 
 fn substitute(text: &str, vars: &Vars) -> Result<String, String> {
@@ -42,9 +44,10 @@ fn substitute(text: &str, vars: &Vars) -> Result<String, String> {
                 let file = file()?;
                 file.strip_prefix(&vars.workspace).unwrap_or(&file).to_string_lossy().into_owned()
             }
-            _ => match name.strip_prefix("env:") {
-                Some(var) => std::env::var(var).unwrap_or_default(),
-                None => rest[start..start + len + 1].to_owned(),
+            _ => match (name.strip_prefix("env:"), name.strip_prefix("workspaceFolder:").and_then(|n| vars.all.find(n))) {
+                (Some(var), _) => std::env::var(var).unwrap_or_default(),
+                (_, Some(index)) => vars.all.folders[index].path.to_string_lossy().into_owned(),
+                _ => rest[start..start + len + 1].to_owned(),
             },
         };
         out.push_str(&value);
@@ -412,6 +415,8 @@ struct Def {
     reveal: bool,
     origin: Origin,
     raw: Value,
+    folder: PathBuf,
+    base: String,
 }
 
 fn os_key() -> &'static str {
@@ -491,12 +496,14 @@ fn parse_def(raw: &Value, origin: Origin, os: &str) -> Result<Def, String> {
         reveal: !matches!(v["presentation"]["reveal"].as_str(), Some("never" | "silent")),
         matchers,
         depends,
+        base: label.clone(),
         label,
         command,
         args,
         process,
         origin,
         raw: raw.clone(),
+        folder: PathBuf::new(),
     })
 }
 
@@ -576,6 +583,33 @@ fn load(root: &Path, settings: &Settings, os: &str) -> (Vec<Def>, Vec<String>) {
     let mut seen = std::collections::HashSet::new();
     defs.retain(|d| seen.insert(d.label.clone()));
     (defs, errors)
+}
+
+fn load_all(workspace: &Workspace, settings: &Settings, os: &str) -> (Vec<Def>, Vec<String>) {
+    let (mut tagged, mut errors): (Vec<(Def, String)>, Vec<String>) = (vec![], vec![]);
+    for (root, name) in workspace.roots().into_iter().zip(workspace.names()) {
+        let (defs, found) = load(&root, settings, os);
+        errors.extend(found);
+        for def in defs {
+            if def.origin != Origin::Settings || !tagged.iter().any(|(d, _)| d.label == def.label) {
+                tagged.push((Def { folder: root.clone(), ..def }, name.clone()));
+            }
+        }
+    }
+    if let (Some(tasks), Some(first)) = (workspace.section("tasks"), workspace.first()) {
+        let (defs, found) = defs_from(&tasks.to_string(), Origin::Config, os);
+        errors.extend(found);
+        tagged.extend(defs.into_iter().map(|d| (Def { folder: first.clone(), ..d }, "workspace".to_owned())));
+    }
+    let clash = |label: &str| tagged.iter().filter(|(d, _)| d.base == label).count() > 1;
+    let renamed: Vec<Def> = tagged
+        .iter()
+        .map(|(def, tag)| {
+            let name = |label: &String| if clash(label) { format!("{label} ({tag})") } else { label.clone() };
+            Def { label: name(&def.base), depends: def.depends.iter().map(name).collect(), ..def.clone() }
+        })
+        .collect();
+    (renamed, errors)
 }
 
 pub fn tasks_path(root: &Path) -> PathBuf {
@@ -698,6 +732,7 @@ pub struct Outcome {
 
 struct Exec {
     node: usize,
+    folder: PathBuf,
     label: String,
     pane: u64,
     cwd: PathBuf,
@@ -778,9 +813,11 @@ fn with_default_build(text: Option<&str>, label: &str, raw: &Value, os: &str) ->
 }
 
 impl Tasks {
-    pub fn refresh(&mut self, root: Option<&Path>, settings: &Settings) {
-        let Some(root) = root else { return };
-        let (defs, errors) = load(root, settings, os_key());
+    pub fn refresh(&mut self, workspace: &Workspace, settings: &Settings) {
+        if workspace.folders.is_empty() {
+            return;
+        }
+        let (defs, errors) = load_all(workspace, settings, os_key());
         if errors != self.errors {
             errors.iter().for_each(|e| ui::notify(e.clone()));
         }
@@ -789,6 +826,15 @@ impl Tasks {
 
     fn def(&self, label: &str) -> Option<&Def> {
         self.defs.iter().find(|d| d.label == label)
+    }
+
+    fn resolve_label(&self, label: &str, file: Option<&Path>) -> String {
+        if self.def(label).is_some() {
+            return label.to_owned();
+        }
+        let mut found = self.defs.iter().filter(|d| d.base == label);
+        let owned = found.clone().find(|d| file.is_some_and(|f| f.starts_with(&d.folder)));
+        owned.or_else(|| found.next()).map_or_else(|| label.to_owned(), |d| d.label.clone())
     }
 
     fn picks(&self, kind: Option<&str>) -> Vec<crate::search::Choice> {
@@ -825,21 +871,22 @@ impl Tasks {
     pub fn run_label(
         &mut self,
         label: &str,
-        root: Option<&Path>,
+        workspace: &Workspace,
         file: Option<PathBuf>,
         settings: &Settings,
         bottom: &mut BottomPanel,
         ctx: &egui::Context,
     ) -> Result<Receiver<Outcome>, String> {
-        let root = root.ok_or("Open a folder to run tasks.")?;
-        self.refresh(Some(root), settings);
+        let root = workspace.first().ok_or("Open a folder to run tasks.")?;
+        self.refresh(workspace, settings);
+        let label = &self.resolve_label(label, file.as_deref());
         let sched = Sched::new(&self.defs, label)?;
         for node in &sched.nodes {
             self.terminate(&node.label, bottom);
         }
         let (tx, rx) = channel();
         self.last = Some(label.to_owned());
-        let vars = Vars { workspace: root.to_path_buf(), file };
+        let vars = Vars { workspace: root, file, all: workspace.clone() };
         let mut run = Run { sched, vars, execs: vec![], waiters: vec![tx], told: false, error: None };
         self.step(&mut run, bottom, ctx);
         self.runs.push(run);
@@ -893,7 +940,10 @@ impl Tasks {
                 for scan in &mut exec.scans {
                     for event in scan.feed(line) {
                         match event {
-                            Event::Found(found) => add_problem(&mut self.problems, &found, scan.matcher.base.as_deref(), &exec.cwd, &run.vars),
+                            Event::Found(found) => {
+                                let vars = Vars { workspace: exec.folder.clone(), ..run.vars.clone() };
+                                add_problem(&mut self.problems, &found, scan.matcher.base.as_deref(), &exec.cwd, &vars)
+                            }
                             Event::Begin => self.problems.retain(|p| p.owner != scan.matcher.owner),
                             Event::End => ready.push(exec.node),
                         }
@@ -952,7 +1002,7 @@ impl Tasks {
     fn launch(&mut self, run: &mut Run, node: usize, bottom: &mut BottomPanel, ctx: &egui::Context) -> Result<(), String> {
         let label = run.sched.nodes[node].label.clone();
         let def = self.def(&label).cloned().ok_or_else(|| format!("There is no task named '{label}'."))?;
-        let vars = &run.vars;
+        let vars = &Vars { workspace: def.folder.clone(), ..run.vars.clone() };
         let command = substitute(&def.command, vars)?;
         let args = def.args.iter().map(|a| substitute(a, vars)).collect::<Result<Vec<_>, _>>()?;
         let env = def.env.iter().map(|(k, v)| Ok((k.clone(), substitute(v, vars)?))).collect::<Result<BTreeMap<_, _>, String>>()?;
@@ -968,7 +1018,7 @@ impl Tasks {
         if def.background && !scans.iter().any(|s| s.matcher.background.is_some()) {
             run.sched.ready(node);
         }
-        run.execs.push(Exec { node, label, pane, cwd, scans, seen: vec![], polled: Instant::now() });
+        run.execs.push(Exec { node, folder: def.folder.clone(), label, pane, cwd, scans, seen: vec![], polled: Instant::now() });
         Ok(())
     }
 }
@@ -991,7 +1041,7 @@ fn add_problem(problems: &mut Vec<Problem>, found: &Found, base: Option<&str>, c
 impl Halo {
     pub(crate) fn task_command(&mut self, cmd: Command, ctx: &egui::Context) {
         use Command::*;
-        let Some(root) = self.session.folder.clone() else { return ui::notify("Open a folder to use tasks.") };
+        let Some(root) = self.active_root() else { return ui::notify("Open a folder to use tasks.") };
         if matches!(cmd, OpenTasksJson) {
             let path = tasks_path(&root);
             if !path.exists() {
@@ -1000,7 +1050,7 @@ impl Halo {
             }
             return self.editors.open(&path);
         }
-        self.tasks.refresh(Some(&root), &self.settings);
+        self.tasks.refresh(&self.session.workspace, &self.settings);
         let pick = |app: &mut Self, hint: &str, items: Vec<crate::search::Choice>, empty: &str| match items.is_empty() {
             true => ui::notify(empty),
             false => app.search.pick(hint, items),
@@ -1039,7 +1089,7 @@ impl Halo {
             }
             RunTaskLabel(label) => {
                 let file = self.editors.active_path();
-                match self.tasks.run_label(&label, Some(&root), file, &self.settings, &mut self.bottom, ctx) {
+                match self.tasks.run_label(&label, &self.session.workspace, file, &self.settings, &mut self.bottom, ctx) {
                     Ok(_) => self.session.panel |= self.tasks.def(&label).is_none_or(|d| d.reveal),
                     Err(error) => ui::notify(error),
                 }
@@ -1052,7 +1102,8 @@ impl Halo {
                 }
             }
             SetDefaultBuild(label) => {
-                let Some(raw) = self.tasks.def(&label).map(|d| d.raw.clone()) else { return };
+                let Some((raw, root)) = self.tasks.def(&label).map(|d| (d.raw.clone(), d.folder.clone())) else { return };
+                let label = self.tasks.def(&label).map_or(label, |d| d.base.clone());
                 let path = tasks_path(&root);
                 let existing = std::fs::read_to_string(&path).ok();
                 match with_default_build(existing.as_deref(), &label, &raw, os_key()) {
@@ -1132,7 +1183,9 @@ mod tests {
 
     #[test]
     fn substitutes_variables() {
-        let vars = Vars { workspace: PathBuf::from("/w"), file: Some(PathBuf::from("/w/src/main.rs")) };
+        let mut all = Workspace::single(PathBuf::from("/w"));
+        all.add(PathBuf::from("/other/api"));
+        let vars = Vars { workspace: PathBuf::from("/w"), file: Some(PathBuf::from("/w/src/main.rs")), all };
         let ok = |t: &str| substitute(t, &vars).unwrap();
         assert_eq!(ok("${workspaceFolder}"), "/w");
         assert_eq!(ok("${file}"), "/w/src/main.rs");
@@ -1140,6 +1193,8 @@ mod tests {
         assert_eq!(PathBuf::from(ok("${relativeFile}")), PathBuf::from("src/main.rs"));
         assert_eq!(ok("a-${env:CARGO_PKG_NAME}-${env:HALO_TASKS_MISSING}-b"), "a-halo--b");
         assert_eq!(ok("${unknown} ${open"), "${unknown} ${open");
+        assert_eq!(PathBuf::from(ok("${workspaceFolder:api}")), PathBuf::from("/other/api"));
+        assert_eq!(ok("${workspaceFolder:nope}"), "${workspaceFolder:nope}");
         assert!(substitute("${file}", &Vars::default()).is_err());
     }
 
@@ -1233,7 +1288,7 @@ mod tests {
         assert_eq!((found[0].file.as_str(), found[0].end, found[0].severity), ("a.x", Some((1, 5)), 1));
         assert_eq!((found[1].line, found[1].severity, found[1].message.as_str()), (7, 2, "plain"));
         assert_eq!((found[2].file.as_str(), found[2].severity), ("b.x", 3));
-        let vars = Vars { workspace: PathBuf::from("/w"), file: None };
+        let vars = Vars { workspace: PathBuf::from("/w"), file: None, all: Workspace::default() };
         assert_eq!(locate("./a.x", scan.matcher.base.as_deref(), Path::new("/cwd"), &vars), PathBuf::from("/w/src/a.x"));
         assert_eq!(locate("a.x", None, Path::new("/cwd"), &vars), PathBuf::from("/cwd/a.x"));
         let single = json!({"pattern": {"regexp": r"^(\S+):(\d+): (.*)$", "file": 1, "line": 2, "message": 3}});
@@ -1368,6 +1423,25 @@ mod tests {
         assert_eq!(merged[0].command, "mine");
         assert_eq!(merged.iter().filter(|d| d.label == "cargo build").count(), 1);
         assert_eq!(merged.iter().find(|d| d.label == "from settings").unwrap().origin, Origin::Settings);
+
+        let other = std::env::temp_dir().join(format!("halo-tasks-other-{}", std::process::id()));
+        std::fs::create_dir_all(other.join(".vscode")).unwrap();
+        std::fs::write(tasks_path(&other), r#"{"tasks": [{"label": "cargo build", "command": "theirs", "dependsOn": "lint"}, {"label": "lint", "command": "x"}]}"#).unwrap();
+        let mut workspace = Workspace::single(dir.clone());
+        workspace.add(other.clone());
+        workspace.raw.insert("tasks".into(), json!({"tasks": [{"label": "all", "command": "y"}]}));
+        let (defs, _) = load_all(&workspace, &settings, "linux");
+        let find = |label: &str| defs.iter().find(|d| d.label == label).unwrap();
+        let (mine, theirs) = (find(&format!("cargo build ({})", workspace.names()[0])), find(&format!("cargo build ({})", workspace.names()[1])));
+        assert_eq!((mine.command.as_str(), &mine.folder, theirs.command.as_str(), &theirs.folder), ("mine", &dir, "theirs", &other));
+        assert_eq!((theirs.depends.clone(), find("lint").folder.clone()), (vec!["lint".to_owned()], other.clone()));
+        assert_eq!((defs.iter().filter(|d| d.label == "from settings").count(), find("all").folder.clone()), (1, dir.clone()));
+        let (mine, theirs) = (mine.label.clone(), theirs.label.clone());
+        let tasks = Tasks { defs, ..Default::default() };
+        assert_eq!(tasks.resolve_label("cargo build", Some(&other.join("src/x.rs"))), theirs);
+        assert_eq!(tasks.resolve_label("cargo build", None), mine);
+        assert_eq!(tasks.resolve_label("lint", None), "lint");
+        let _ = std::fs::remove_dir_all(&other);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1434,7 +1508,7 @@ mod tests {
         let (ctx, settings) = (egui::Context::default(), Settings::default());
         let (mut tasks, mut bottom) = (Tasks::default(), BottomPanel::new());
 
-        let rx = tasks.run_label("fail", Some(&dir), None, &settings, &mut bottom, &ctx).unwrap();
+        let rx = tasks.run_label("fail", &Workspace::single(dir.clone()), None, &settings, &mut bottom, &ctx).unwrap();
         assert_eq!(tasks.running_count(), 1);
         let outcome = wait_for(&rx, &mut tasks, &mut bottom, &ctx);
         assert!(!outcome.ok);
@@ -1444,14 +1518,14 @@ mod tests {
         assert_eq!(files[0].0, dir.join("src").join("main.rs"));
         assert_eq!((files[0].1[0].start, files[0].1[0].message.as_str()), ((2, 3), "boom"));
 
-        let rx = tasks.run_label("both", Some(&dir), None, &settings, &mut bottom, &ctx).unwrap();
+        let rx = tasks.run_label("both", &Workspace::single(dir.clone()), None, &settings, &mut bottom, &ctx).unwrap();
         let outcome = wait_for(&rx, &mut tasks, &mut bottom, &ctx);
         assert!(!outcome.ok);
         assert_eq!(tasks.counts(), (1, 0));
 
-        let rx = tasks.run_label("after", Some(&dir), None, &settings, &mut bottom, &ctx).unwrap();
+        let rx = tasks.run_label("after", &Workspace::single(dir.clone()), None, &settings, &mut bottom, &ctx).unwrap();
         assert!(wait_for(&rx, &mut tasks, &mut bottom, &ctx).ok);
-        assert!(tasks.run_label("nope", Some(&dir), None, &settings, &mut bottom, &ctx).is_err());
+        assert!(tasks.run_label("nope", &Workspace::single(dir.clone()), None, &settings, &mut bottom, &ctx).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

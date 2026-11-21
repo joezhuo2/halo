@@ -208,13 +208,16 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: &str, size: f32, active: bo
     if tip.is_empty() { resp } else { resp.on_hover_text(tip) }
 }
 
-pub fn tabs(ui: &mut Ui, theme: &Theme, id: Id, labels: &[&str], active: &mut usize) {
-    let mut underline = None;
+pub fn tabs(ui: &mut Ui, theme: &Theme, id: Id, labels: &[&str], active: &mut usize) -> Option<usize> {
+    let (mut underline, mut dragged) = (None, None);
     for (index, label) in labels.iter().enumerate() {
         let galley = ui.painter().layout_no_wrap((*label).to_owned(), FontId::proportional(11.5), Color32::PLACEHOLDER);
-        let (r, resp) = ui.allocate_exact_size(egui::vec2(galley.size().x + 20.0, 32.0), Sense::click());
+        let (r, resp) = ui.allocate_exact_size(egui::vec2(galley.size().x + 20.0, 32.0), Sense::click_and_drag());
         if resp.clicked() {
             *active = index;
+        }
+        if resp.drag_started() {
+            dragged = Some(index);
         }
         let a = anim(ui, resp.id.with("active"), *active == index);
         let h = anim(ui, resp.id.with("hover"), resp.hovered());
@@ -232,6 +235,7 @@ pub fn tabs(ui: &mut Ui, theme: &Theme, id: Id, labels: &[&str], active: &mut us
         let bar = Rect::from_min_max(egui::pos2(left, r.bottom() - 4.0), egui::pos2(right, r.bottom() - 2.5));
         ui.painter().rect_filled(bar, CornerRadius::ZERO, theme.accent);
     }
+    dragged
 }
 
 pub fn fade_in(ui: &Ui, id: Id) -> f32 {

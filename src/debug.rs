@@ -6,6 +6,7 @@ use crate::tasks::{Outcome, Tasks};
 use crate::terminal::BottomPanel;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
+use crate::workspace::Workspace;
 use eframe::egui::{
     self, Align2, Color32, FontId, Id, Key, Pos2, Rect, Response, RichText, ScrollArea, Sense, Stroke, TextEdit, Ui,
     pos2, vec2,
@@ -221,6 +222,7 @@ pub struct Config {
     pub request: String,
     pub pre_launch_task: Option<String>,
     pub raw: Map<String, Value>,
+    pub folder: Option<PathBuf>,
 }
 
 pub fn parse_launch(text: &str) -> Result<Vec<Config>, String> {
@@ -234,6 +236,7 @@ pub fn parse_launch(text: &str) -> Result<Vec<Config>, String> {
             request: text("request").unwrap_or_else(|| "launch".into()),
             pre_launch_task: text("preLaunchTask"),
             raw,
+            folder: None,
         })
     });
     Ok(configs.collect())
@@ -242,6 +245,23 @@ pub fn parse_launch(text: &str) -> Result<Vec<Config>, String> {
 struct Vars {
     folder: PathBuf,
     file: Option<PathBuf>,
+    all: Workspace,
+}
+
+fn launch_configs(texts: &[(PathBuf, String, String)]) -> (Vec<Config>, Option<String>) {
+    let (mut configs, mut error) = (vec![], None);
+    for (folder, tag, text) in texts {
+        match parse_launch(text) {
+            Ok(found) => configs.extend(found.into_iter().map(|c| (Config { folder: Some(folder.clone()), ..c }, tag))),
+            Err(e) => error = error.or(Some(e)),
+        }
+    }
+    if error.is_some() {
+        return (vec![], error);
+    }
+    let clash = |name: &str| texts.len() > 1 && configs.iter().filter(|(c, _)| c.name == name).count() > 1;
+    let named = configs.iter().map(|(c, tag)| Config { name: if clash(&c.name) { format!("{} ({tag})", c.name) } else { c.name.clone() }, ..c.clone() });
+    (named.collect(), None)
 }
 
 fn expand(text: &str, vars: &Vars) -> String {
@@ -255,6 +275,7 @@ fn expand(text: &str, vars: &Vars) -> String {
             "fileBasenameNoExtension" => file?.file_stem()?.to_string_lossy().into_owned(),
             "fileDirname" => shown(file?.parent()?),
             "relativeFile" => shown(file?.strip_prefix(&vars.folder).unwrap_or(file?)),
+            _ if name.starts_with("workspaceFolder:") => shown(&vars.all.folders[vars.all.find(&name[16..])?].path),
             _ => std::env::var(name.strip_prefix("env:")?).unwrap_or_default(),
         })
     };
@@ -588,6 +609,7 @@ impl Live {
 
 pub struct Env<'a> {
     pub folder: Option<&'a Path>,
+    pub workspace: &'a Workspace,
     pub file: Option<PathBuf>,
     pub settings: &'a Settings,
     pub marks: &'a mut Marks,
@@ -665,24 +687,31 @@ impl Debug {
         self.live.is_some()
     }
 
-    fn reload(&mut self, folder: Option<&Path>, now: f64, force: bool) {
+    fn reload(&mut self, workspace: &Workspace, folder: Option<&Path>, now: f64, force: bool) {
         if !force && self.stamp.0.as_deref() == folder && now - self.stamp.2 < 1.0 {
             return;
         }
-        let path = folder.map(launch_path);
-        let modified = path.as_ref().and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok());
+        let multi = workspace.is_multi();
+        let roots: Vec<(PathBuf, String)> = match multi {
+            true => workspace.roots().into_iter().zip(workspace.names()).collect(),
+            false => folder.map(|f| (f.to_path_buf(), String::new())).into_iter().collect(),
+        };
+        let file = workspace.file.clone().filter(|_| multi);
+        let files = roots.iter().map(|(r, _)| launch_path(r)).chain(file.clone());
+        let modified = files.filter_map(|p| std::fs::metadata(p).ok()?.modified().ok()).max();
         let unchanged = self.stamp.0.as_deref() == folder && self.stamp.1 == modified && self.stamp.2 > f64::NEG_INFINITY;
         self.stamp = (folder.map(Path::to_path_buf), modified, now);
         if unchanged {
             return;
         }
-        let text = path.and_then(|p| std::fs::read_to_string(p).ok());
-        self.present = text.is_some();
-        (self.configs, self.error) = match text.as_deref().map(parse_launch) {
-            Some(Ok(configs)) => (configs, None),
-            Some(Err(error)) => (vec![], Some(error)),
-            None => (vec![], None),
-        };
+        let mut texts: Vec<(PathBuf, String, String)> =
+            roots.into_iter().filter_map(|(root, tag)| Some((root.clone(), tag, std::fs::read_to_string(launch_path(&root)).ok()?))).collect();
+        let shared = file.and_then(|f| Workspace::open(&f).ok()).unwrap_or_else(|| workspace.clone());
+        if let (true, Some(launch), Some(first)) = (multi, shared.section("launch"), workspace.first()) {
+            texts.push((first, "workspace".into(), launch.to_string()));
+        }
+        self.present = !texts.is_empty();
+        (self.configs, self.error) = launch_configs(&texts);
         if !self.configs.iter().any(|c| c.name == self.selected) {
             self.selected = self.configs.first().map(|c| c.name.clone()).unwrap_or_default();
         }
@@ -690,7 +719,7 @@ impl Debug {
 
     fn start(&mut self, no_debug: bool, env: &mut Env) {
         let now = env.ctx.input(|i| i.time);
-        self.reload(env.folder, now, true);
+        self.reload(env.workspace, env.folder, now, true);
         let Some(folder) = env.folder.filter(|_| self.present) else { return env.cmds.push(Command::RunFile) };
         if let Some(error) = &self.error {
             return ui::notify(error.clone());
@@ -698,10 +727,11 @@ impl Debug {
         let Some(config) = self.configs.iter().find(|c| c.name == self.selected).or(self.configs.first()).cloned() else {
             return ui::notify("launch.json has no configurations. Use Debug: Add Configuration... to add one.");
         };
-        let vars = Vars { folder: folder.to_path_buf(), file: env.file.clone() };
+        let folder = config.folder.clone().unwrap_or_else(|| folder.to_path_buf());
+        let vars = Vars { folder, file: env.file.clone(), all: env.workspace.clone() };
         let config = config.resolve(&vars);
         let Some(task) = config.pre_launch_task.clone() else { return self.begin(config, no_debug, env) };
-        match env.tasks.run_label(&task, env.folder, env.file.clone(), env.settings, env.bottom, env.ctx) {
+        match env.tasks.run_label(&task, env.workspace, env.file.clone(), env.settings, env.bottom, env.ctx) {
             Ok(done) => self.pending = Some((config, no_debug, done)),
             Err(error) => ui::notify(format!("preLaunchTask \"{task}\": {error}")),
         }
@@ -716,7 +746,7 @@ impl Debug {
                     return ui::notify(text);
                 };
                 let command: Vec<String> = command.split_whitespace().map(str::to_owned).collect();
-                match dap::Client::spawn(&command, env.folder, env.ctx) {
+                match dap::Client::spawn(&command, config.folder.as_deref().or(env.folder), env.ctx) {
                     Ok(client) => {
                         crate::output::log("Debug", format!("Started debug adapter: {}", command.join(" ")));
                         client
@@ -1166,7 +1196,7 @@ impl Debug {
     pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, env: &mut Env) {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         let now = ui.input(|i| i.time);
-        self.reload(env.folder, now, false);
+        self.reload(env.workspace, env.folder, now, false);
         ui::section_header(ui, theme, "Run and Debug");
         if env.folder.is_none() {
             return note(ui, theme, "Open a folder to debug its programs.");
@@ -1604,8 +1634,11 @@ pub fn hover_ui(ctx: &egui::Context, theme: &Theme, marks: &mut Marks, owner: (u
 impl Halo {
     pub(crate) fn debug_env<'a>(&'a mut self, ctx: &'a egui::Context) -> (&'a mut Debug, Env<'a>) {
         let file = self.editors.active_path();
+        let workspace = &self.session.workspace;
+        let owner = file.as_deref().and_then(|f| workspace.owner(f)).unwrap_or(0);
         let env = Env {
-            folder: self.session.folder.as_deref(),
+            folder: workspace.folders.get(owner).map(|f| f.path.as_path()),
+            workspace,
             file,
             settings: &self.settings,
             marks: &mut self.editors.marks,
@@ -1666,7 +1699,10 @@ mod tests {
     #[test]
     fn substitutes_launch_variables() {
         let folder = PathBuf::from("/work/app");
-        let vars = Vars { folder: folder.clone(), file: Some(folder.join("src").join("main.test.py")) };
+        let mut all = Workspace::single(folder.clone());
+        all.add(PathBuf::from("/work/api"));
+        let vars = Vars { folder: folder.clone(), file: Some(folder.join("src").join("main.test.py")), all };
+        assert_eq!(PathBuf::from(expand("${workspaceFolder:api}/x", &vars)), PathBuf::from("/work/api/x"));
         let shown = |p: PathBuf| p.to_string_lossy().into_owned();
         assert_eq!(expand("${workspaceFolder}/bin", &vars), format!("{}/bin", shown(folder.clone())));
         assert_eq!(expand("${file}", &vars), shown(folder.join("src").join("main.test.py")));
@@ -1676,7 +1712,7 @@ mod tests {
         let key = if cfg!(windows) { "USERNAME" } else { "HOME" };
         assert_eq!(expand(&format!("${{env:{key}}}"), &vars), std::env::var(key).unwrap_or_default());
         assert_eq!(expand("${unknown} ${env:HALO_NO_SUCH_VAR}x ${unclosed", &vars), "${unknown} x ${unclosed");
-        let none = Vars { folder, file: None };
+        let none = Vars { folder, file: None, all: Workspace::default() };
         assert_eq!(expand("${file}", &none), "${file}");
         let config = parse_launch(r#"{"configurations": [{"name": "a", "type": "x", "program": "${fileBasename}", "args": ["${fileDirname}", 3], "env": {"K": "${fileBasenameNoExtension}"}}]}"#).unwrap();
         let resolved = config[0].resolve(&vars);
@@ -1833,10 +1869,11 @@ mod tests {
         marks.set(&file, 3, ["x > 1".into(), String::new(), String::new()]);
         marks.set(&file, 0, [String::new(), String::new(), "a is {a}".into()]);
         let mut debug = Debug::default();
+        let workspace = Workspace::single(dir.clone());
         debug.watches.push("x * 2".into());
         macro_rules! env {
             () => {
-                Env { folder: Some(&dir), file: Some(file.clone()), settings: &settings, marks: &mut marks, bottom: &mut bottom, tasks: &mut tasks, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
+                Env { folder: Some(&dir), workspace: &workspace, file: Some(file.clone()), settings: &settings, marks: &mut marks, bottom: &mut bottom, tasks: &mut tasks, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
             };
         }
         macro_rules! pump {

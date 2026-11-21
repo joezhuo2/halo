@@ -112,6 +112,15 @@ pub const SETTINGS: &[Meta] = &[
     m("restore_session", 2, "Window", "Restore Session", "Open the last folder and its files when Halo starts.", Kind::Toggle),
     m("tab_close_button", 2, "Workbench", "Tab Close Button", "Where the close button of an editor tab is.", Kind::Choice(&[("right", "Right"), ("left", "Left"), ("off", "Off")])),
     m("enable_preview", 2, "Workbench", "Enable Preview", "Open files from a single click in a preview tab that the next one replaces.", Kind::Toggle),
+    m("sidebar_location", 2, "Workbench", "Side Bar Location", "The side of the window the primary side bar and the activity bar are on. The secondary side bar is on the other side.", Kind::Choice(&[("left", "Left"), ("right", "Right")])),
+    m("activity_bar_location", 2, "Workbench", "Activity Bar Location", "Where the icons that switch the views of the primary side bar are.", Kind::Choice(&[("default", "Beside the side bar"), ("top", "At the top of the side bar"), ("hidden", "Hidden")])),
+    m("panel_location", 2, "Workbench", "Panel Default Location", "Where the panel opens. View: Move Panel changes it for the session.", Kind::Choice(&[("bottom", "Bottom"), ("top", "Top"), ("left", "Left"), ("right", "Right")])),
+    m("panel_alignment", 2, "Workbench", "Panel Alignment", "How far a panel at the bottom reaches under the side bars.", Kind::Choice(&[("center", "Between the side bars"), ("justify", "Under both side bars"), ("left", "Under the left side bar"), ("right", "Under the right side bar")])),
+    m("zen_full_screen", 2, "Zen Mode", "Full Screen", "Go full screen when zen mode starts.", Kind::Toggle),
+    m("zen_center_layout", 2, "Zen Mode", "Center Layout", "Center the editor when zen mode starts.", Kind::Toggle),
+    m("zen_show_tabs", 2, "Zen Mode", "Show Tabs", "Whether editor tabs are shown in zen mode.", Kind::Choice(&[("multiple", "Show"), ("none", "Hide")])),
+    m("zen_hide_line_numbers", 2, "Zen Mode", "Hide Line Numbers", "Hide line numbers in zen mode.", Kind::Toggle),
+    m("zen_restore", 2, "Zen Mode", "Restore", "Start in zen mode when Halo was closed in zen mode.", Kind::Toggle),
     m("compact_folders", 1, "Explorer", "Compact Folders", "Show a chain of folders that each hold only one folder as a single row in the Explorer.", Kind::Toggle),
     m("confirm_drag_and_drop", 1, "Explorer", "Confirm Drag And Drop", "Ask before moving files and folders by dragging them in the Explorer.", Kind::Toggle),
     m("files_exclude", 1, FILES, "Exclude", "Glob patterns of files and folders the Explorer hides. Supports *, **, ?, [abc] and {a,b}.", Kind::Custom),
@@ -130,6 +139,8 @@ pub const SETTINGS: &[Meta] = &[
     m("terminal_cursor_blinking", 3, "Terminal", "Cursor Blinking", "Let the terminal cursor blink.", Kind::Toggle),
     m("terminal_scrollback", 3, "Terminal", "Scrollback", "The number of lines a new terminal keeps above the screen.", Kind::Int(100, 100000)),
     m("send_keybindings_to_shell", 3, "Terminal", "Send Keybindings to Shell", "Let Ctrl+B, Ctrl+J, Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+S and Ctrl+W reach the shell while a terminal has focus.", Kind::Toggle),
+    m("terminal_persistent_sessions", 3, "Terminal", "Persistent Sessions", "Save the terminals of the workspace when Halo exits and recreate them with their history when it starts again.", Kind::Toggle),
+    m("terminal_persistent_scrollback", 3, "Terminal", "Persistent Session Scrollback", "The number of lines of each terminal that are saved and restored.", Kind::Int(0, 100000)),
     m("terminal_copy_on_selection", 3, "Terminal", "Copy On Selection", "Copy text to the clipboard as soon as it is selected in a terminal.", Kind::Toggle),
     m("terminal_right_click", 3, "Terminal", "Right Click Behavior", "What a right click in a terminal does.", Kind::Choice(&[("default", "Nothing (default)"), ("copyPaste", "Copy the selection, or paste without one"), ("paste", "Paste"), ("selectWord", "Select the word"), ("nothing", "Nothing")])),
     m("run", 4, "Run", "Commands", "The command Run File uses for each file extension. {file} is replaced by the path of the file.", Kind::Custom),
@@ -273,7 +284,7 @@ impl View {
     fn modified(&self, key: &str, values: &Map<String, Value>) -> bool {
         match (&self.lang, self.layer) {
             (Some(id), layer) => layers::sets(layer, Some(id), key),
-            (None, Layer::Workspace) => layers::sets(Layer::Workspace, None, key),
+            (None, layer @ (Layer::Workspace | Layer::Folder)) => layers::sets(layer, None, key),
             (None, Layer::User) => values.get(key) != self.defaults.get(key),
         }
     }
@@ -283,10 +294,13 @@ impl View {
         if self.layer == Layer::User && self.lang.is_none() && layers::sets(Layer::Workspace, None, key) {
             notes.push("Overridden by Workspace".to_owned());
         }
+        if self.layer != Layer::Folder && self.lang.is_none() && !layers::folders().is_empty() && layers::sets(Layer::Folder, None, key) {
+            notes.push("Overridden by Folder".to_owned());
+        }
         if self.lang.is_none() {
             let langs: Vec<String> = layers::languages()
                 .into_iter()
-                .filter(|id| [Layer::User, Layer::Workspace].iter().any(|l| layers::sets(*l, Some(id), key)))
+                .filter(|id| [Layer::User, Layer::Workspace, Layer::Folder].iter().any(|l| layers::sets(*l, Some(id), key)))
                 .map(|id| format!("[{id}]"))
                 .collect();
             if !langs.is_empty() {
@@ -316,10 +330,14 @@ impl Halo {
         let size = vec2((screen.width() - 120.0).clamp(520.0, 920.0), (screen.height() - 120.0).clamp(320.0, 640.0));
         let query = parse_query(&self.page.query);
         let has_folder = self.session.folder.is_some();
+        let folders = layers::folders();
         if !has_folder {
             self.page.layer = 0;
         }
-        let layer = if self.page.layer == 1 { Layer::Workspace } else { Layer::User };
+        if folders.is_empty() {
+            self.page.layer = self.page.layer.min(1);
+        }
+        let layer = [Layer::User, Layer::Workspace, Layer::Folder][self.page.layer.min(2)];
         let view = View { layer, lang: query.lang.clone(), defaults: to_map(&Settings::default()) };
         let before = layers::scoped(layer, view.lang.as_deref());
         let mut edited = before.clone();
@@ -343,24 +361,33 @@ impl Halo {
                     if std::mem::take(&mut self.page.focus) {
                         resp.request_focus();
                     }
-                    let labels = ["User", "Workspace"];
+                    let labels: &[&str] = if folders.is_empty() { &["User", "Workspace"] } else { &["User", "Workspace", "Folder"] };
                     let mut picked = self.page.layer;
-                    ui.add_enabled_ui(has_folder, |ui| ui::tabs(ui, &theme, Id::new("settings_layer"), &labels, &mut picked))
+                    ui.add_enabled_ui(has_folder, |ui| ui::tabs(ui, &theme, Id::new("settings_layer"), labels, &mut picked))
                         .response
                         .on_disabled_hover_text("Open a folder to edit its .vscode/settings.json");
                     self.page.layer = picked;
+                    if layer == Layer::Folder && folders.len() > 1 {
+                        let names = crate::workspace::current().names();
+                        let mut target = layers::target();
+                        let shown = names.get(target).cloned().unwrap_or_default();
+                        egui::ComboBox::from_id_salt("settings_folder").selected_text(shown).show_index(ui, &mut target, names.len(), |i| names[i].clone());
+                        if target != layers::target() {
+                            layers::set_target(target);
+                        }
+                    }
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     close |= ui::icon_button(ui, &theme, icons::X, 24.0, false, "Close").clicked();
                     if ui::icon_button(ui, &theme, icons::BRACKETS_CURLY, 24.0, false, "Open settings.json").clicked() {
-                        match (layer, layers::workspace_path()) {
-                            (Layer::Workspace, Some(path)) => {
+                        match layers::path(layer).filter(|_| layer != Layer::User) {
+                            Some(path) => {
                                 if !path.exists() {
                                     crate::settings::write(&path, &json!({}));
                                 }
                                 self.cmds.push(Command::OpenPath(path));
                             }
-                            _ => self.cmds.push(Command::OpenSettingsJson),
+                            None => self.cmds.push(Command::OpenSettingsJson),
                         }
                         close = true;
                     }
@@ -420,7 +447,7 @@ impl Halo {
                             n => format!("{n} settings found"),
                         };
                         let scope = match &view.lang {
-                            Some(id) => format!("{found} in [{id}] of the {} settings", if layer == Layer::User { "User" } else { "Workspace" }),
+                            Some(id) => format!("{found} in [{id}] of the {layer:?} settings"),
                             None => found,
                         };
                         ui.label(RichText::new(scope).size(13.0).color(theme.text_dim));
