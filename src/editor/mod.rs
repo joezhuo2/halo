@@ -283,7 +283,11 @@ fn handle_event(
     let sels = &mut tab.sels;
     match event {
         Event::Text(text) => {
-            buf.insert_text(sels, text);
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) if settings.auto_close => buf.type_char(sels, c),
+                _ => buf.insert_text(sels, text),
+            };
         }
         Event::Paste(text) => {
             buf.insert_text(sels, &text.replace("\r\n", "\n").replace('\r', "\n"));
@@ -323,7 +327,7 @@ fn handle_event(
                 Key::Enter => buf.newline(sels, &unit),
                 Key::Tab if modifiers.shift => buf.outdent(sels, settings.tab_size),
                 Key::Tab => buf.tab(sels, settings.tab_size, settings.insert_spaces),
-                Key::Backspace => buf.backspace(sels, word),
+                Key::Backspace => buf.backspace(sels, word, settings.auto_close),
                 Key::Delete => buf.delete(sels, word),
                 Key::Escape => {
                     let first = sels[0];

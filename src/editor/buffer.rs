@@ -125,6 +125,8 @@ pub struct Document {
     pub read_only: bool,
 }
 
+const PAIRS: [(char, char); 6] = [('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\''), ('`', '`')];
+
 pub fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -473,6 +475,47 @@ impl Document {
         self.apply(sels, edits, if typed { Kind::Type } else { Kind::Other }, After::Carets)
     }
 
+    pub fn type_char(&mut self, sels: &mut Vec<Sel>, c: char) -> bool {
+        let at = |pos: usize| self.rope.get_char(pos);
+        // shortcut: any matching closer is typed over, upgrade to tracking the inserted ones if that swallows wanted input
+        if PAIRS.iter().any(|p| p.1 == c) && sels.iter().all(|s| s.is_empty() && at(s.head) == Some(c)) {
+            sels.iter_mut().for_each(|s| *s = Sel::caret(s.head + 1));
+            return true;
+        }
+        let Some(close) = PAIRS.iter().find(|p| p.0 == c).map(|p| p.1) else { return self.insert_text(sels, &c.to_string()) };
+        if sels.iter().all(|s| !s.is_empty()) {
+            let edits = sels.iter().flat_map(|s| [(s.start(), s.start(), c.to_string()), (s.end(), s.end(), close.to_string())]).collect();
+            let changed = self.apply(sels, edits, Kind::Other, After::Map);
+            for s in sels.iter_mut().filter(|_| changed) {
+                match s.head > s.anchor {
+                    true => s.head -= 1,
+                    false => s.anchor -= 1,
+                }
+            }
+            self.fix_after(sels);
+            return changed;
+        }
+        let mut back = vec![];
+        let edits: EditList = sels
+            .iter()
+            .map(|s| {
+                let (prev, next) = (s.start().checked_sub(1).and_then(at), at(s.end()));
+                let room = next.is_none_or(|n| n.is_whitespace() || ")]},;".contains(n));
+                let pair = s.is_empty() && room && !(c == close && prev.is_some_and(|p| is_word(p) || p == c));
+                back.push(pair as usize);
+                (s.start(), s.end(), if pair { format!("{c}{close}") } else { c.to_string() })
+            })
+            .collect();
+        let changed = self.apply(sels, edits, Kind::Type, After::Carets);
+        if changed && sels.len() == back.len() {
+            for (s, b) in sels.iter_mut().zip(&back) {
+                *s = Sel::caret(s.head - b);
+            }
+            self.fix_after(sels);
+        }
+        changed
+    }
+
     pub fn newline(&mut self, sels: &mut Vec<Sel>, unit: &str) -> bool {
         let mut back = vec![];
         let edits: EditList = sels
@@ -509,7 +552,7 @@ impl Document {
         changed
     }
 
-    pub fn backspace(&mut self, sels: &mut Vec<Sel>, word: bool) -> bool {
+    pub fn backspace(&mut self, sels: &mut Vec<Sel>, word: bool, pairs: bool) -> bool {
         let edits = sels
             .iter()
             .map(|s| {
@@ -518,7 +561,9 @@ impl Document {
                 } else if word {
                     (self.word_left(s.head), s.head, String::new())
                 } else {
-                    (s.head.saturating_sub(1), s.head, String::new())
+                    let (before, after) = (s.head.checked_sub(1).and_then(|at| self.rope.get_char(at)), self.rope.get_char(s.head));
+                    let pair = pairs && PAIRS.iter().any(|p| Some(p.0) == before && Some(p.1) == after);
+                    (s.head.saturating_sub(1), s.head + pair as usize, String::new())
                 }
             })
             .collect();
@@ -981,7 +1026,7 @@ mod tests {
         assert_eq!(sels.len(), 3);
         d.redo(&mut sels);
         assert_eq!(d.rope.to_string(), "xyab\nxycd\nxyef");
-        d.backspace(&mut sels, false);
+        d.backspace(&mut sels, false, true);
         assert_eq!(d.rope.to_string(), "xab\nxcd\nxef");
     }
 
@@ -1068,6 +1113,32 @@ mod tests {
         d.move_rows(&mut sels, true, 1, false, None, &[(0, 1)]);
         assert_eq!(sels[0].head, 34);
         assert_eq!((hidden(&[(0, 1)], 1), hidden(&[(0, 1)], 0), hidden(&[(0, 1)], 2)), (Some(0), None, None));
+    }
+
+    #[test]
+    fn closes_surrounds_and_types_over_pairs() {
+        let mut d = doc("");
+        let mut sels = vec![Sel::caret(0)];
+        for c in "f(\"a".chars() {
+            d.type_char(&mut sels, c);
+        }
+        assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("f(\"a\")", 4));
+        d.type_char(&mut sels, '"');
+        d.type_char(&mut sels, ')');
+        assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("f(\"a\")", 6));
+        d.undo(&mut sels);
+        assert_eq!(d.rope.to_string(), "");
+
+        let mut d = doc("don word x()");
+        let mut sels = vec![Sel::caret(3)];
+        d.type_char(&mut sels, '\'');
+        assert_eq!(d.rope.to_string(), "don' word x()");
+        let mut sels = vec![Sel::new(5, 9)];
+        d.type_char(&mut sels, '[');
+        assert_eq!((d.rope.to_string().as_str(), sels[0].start(), sels[0].end()), ("don' [word] x()", 6, 10));
+        let mut sels = vec![Sel::caret(14)];
+        d.backspace(&mut sels, false, true);
+        assert_eq!(d.rope.to_string(), "don' [word] x");
     }
 
     #[test]

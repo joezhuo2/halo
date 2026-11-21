@@ -188,6 +188,7 @@ fn editor_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsP
     ui.add(egui::DragValue::new(&mut s.tab_size).range(1..=8).speed(0.1));
     toggle(ui, theme, "Editor", "Insert Spaces", "Insert spaces when pressing Tab.", &mut s.insert_spaces);
     toggle(ui, theme, "Editor", "Word Wrap", "Wrap long lines at the width of the editor (Alt+Z).", &mut s.word_wrap);
+    toggle(ui, theme, "Editor", "Auto Closing Pairs", "Close brackets and quotes as they are typed, and wrap a selection in them.", &mut s.auto_close);
     toggle(ui, theme, "Editor", "Minimap", "Show the minimap beside the editor.", &mut s.minimap);
     toggle(ui, theme, "Editor", "Breadcrumbs", "Show the path and the enclosing symbols above the text.", &mut s.breadcrumbs);
     toggle(ui, theme, "Editor", "Code Lens", "Show reference counts above declarations. Click one to list the places.", &mut s.code_lens);
