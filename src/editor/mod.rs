@@ -4,6 +4,7 @@ mod diff_view;
 mod emmet;
 mod highlight;
 mod intel;
+mod merge;
 mod snippet;
 
 use crate::command::{self, Command, Scope};
