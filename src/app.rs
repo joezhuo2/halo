@@ -1083,4 +1083,37 @@ mod tests {
         assert!(save("onWindowChange", (true, true), (true, false)) && !save("onWindowChange", (true, true), (false, true)));
         assert!(!save("off", (true, true), (false, false)));
     }
+
+    #[test]
+    fn headless_quick_explorer_clicks_reuse_one_preview_tab() {
+        use eframe::egui::{self, Event, Id, PointerButton, Rect, pos2, vec2};
+        let dir = std::env::temp_dir().join(format!("halo-quick-clicks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.join(name), name).unwrap();
+        }
+        let ctx = egui::Context::default();
+        let mut app = super::Halo::build(&ctx, crate::settings::Settings::default(), crate::settings::Session::default());
+        let mut time = 0.0;
+        let mut run = |app: &mut super::Halo, events: Vec<Event>| {
+            time += 0.05;
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1400.0, 900.0))), time: Some(time), events, focused: true, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| app.frame(ui));
+            out.textures_delta.clear();
+        };
+        app.set_folder(Some(dir.clone()), &ctx);
+        for _ in 0..40 {
+            run(&mut app, vec![]);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            let pos = ctx.read_response(Id::new(("explorer_row", dir.join(name)))).unwrap().rect.center();
+            let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
+            run(&mut app, vec![Event::PointerMoved(pos), button(true)]);
+            run(&mut app, vec![button(false)]);
+        }
+        assert_eq!(app.editors.active_path(), Some(dir.join("c.txt")));
+        assert_eq!(app.editors.open_paths(), Vec::<std::path::PathBuf>::new());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

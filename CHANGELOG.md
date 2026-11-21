@@ -22,7 +22,6 @@ All notable changes to Halo are documented here. The format follows
   maximized: windows are cloaked from creation until the first frames are
   drawn.
 
-
 ## [0.1.4] - 2026-11-21
 
 Covered by tests and by starting the release build off screen. Most of it
