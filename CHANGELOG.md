@@ -58,6 +58,14 @@ Covered by tests; not yet checked by hand in the running app.
 - Image tabs for png, jpg, gif, webp, bmp, ico and svg, with zoom and pan.
 - Import VS Code color themes and file icon themes, from a file or from
   installed VS Code extensions.
+- **Settings**: workspace `.vscode/settings.json` and `[language]` blocks,
+  VS Code key names in both files, User and Workspace tabs, and search with
+  `@modified` and `@lang:`. 41 new editor, editing, workbench and terminal
+  settings, including auto save modes, cursor style, line numbers, word wrap
+  column and terminal font.
+- **Keybindings**: `when` clauses, removal of a default with `-command`,
+  notices for entries that cannot be read, and a Keyboard Shortcuts page that
+  records chords, shows conflicts and edits `when`.
 - Output panel (`Ctrl+Shift+U`) with Git, Language Servers, Debug, Tasks and
   Halo channels.
 - Notifications with severity, actions and progress, a bell in the status
@@ -74,6 +82,8 @@ Covered by tests; not yet checked by hand in the running app.
   load.
 - `F5` starts debugging when the folder has a `launch.json`, and runs the file
   otherwise. `Ctrl+F5` runs without debugging.
+- Entries in `keybindings.json` now add to the default bindings instead of
+  replacing them, as in VS Code.
 - The theme button in the status bar opens the theme picker. `Ctrl+T` still
   switches between light and dark.
 
