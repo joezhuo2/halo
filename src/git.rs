@@ -135,9 +135,21 @@ pub fn exec(dir: &Path, args: &[&str]) -> Result<String, String> {
     command("git", dir, args)
 }
 
+pub fn tracked<T>(title: Option<String>, work: impl FnOnce(&dyn Fn(String)) -> Result<T, String>) -> Result<T, String> {
+    let Some(title) = title else { return work(&|_| {}) };
+    let progress = crate::ui::progress(title.clone());
+    let result = work(&|text| progress.set(text, None));
+    match &result {
+        Ok(_) => progress.done(format!("{title} finished")),
+        Err(error) => progress.failed(format!("{title} failed: {}", error.lines().next().unwrap_or_default())),
+    }
+    result
+}
+
 pub fn command(program: &str, dir: &Path, args: &[&str]) -> Result<String, String> {
     let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     let (program, args) = crate::wsl::wrap(Some(dir), program, &args);
+    let shown = format!("{program} {}", args.join(" ").replace('\n', " "));
     let mut command = std::process::Command::new(&program);
     command.args(args).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0").env("WSLENV", "GIT_TERMINAL_PROMPT");
     #[cfg(windows)]
@@ -145,12 +157,19 @@ pub fn command(program: &str, dir: &Path, args: &[&str]) -> Result<String, Strin
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let output = command.output().map_err(|e| format!("Could not run {program}: {e}"))?;
+    let started = std::time::Instant::now();
+    let output = command.output().map_err(|e| {
+        crate::output::log("Git", format!("$ {shown} could not run: {e}"));
+        format!("Could not run {program}: {e}")
+    })?;
+    let exit = output.status.code().map_or("none".to_owned(), |code| code.to_string());
+    crate::output::log("Git", format!("$ {shown} ({} ms) exit {exit}", started.elapsed().as_millis()));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     if output.status.success() {
         return Ok(stdout);
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    crate::output::log("Git", &stderr);
     Err(if stderr.is_empty() { stdout.trim().to_owned() } else { stderr })
 }
 
@@ -739,8 +758,11 @@ impl Git {
         }
         self.prs_stale = steps.iter().any(|s| ["gh", "push", "pull", "fetch"].contains(&s[0]));
         let steps: Vec<Vec<String>> = steps.iter().map(|s| s.iter().map(|a| a.to_string()).collect()).collect();
-        self.job(move || {
+        let names: Vec<&str> = steps.iter().filter_map(|s| s.first().map(String::as_str)).filter(|n| ["fetch", "pull", "push"].contains(n)).collect();
+        let title = (!names.is_empty()).then(|| format!("Git {}", names.join(" + ")));
+        self.job(move || tracked(title, |step| {
             for args in &steps {
+                step(format!("Git {}", args.join(" ")));
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 match args.split_first() {
                     Some((&"gh", rest)) => command("gh", &top, rest)?,
@@ -748,7 +770,7 @@ impl Git {
                 };
             }
             Ok(None)
-        });
+        }));
     }
 
     #[cfg(test)]

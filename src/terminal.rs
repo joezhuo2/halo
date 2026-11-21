@@ -675,6 +675,10 @@ impl BottomPanel {
         self.tab = PanelTab::Tests;
     }
 
+    pub fn show_output(&mut self) {
+        self.tab = PanelTab::Output;
+    }
+
     pub fn show_debug(&mut self) {
         self.tab = PanelTab::Debug;
     }
@@ -951,7 +955,7 @@ impl BottomPanel {
                 PanelTab::Terminal => self.terminals(ui, body, theme, settings, cwd),
                 PanelTab::Ports => self.ports_ui(ui, body, theme),
                 PanelTab::Problems => problems_ui(ui, theme, lsp, task_files, cwd, cmds),
-                PanelTab::Output => output_ui(ui, theme, lsp, settings.font_size),
+                PanelTab::Output => crate::output::ui(ui, theme, settings.font_size, cmds),
                 PanelTab::Debug => self.debug_ui(ui, body, theme, settings.font_size),
                 PanelTab::Tests => test_output_ui(ui, theme, &self.test_output, settings.font_size),
             }
@@ -1140,21 +1144,6 @@ fn problems_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, task_files: &[(PathBuf, Ve
                 }
                 row.on_hover_text(&problem.message);
             }
-        }
-    });
-}
-
-fn output_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, font_size: f32) {
-    if lsp.log.is_empty() {
-        return empty(ui, theme, "Messages from language servers appear here.");
-    }
-    ScrollArea::both().id_salt("output").auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
-        ui.add_space(4.0);
-        for line in &lsp.log {
-            ui.horizontal(|ui| {
-                ui.add_space(12.0);
-                ui.label(RichText::new(line).font(FontId::monospace(font_size - 1.0)).color(theme.text));
-            });
         }
     });
 }

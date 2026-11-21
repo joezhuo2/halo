@@ -189,6 +189,16 @@ pub enum Command {
     RunAllTestsWithCoverage,
     ToggleCoverageDisplay,
 
+    ShowOutput,
+    ShowOutputChannels,
+    ClearOutput,
+    OpenOutputInEditor,
+    SelectOutputChannel(String),
+    ShowNotifications,
+    ClearNotifications,
+    ToggleDoNotDisturb,
+    FocusNotification,
+
     GitSync,
     Git(GitCommand),
     GitAt(GitCommand, String),
@@ -339,6 +349,7 @@ fn defaults() -> Vec<Binding> {
         e(cs, Key::V, MarkdownPreview),
         k(C, Key::I, ShowHover),
         g(cs, Key::M, ShowProblems),
+        g(cs, Key::U, ShowOutput),
         g(C, Key::T, GoToWorkspaceSymbol),
         e(cs, Key::Space, TriggerParameterHints),
         e(sa, Key::F, FormatDocument),
@@ -459,6 +470,7 @@ pub fn all() -> Vec<Command> {
         MergeNextConflict, MergePrevConflict, MergeToggleBase, MergeComplete,
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
+    commands.extend([ShowOutput, ShowOutputChannels, ClearOutput, OpenOutputInEditor, ShowNotifications, ClearNotifications, ToggleDoNotDisturb, FocusNotification]);
     commands.push(About);
     commands
 }
@@ -616,6 +628,8 @@ impl Command {
             | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges | MergeOpen | OpenMerge(_)
             | MergeAcceptIncoming | MergeAcceptCurrent | MergeAcceptBoth | MergeAcceptAllIncoming | MergeAcceptAllCurrent
             | MergeNextConflict | MergePrevConflict | MergeToggleBase | MergeComplete => "Source Control",
+            ShowOutput | ShowOutputChannels | ClearOutput | OpenOutputInEditor | SelectOutputChannel(_) => "Output",
+            ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => "Notifications",
             About => "Help",
         }
     }
@@ -796,6 +810,15 @@ impl Command {
             ShowTestOutput => "Test: Show Output",
             RunAllTestsWithCoverage => "Test: Run All Tests with Coverage",
             ToggleCoverageDisplay => "Test: Toggle Coverage Display",
+            ShowOutput => "Output: Show Output",
+            ShowOutputChannels => "Output: Show Output Channels...",
+            ClearOutput => "Output: Clear Output",
+            OpenOutputInEditor => "Output: Open Output in Editor",
+            SelectOutputChannel(_) => "Output: Select Output Channel",
+            ShowNotifications => "Notifications: Show Notifications",
+            ClearNotifications => "Notifications: Clear All Notifications",
+            ToggleDoNotDisturb => "Notifications: Toggle Do Not Disturb",
+            FocusNotification => "Notifications: Focus Notification Toast",
             GitSync => "Synchronize Changes",
             RefreshExplorer => "Refresh Explorer",
             CutFiles => "File: Cut",
@@ -820,7 +843,7 @@ mod tests {
     fn commands_are_grouped_in_category_order() {
         let mut groups: Vec<_> = all().iter().map(Command::category).collect();
         groups.dedup();
-        assert_eq!(groups, ["File", "Edit", "Selection", "View", "Go", "Language", "Run", "Terminal", "Source Control", "Help"]);
+        assert_eq!(groups, ["File", "Edit", "Selection", "View", "Go", "Language", "Run", "Terminal", "Source Control", "Output", "Notifications", "Help"]);
     }
 
     #[test]

@@ -700,6 +700,12 @@ impl Editors {
         Ok(count)
     }
 
+    pub fn open_untitled(&mut self, text: &str) {
+        self.untitled += 1;
+        let id = self.insert_doc(Document::from_text(text, format!("Untitled-{}", self.untitled)));
+        self.add_tab(id, vec![Sel::caret(0)]);
+    }
+
     pub fn open_text(&mut self, title: &str, text: &str, syntax: Option<&Path>) {
         self.active = self.active.min(self.groups.len() - 1);
         let text = if text.is_empty() { "No differences.\n".to_owned() } else { text.replace("\r\n", "\n") };
