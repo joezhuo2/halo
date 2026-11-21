@@ -51,6 +51,7 @@ fn main() -> eframe::Result {
     if child.is_some() {
         unsafe { std::env::remove_var("HALO_ARGS") };
     }
+    let console = child.is_none() && cli::attach_console();
     let mut args = match &child {
         Some(json) => serde_json::from_str(json).unwrap_or_default(),
         None => match cli::parse(std::env::args().skip(1), &|p| p.exists()) {
@@ -70,10 +71,11 @@ fn main() -> eframe::Result {
     let test = std::env::var_os("HALO_COMMANDS").is_some();
     let dir = settings::dir();
     if !test && child.is_none() {
+        cli::allow_foreground();
         if !args.new_window && ipc::send(&dir, &args).is_ok() {
             return Ok(());
         }
-        if args.wait {
+        if args.wait || console {
             std::process::exit(launch(&args, &dir));
         }
     }

@@ -112,6 +112,47 @@ pub fn resolve(args: &mut Args) {
     }
 }
 
+#[cfg(all(windows, not(debug_assertions)))]
+pub fn attach_console() -> bool {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(pid: u32) -> i32;
+        fn GetStdHandle(which: u32) -> isize;
+        fn SetStdHandle(which: u32, handle: isize) -> i32;
+    }
+    let which = [-10i32, -11, -12].map(|n| n as u32);
+    unsafe {
+        let inherited = which.map(|n| GetStdHandle(n));
+        let attached = AttachConsole(u32::MAX) != 0;
+        for (n, handle) in which.into_iter().zip(inherited).filter(|(_, h)| *h != 0 && *h != -1) {
+            SetStdHandle(n, handle);
+        }
+        attached
+    }
+}
+
+#[cfg(all(unix, not(debug_assertions)))]
+pub fn attach_console() -> bool {
+    std::io::IsTerminal::is_terminal(&std::io::stdin())
+}
+
+#[cfg(any(debug_assertions, not(any(windows, unix))))]
+pub fn attach_console() -> bool {
+    false
+}
+
+#[cfg(windows)]
+pub fn allow_foreground() {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn AllowSetForegroundWindow(pid: u32) -> i32;
+    }
+    unsafe { AllowSetForegroundWindow(u32::MAX) };
+}
+
+#[cfg(not(windows))]
+pub fn allow_foreground() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
