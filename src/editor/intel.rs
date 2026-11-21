@@ -427,7 +427,7 @@ impl Editors {
         let tab = &self.groups[g].tabs[t];
         let doc = self.docs.get(&tab.doc)?;
         let line = doc.buf.line_of(tab.sels.first().map_or(0, |s| s.head));
-        (!doc.lang.symbols.is_empty()).then(|| (doc.lang.symbols.as_slice(), line))
+        (!doc.lang.symbols.is_empty()).then_some((doc.lang.symbols.as_slice(), line))
     }
 
     pub fn outline_loading(&self) -> bool {

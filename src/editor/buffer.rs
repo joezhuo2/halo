@@ -169,8 +169,8 @@ impl Encoding {
             }
             Self::Utf16Le | Self::Utf16Be => {
                 let bytes = bytes.strip_prefix(if little { &[0xFF, 0xFE] } else { &[0xFE, 0xFF] }).unwrap_or(bytes);
-                let unit = |pair: &[u8]| if little { u16::from_le_bytes([pair[0], pair[1]]) } else { u16::from_be_bytes([pair[0], pair[1]]) };
-                let units: Vec<u16> = bytes.chunks_exact(2).map(unit).collect();
+                let unit = |pair: &[u8; 2]| if little { u16::from_le_bytes(*pair) } else { u16::from_be_bytes(*pair) };
+                let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(unit).collect();
                 match String::from_utf16(&units) {
                     Ok(text) => (text, bytes.len() % 2 == 1),
                     Err(_) => (String::from_utf16_lossy(&units), true),

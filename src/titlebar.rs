@@ -124,7 +124,7 @@ impl Halo {
             Some(AddCursorAbove), Some(AddCursorBelow), Some(SelectNextOccurrence),
         ]);
         self.menu(ui, "View", &[
-            Some(ShowExplorer), Some(ShowSourceControl), None,
+            Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), None,
             Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), Some(ShowProblems), None,
             Some(SplitEditor), Some(ToggleMinimap), None,
             Some(ToggleTheme), Some(ZoomIn), Some(ZoomOut), Some(ZoomReset),
@@ -138,6 +138,18 @@ impl Halo {
         ui.menu_button("Run", |ui| {
             ui.set_min_width(230.0);
             ui::menu_pad(ui);
+            for cmd in [StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging] {
+                self.menu_item(ui, cmd);
+            }
+            ui.separator();
+            for cmd in [StepOver, StepInto, StepOut, PauseDebugging] {
+                self.menu_item(ui, cmd);
+            }
+            ui.separator();
+            for cmd in [ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration] {
+                self.menu_item(ui, cmd);
+            }
+            ui.separator();
             self.menu_item(ui, RunFile);
             for command in [RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask, OpenTasksJson] {
                 self.menu_item(ui, command);

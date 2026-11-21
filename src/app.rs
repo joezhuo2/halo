@@ -59,6 +59,7 @@ pub struct Halo {
     icon_dark: Option<bool>,
     update: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pub updated: Option<String>,
+    pub debug: crate::debug::Debug,
 }
 
 impl Halo {
@@ -103,6 +104,7 @@ impl Halo {
             icon_dark: None,
             update: None,
             updated: None,
+            debug: Default::default(),
         };
         if app.settings.auto_update && !cfg!(debug_assertions) && std::env::var_os("HALO_COMMANDS").is_none() {
             app.update = Some(crate::update::start(ctx));
@@ -126,6 +128,7 @@ impl Halo {
 
     fn set_folder(&mut self, folder: Option<PathBuf>, ctx: &egui::Context) {
         let folder = folder.map(strip_unc);
+        crate::debug::store(&mut self.session, &self.editors.marks);
         if let Some(folder) = &folder {
             self.session.remember(folder);
         }
@@ -138,6 +141,7 @@ impl Halo {
         self.editors.set_root(folder.clone());
         self.git.set_root(folder.clone(), ctx);
         self.session.folder = folder;
+        crate::debug::restore(&self.session, &mut self.editors.marks);
         self.session.save();
     }
 
@@ -153,6 +157,7 @@ impl Halo {
         if !self.settings.hot_exit {
             let _ = std::fs::remove_dir_all(backups);
         }
+        crate::debug::store(&mut self.session, &self.editors.marks);
         self.session.save();
     }
 
@@ -250,15 +255,30 @@ impl Halo {
             ShowExplorer | ShowSourceControl | FindInFiles => {
                 let shown = (self.session.search, self.session.source_control && !self.session.search);
                 let wanted = (cmd == FindInFiles, cmd == ShowSourceControl);
-                if self.session.sidebar && shown == wanted && cmd != FindInFiles {
+                if self.session.sidebar && shown == wanted && cmd != FindInFiles && !self.session.debug_view {
                     self.session.sidebar = false;
                 } else {
                     self.session.sidebar = true;
                     (self.session.search, self.session.source_control) = wanted;
                 }
+                self.session.debug_view = false;
                 if cmd == FindInFiles {
                     self.find.focus();
                 }
+            }
+            ShowRunAndDebug => {
+                self.session.sidebar = !(self.session.sidebar && self.session.debug_view);
+                (self.session.debug_view, self.session.search, self.session.source_control) = (true, false, false);
+            }
+            StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver | StepInto | StepOut
+            | RemoveAllBreakpoints | AddWatch | AddConfiguration => {
+                if cmd == AddWatch {
+                    (self.session.sidebar, self.session.debug_view, self.session.search, self.session.source_control) = (true, true, false, false);
+                }
+                if !self.debug.active() && matches!(cmd, StartDebugging | RunWithoutDebugging) {
+                    self.editors.exec(&SaveAll, &self.settings, ctx);
+                }
+                self.debug_exec(&cmd, ctx);
             }
             ToggleSidebar => self.session.sidebar ^= true,
             TogglePanel => self.session.panel ^= true,
@@ -398,7 +418,7 @@ impl Halo {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 let (search, source) = (self.session.search, self.session.source_control && !self.session.search);
-                let explorer = self.session.sidebar && !search && !source;
+                let explorer = self.session.sidebar && !search && !source && !self.session.debug_view;
                 let source = self.session.sidebar && source;
                 if activity_item(ui, &theme, icons::FILES, explorer, "Explorer (Ctrl+Shift+E)").clicked() {
                     self.cmds.push(Command::ShowExplorer);
@@ -408,6 +428,9 @@ impl Halo {
                 }
                 if activity_item(ui, &theme, icons::GIT_BRANCH, source, "Source Control (Ctrl+Shift+G)").clicked() {
                     self.cmds.push(Command::ShowSourceControl);
+                }
+                if activity_item(ui, &theme, icons::BUG, self.session.sidebar && self.session.debug_view, "Run and Debug (Ctrl+Shift+D)").clicked() {
+                    self.cmds.push(Command::ShowRunAndDebug);
                 }
                 ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                     if activity_item(ui, &theme, icons::GEAR, false, "Settings (Ctrl+,)").clicked() {
@@ -434,6 +457,9 @@ impl Halo {
             .size_range(170.0..=640.0)
             .frame(Frame::new().fill(self.theme.panel))
             .show_collapsible(ui, &mut open, |ui| {
+                if self.session.debug_view {
+                    return self.debug_view(ui);
+                }
                 if self.session.search {
                     let folder = self.session.folder.clone();
                     return self.find.ui(ui, &self.theme, folder.as_deref(), &mut self.editors, &mut self.cmds);
@@ -695,6 +721,7 @@ impl eframe::App for Halo {
         self.ai_panel(ui);
         self.bottom_panel(ui);
         self.central(ui);
+        self.debug_frame(&ctx, window.top() + 44.0);
         self.dialogs(&ctx);
 
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false));

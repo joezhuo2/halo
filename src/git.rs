@@ -92,6 +92,7 @@ struct Status {
     folders: HashMap<String, FileState>,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Msg {
     Status(PathBuf, Option<Status>),
     Diff(PathBuf, Vec<(usize, LineChange)>),
@@ -775,9 +776,8 @@ impl Git {
             if parent.len() < top_len {
                 break;
             }
-            match status.files.get(parent) {
-                Some(state @ (FileState::Ignored | FileState::Added)) => return Some(*state),
-                _ => {}
+            if let Some(state @ (FileState::Ignored | FileState::Added)) = status.files.get(parent) {
+                return Some(*state);
             }
         }
         None
