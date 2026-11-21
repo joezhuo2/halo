@@ -832,6 +832,11 @@ impl eframe::App for Halo {
         self.frame(ui);
     }
 
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let line = ctx.options(|o| o.input_options.line_scroll_speed);
+        crate::ui::direct_wheel(&mut raw_input.events, line, self.settings.smooth_scrolling && !crate::a11y::reduced());
+    }
+
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         self.save_session();
     }

@@ -585,9 +585,40 @@ fn stack_resize(sizes: &mut [Option<f32>], heights: &[f32], open: &[f32], wants:
     (sizes[prev], sizes[next]) = (Some(heights[prev] + dy), Some(heights[next] - dy));
 }
 
+pub fn direct_wheel(events: &mut Vec<egui::Event>, line: f32, smooth: bool) {
+    use egui::{Event, MouseWheelUnit, TouchPhase};
+    *events = std::mem::take(events)
+        .into_iter()
+        .flat_map(|event| match event {
+            Event::MouseWheel { unit, delta, phase: TouchPhase::Move, modifiers }
+                if (unit == MouseWheelUnit::Line && (!smooth || delta.x.fract() != 0.0 || delta.y.fract() != 0.0)) || (unit == MouseWheelUnit::Point && !smooth) =>
+            {
+                let delta = if unit == MouseWheelUnit::Line { delta * line } else { delta };
+                let parts = (delta.length() / 7.0).ceil().clamp(1.0, 1000.0);
+                vec![Event::MouseWheel { unit: MouseWheelUnit::Point, delta: delta / parts, phase: TouchPhase::Move, modifiers }; parts as usize]
+            }
+            other => vec![other],
+        })
+        .collect();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_touchpad_and_unsmoothed_wheel_input_into_direct_steps() {
+        use egui::{Event, MouseWheelUnit as U, TouchPhase, vec2};
+        let wheel = |unit, y| Event::MouseWheel { unit, delta: vec2(0.0, y), phase: TouchPhase::Move, modifiers: Default::default() };
+        let sum = |events: &[Event]| events.iter().map(|e| if let Event::MouseWheel { unit: U::Point, delta, .. } = e { assert!(delta.length() < 8.0); delta.y } else { 0.0 }).sum::<f32>();
+        let mut events = vec![wheel(U::Line, -0.35), wheel(U::Line, 1.0), wheel(U::Point, 30.0), Event::Copy];
+        direct_wheel(&mut events, 40.0, true);
+        assert_eq!((events.len(), sum(&events[..2])), (5, -14.0));
+        assert!(matches!(events[2..], [Event::MouseWheel { unit: U::Line, .. }, Event::MouseWheel { unit: U::Point, .. }, Event::Copy]));
+        let mut events = vec![wheel(U::Line, 1.0), wheel(U::Point, 30.0)];
+        direct_wheel(&mut events, 40.0, false);
+        assert_eq!((events.len(), sum(&events).round()), (11, 70.0));
+    }
 
     #[test]
     fn draws_a_centered_logo() {
