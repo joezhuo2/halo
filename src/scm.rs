@@ -104,7 +104,7 @@ impl Scm {
         ops::in_progress(ui, theme, git, cmds);
         Frame::new().inner_margin(Margin::symmetric(10, 4)).show(ui, |ui| {
             let id = Id::new("scm_message");
-            let can_commit = !busy && !git.changes(true).is_empty() && !self.message.trim().is_empty();
+            let can_commit = !busy && !(git.changes(true).is_empty() && git.changes(false).is_empty()) && !self.message.trim().is_empty();
             let submit = ui.memory(|m| m.has_focus(id))
                 && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
             let hint = format!("Message (Ctrl+Enter to commit on \"{}\")", git.branch().unwrap_or_default());
@@ -121,7 +121,7 @@ impl Scm {
             ui.horizontal(|ui| {
                 let width = (ui.available_width() - 65.0).max(50.0);
                 let button = ui.add_enabled(can_commit, egui::Button::new(label).min_size(vec2(width, 26.0)))
-                    .on_disabled_hover_text("Stage changes and type a message to commit.");
+                    .on_disabled_hover_text("Type a message to commit.");
                 if can_commit && (button.clicked() || submit) {
                     action = Some(Action::Commit);
                 }

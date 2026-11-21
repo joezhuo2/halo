@@ -718,7 +718,10 @@ impl Git {
     }
 
     pub fn commit(&mut self, message: &str) {
-        self.act(&[&["commit", "-q", "-m", message]]);
+        match self.changes(true).is_empty() {
+            true => self.act(&[&["add", "-A", "--", "."], &["commit", "-q", "-m", message]]),
+            false => self.act(&[&["commit", "-q", "-m", message]]),
+        }
     }
 
     pub fn push(&mut self) {
@@ -1027,6 +1030,12 @@ mod tests {
         g.stash(true);
         g.wait(|g| !g.busy() && g.changes(false).len() == 2);
         assert_eq!(g.error(), None);
+        g.commit("everything");
+        g.wait(|g| !g.busy() && g.changes(false).is_empty() && g.changes(true).is_empty());
+        assert_eq!(exec(&dir, &["log", "-1", "--format=%s"]).unwrap(), "everything\n");
+        git(&["reset", "-q", "HEAD~1"]);
+        g.refresh(&egui::Context::default());
+        g.wait(|g| g.changes(false).len() == 2);
 
         let nested = dir.join("libs").join("inner");
         std::fs::create_dir_all(&nested).unwrap();
