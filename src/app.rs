@@ -332,6 +332,10 @@ impl Halo {
                     false => self.search.pick("Select a command to run", items),
                 }
             }
+            ChangeTerminalColor => {
+                let items = crate::terminal::color_names().map(|(color, name)| (name.to_owned(), String::new(), SetTerminalColor(color)));
+                self.search.pick("Select a color for the terminal", items.into());
+            }
             NewTerminal | NewTerminalWith(_) | SplitTerminal => {
                 self.session.panel = true;
                 self.bottom.exec(&cmd, &self.settings, cwd.as_deref(), ctx);

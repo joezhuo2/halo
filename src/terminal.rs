@@ -18,7 +18,7 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, Event, EventFilter, FontId, Id, Key, Layout, Modifiers, Pos2, Rect,
-    RichText, ScrollArea, Sense, Stroke, StrokeKind, Ui, UiBuilder, ViewportCommand, pos2, vec2,
+    RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, ViewportCommand, pos2, vec2,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -196,6 +196,8 @@ pub struct Terminal {
     integration: Arc<Mutex<Integration>>,
     links: (i32, String, Vec<(usize, usize)>, Vec<Link>),
     find: FindBar,
+    pub label: Option<String>,
+    pub color: Option<usize>,
 }
 
 impl Drop for Terminal {
@@ -274,6 +276,8 @@ impl Terminal {
             integration,
             links: Default::default(),
             find: FindBar::default(),
+            label: None,
+            color: None,
         })
     }
 
@@ -304,6 +308,9 @@ impl Terminal {
     }
 
     pub fn title(&self) -> String {
+        if let Some(label) = &self.label {
+            return label.clone();
+        }
         if self.task.is_some() {
             return self.name.clone();
         }
@@ -312,6 +319,14 @@ impl Terminal {
 
     pub fn has_focus(&self) -> bool {
         self.focused || self.find.has_focus
+    }
+
+    pub fn tint(&self, theme: &Theme) -> Color32 {
+        match (self.failed(), self.color) {
+            (true, _) => theme.error,
+            (_, Some(color)) => theme.ansi[color],
+            _ => theme.text_dim,
+        }
     }
 
     fn reveal(&self, line: i32) {
@@ -561,6 +576,9 @@ impl Terminal {
         }
 
         let fade = ui::fade_in(ui, id.with("born"));
+        if let Some(color) = self.color {
+            ui.painter().vline(rect.left() - 9.0, rect.expand2(vec2(0.0, 4.0)).y_range(), Stroke::new(2.0, theme.ansi[color]));
+        }
         let painter = ui.painter().with_clip_rect(rect.expand(2.0));
         let term = self.term.lock();
         let content = term.renderable_content();
@@ -716,6 +734,13 @@ impl Terminal {
     }
 }
 
+pub fn color_names() -> [(Option<usize>, &'static str); 9] {
+    [
+        (None, "None"), (Some(1), "Red"), (Some(2), "Green"), (Some(3), "Yellow"), (Some(4), "Blue"),
+        (Some(5), "Magenta"), (Some(6), "Cyan"), (Some(7), "White"), (Some(0), "Black"),
+    ]
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PanelTab {
     Problems,
@@ -834,6 +859,7 @@ pub struct BottomPanel {
     debug: String,
     pub console: crate::debug::Console,
     integrate: bool,
+    renaming: Option<(u64, String, bool)>,
 }
 
 impl BottomPanel {
@@ -854,6 +880,7 @@ impl BottomPanel {
             debug: String::new(),
             console: Default::default(),
             integrate: true,
+            renaming: None,
         }
     }
 
@@ -1075,6 +1102,15 @@ impl BottomPanel {
                 Some(text) => ctx.copy_text(text),
                 None => ui::notify("No finished command output was found. It needs shell integration in the active terminal."),
             },
+            Command::RenameTerminal => {
+                let Some(pane) = self.active_pane() else { return false };
+                let rename = (pane.id, pane.title(), true);
+                (self.renaming, self.tab) = (Some(rename), PanelTab::Terminal);
+            }
+            Command::SetTerminalColor(color) => {
+                let Some(pane) = self.active_pane() else { return false };
+                pane.color = *color;
+            }
             Command::RunCommandLine(line) => {
                 let Some(pane) = self.active_pane() else { return false };
                 pane.write(format!("{line}\r"));
@@ -1213,7 +1249,7 @@ impl BottomPanel {
         }
 
         let tasks = self.groups.iter().flat_map(|g| &g.panes).any(|p| p.task.is_some());
-        if tasks || self.groups.iter().map(|g| g.panes.len()).sum::<usize>() > 1 {
+        if tasks || self.renaming.is_some() || self.groups.iter().map(|g| g.panes.len()).sum::<usize>() > 1 {
             let list = Rect::from_min_max(pos2(area.right() - 190.0, area.top()), area.max);
             area.max.x = list.left();
             ui.painter().vline(list.left(), list.y_range(), Stroke::new(1.0, theme.border));
@@ -1232,10 +1268,43 @@ impl BottomPanel {
                                 _ => ("├", FontId::monospace(13.0)),
                             };
                             let p = ui.painter().with_clip_rect(r.shrink2(vec2(26.0, 0.0)).translate(vec2(-16.0, 0.0)));
-                            let failed = group.panes[at].failed();
-                            let tint = if failed { theme.error } else { theme.text_dim };
-                            ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, icon, font, tint);
-                            p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, group.panes[at].title(), FontId::proportional(12.5), theme.text);
+                            let pane = &mut group.panes[at];
+                            let failed = pane.failed();
+                            ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, icon, font, pane.tint(theme));
+                            match self.renaming.as_mut().filter(|(id, _, _)| *id == pane.id) {
+                                Some((_, text, focus)) => {
+                                    let field = ui.put(r.shrink2(vec2(28.0, 2.0)).translate(vec2(2.0, 0.0)), TextEdit::singleline(text).margin(ui::FIELD));
+                                    if std::mem::take(focus) {
+                                        field.request_focus();
+                                    }
+                                    if field.lost_focus() {
+                                        if !ui.input(|i| i.key_pressed(Key::Escape)) {
+                                            pane.label = Some(text.trim().to_owned()).filter(|t| !t.is_empty());
+                                        }
+                                        self.renaming = None;
+                                        pane.focus();
+                                    }
+                                }
+                                None => {
+                                    p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, pane.title(), FontId::proportional(12.5), theme.text);
+                                }
+                            }
+                            resp.context_menu(|ui| {
+                                ui::menu_pad(ui);
+                                if ui.button("Rename...").clicked() {
+                                    self.renaming = Some((pane.id, pane.title(), true));
+                                }
+                                ui.menu_button("Change Color", |ui| {
+                                    for (color, name) in color_names() {
+                                        if ui.button(name).clicked() {
+                                            pane.color = color;
+                                        }
+                                    }
+                                });
+                                if ui.button("Kill Terminal").clicked() {
+                                    kill = Some((index, at));
+                                }
+                            });
                             let trash = Rect::from_center_size(pos2(r.right() - 16.0, r.center().y), vec2(20.0, 20.0));
                             if resp.hovered() {
                                 let over = ui.rect_contains_pointer(trash);
@@ -1490,6 +1559,25 @@ mod tests {
         if cfg!(windows) && git_bash.is_file() {
             check_shell(&git_bash.to_string_lossy(), &["--login", "-i"], "false", 1);
         }
+    }
+
+    #[test]
+    fn renames_and_colours_the_active_terminal() {
+        let ctx = egui::Context::default();
+        let shell = if cfg!(windows) { "cmd.exe" } else { "sh" };
+        let settings = Settings { terminals: vec![ShellProfile { name: "test".into(), program: shell.into(), args: vec![] }], default_terminal: "test".into(), ..Settings::default() };
+        let mut panel = BottomPanel::new();
+        panel.exec(&Command::NewTerminal, &settings, None, &ctx);
+        assert!(panel.exec(&Command::RenameTerminal, &settings, None, &ctx));
+        assert_eq!(panel.renaming.as_ref().map(|r| (r.1.as_str(), r.2)), Some(("test", true)));
+        panel.exec(&Command::SetTerminalColor(Some(1)), &settings, None, &ctx);
+        let theme = Theme::dark();
+        let pane = panel.active_pane().unwrap();
+        assert_eq!((pane.color, pane.tint(&theme)), (Some(1), theme.ansi[1]));
+        pane.label = Some("build".into());
+        assert_eq!(pane.title(), "build");
+        pane.label = None;
+        assert_ne!(pane.title(), "build");
     }
 
     #[test]

@@ -120,6 +120,9 @@ pub enum Command {
     RunRecentLine,
     RunCommandLine(String),
     CopyLastCommandOutput,
+    RenameTerminal,
+    ChangeTerminalColor,
+    SetTerminalColor(Option<usize>),
 
     RunFile,
     RunTask(String),
@@ -387,7 +390,7 @@ pub fn all() -> Vec<Command> {
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
         OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
-        CopyLastCommandOutput, GitSync, ToggleInlineBlame, OpenLineChanges,
+        CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, GitSync, ToggleInlineBlame, OpenLineChanges,
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.push(About);
@@ -537,7 +540,7 @@ impl Command {
             | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
             | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration => "Run",
             NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
-            | RunCommandLine(_) | CopyLastCommandOutput => "Terminal",
+            | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_) => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
             OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) => "Source Control",
             About => "Help",
@@ -653,6 +656,9 @@ impl Command {
             RunRecentLine => "Terminal: Run Recent Command...",
             RunCommandLine(_) => "Terminal: Run Command",
             CopyLastCommandOutput => "Terminal: Copy Last Command Output",
+            RenameTerminal => "Terminal: Rename...",
+            ChangeTerminalColor => "Terminal: Change Color...",
+            SetTerminalColor(_) => "Terminal: Set Color",
             RunFile => "Run File",
             RunTask(_) => "Run Task",
             RunTaskPicker => "Tasks: Run Task...",
