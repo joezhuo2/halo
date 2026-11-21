@@ -239,6 +239,11 @@ impl Halo {
         }
     }
 
+    pub fn active_root(&self) -> Option<PathBuf> {
+        let workspace = &self.session.workspace;
+        self.editors.active_path().and_then(|p| workspace.owner_path(&p)).or_else(|| workspace.first())
+    }
+
     pub fn folder_name(&self) -> Option<String> {
         self.session.workspace.name()
     }
