@@ -183,17 +183,24 @@ pub struct Tap<T: EventListener> {
     term: Arc<FairMutex<Term<T>>>,
     integration: Arc<Mutex<Integration>>,
     ctx: egui::Context,
+    pump: Pump,
+}
+
+impl<T: EventListener> Tap<T> {
+    pub fn new(pty: tty::Pty, term: Arc<FairMutex<Term<T>>>, integration: Arc<Mutex<Integration>>, ctx: egui::Context) -> Self {
+        Self { pty, term, integration, ctx, pump: Pump::default() }
+    }
+}
+
+#[derive(Default)]
+pub struct Pump {
     parser: Processor<NoSync>,
     scanner: Scanner,
     dropped: i64,
 }
 
-impl<T: EventListener> Tap<T> {
-    pub fn new(pty: tty::Pty, term: Arc<FairMutex<Term<T>>>, integration: Arc<Mutex<Integration>>, ctx: egui::Context) -> Self {
-        Self { pty, term, integration, ctx, parser: Processor::default(), scanner: Scanner::default(), dropped: 0 }
-    }
-
-    fn advance(&mut self, term: &mut Term<T>, mut bytes: &[u8]) {
+impl Pump {
+    fn advance<T: EventListener>(&mut self, term: &mut Term<T>, mut bytes: &[u8]) {
         while !bytes.is_empty() {
             let (room, cols) = (term.screen_lines().saturating_sub(1).max(1), term.columns().max(1));
             let (mut lines, mut run, mut cut) = (0, 0, bytes.len());
@@ -220,23 +227,21 @@ impl<T: EventListener> Tap<T> {
         }
     }
 
-    fn process(&mut self, bytes: &[u8]) {
+    pub fn feed<T: EventListener>(&mut self, term: &mut Term<T>, integration: &Mutex<Integration>, bytes: &[u8]) {
         let mut marks = vec![];
         self.scanner.feed(bytes, |at, mark| marks.push((at, mark)));
-        let term = self.term.clone();
-        let mut term = term.lock_unfair();
         let mut from = 0;
         for (to, mark) in marks {
-            self.advance(&mut term, &bytes[from..to]);
+            self.advance(term, &bytes[from..to]);
             from = to;
             let cursor = term.grid().cursor.point;
             let line = self.dropped + term.grid().history_size() as i64 + cursor.line.0 as i64;
-            let mut integration = self.integration.lock().unwrap();
+            let mut integration = integration.lock().unwrap();
             integration.dropped = self.dropped;
             integration.apply(mark, (line, cursor.column.0), Instant::now());
         }
-        self.advance(&mut term, &bytes[from..]);
-        self.integration.lock().unwrap().dropped = self.dropped;
+        self.advance(term, &bytes[from..]);
+        integration.lock().unwrap().dropped = self.dropped;
     }
 }
 
@@ -247,7 +252,7 @@ impl<T: EventListener> Read for Tap<T> {
             match self.pty.reader().read(&mut buf[..cap]) {
                 Ok(0) => break,
                 Ok(n) => {
-                    self.process(&buf[..n]);
+                    self.pump.feed(&mut self.term.lock_unfair(), &self.integration, &buf[..n]);
                     processed += n;
                 }
                 Err(e) if processed > 0 && matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => break,
@@ -401,6 +406,41 @@ mod tests {
         assert_eq!((found[1].0, found[1].1), (1, 4));
         assert_eq!(marks(&[b"\x1b]633;D\x07\x1b]633;Z\x07\x1b]633;A\x18\x1b]633;B\x07"]).iter().map(|f| f.2.clone()).collect::<Vec<_>>(), vec![Mark::Finished(None), Mark::CommandStart]);
         assert_eq!(unescape(r"a\x0ab\\c\x3b"), "a\nb\\c;");
+    }
+
+    struct Size(usize, usize);
+
+    impl Dimensions for Size {
+        fn total_lines(&self) -> usize {
+            self.0
+        }
+
+        fn screen_lines(&self) -> usize {
+            self.0
+        }
+
+        fn columns(&self) -> usize {
+            self.1
+        }
+    }
+
+    #[test]
+    fn marks_stay_on_their_rows_after_the_scrollback_is_full() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        let config = alacritty_terminal::term::Config { scrolling_history: 3, ..Default::default() };
+        let mut term = Term::new(config, &Size(5, 10), alacritty_terminal::event::VoidListener);
+        let (mut pump, integration) = (Pump::default(), Mutex::new(Integration::default()));
+        pump.feed(&mut term, &integration, b"a\r\nb\r\n\x1b]633;A\x07$ cmd\x1b]633;E;cmd\x07\r\n\x1b]633;C\x07");
+        pump.feed(&mut term, &integration, b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n");
+        pump.feed(&mut term, &integration, b"a long line that wraps over rows\r\n\x1b]633;D;0\x07");
+        let integration = integration.into_inner().unwrap();
+        let base = integration.dropped + term.history_size() as i64;
+        let text = |line: i64| term.bounds_to_string(Point::new(Line(line as i32), Column(0)), Point::new(Line(line as i32), Column(9)));
+        let record = &integration.commands[0];
+        assert_eq!(integration.dropped, 7);
+        assert_eq!(record.prompt - base, -8);
+        assert_eq!(text(record.output.unwrap() - base + 4).trim(), "5");
+        assert_eq!(record.end.unwrap().0 - base, term.grid().cursor.point.line.0 as i64);
     }
 
     #[test]
