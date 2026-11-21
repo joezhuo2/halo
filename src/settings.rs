@@ -282,6 +282,7 @@ pub struct Session {
     pub outline: bool,
     pub timeline: bool,
     pub debug_view: bool,
+    pub test_view: bool,
     pub breakpoints: BTreeMap<PathBuf, BTreeMap<PathBuf, Vec<crate::debug::Breakpoint>>>,
 }
 
@@ -300,6 +301,7 @@ impl Default for Session {
             outline: true,
             timeline: false,
             debug_view: false,
+            test_view: false,
             breakpoints: BTreeMap::new(),
         }
     }

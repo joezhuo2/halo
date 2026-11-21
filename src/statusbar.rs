@@ -91,6 +91,12 @@ impl Halo {
                         self.cmds.push(Command::ShowRunAndDebug);
                     }
 
+                    if let Some((label, tip)) = self.testing.status()
+                        && item(ui, &theme, &label, false, &tip).clicked()
+                    {
+                        self.cmds.push(Command::ShowTesting);
+                    }
+
                     if let Some(first) = self.chord {
                         let label = format!("({}) was pressed. Waiting for the second key...", ui.ctx().format_shortcut(&first));
                         item(ui, &theme, &label, true, "Key chord");

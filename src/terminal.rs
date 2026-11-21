@@ -519,14 +519,16 @@ enum PanelTab {
     Debug,
     Terminal,
     Ports,
+    Tests,
 }
 
-const TABS: [(PanelTab, &str); 5] = [
+const TABS: [(PanelTab, &str); 6] = [
     (PanelTab::Problems, "PROBLEMS"),
     (PanelTab::Output, "OUTPUT"),
     (PanelTab::Debug, "DEBUG CONSOLE"),
     (PanelTab::Terminal, "TERMINAL"),
     (PanelTab::Ports, "PORTS"),
+    (PanelTab::Tests, "TEST RESULTS"),
 ];
 
 struct Group {
@@ -629,6 +631,7 @@ pub struct BottomPanel {
     run_line: String,
     debug: String,
     pub console: crate::debug::Console,
+    pub test_output: String,
 }
 
 impl BottomPanel {
@@ -648,6 +651,7 @@ impl BottomPanel {
             run_line: String::new(),
             debug: String::new(),
             console: Default::default(),
+            test_output: String::new(),
         }
     }
 
@@ -665,6 +669,10 @@ impl BottomPanel {
 
     pub fn showing_problems(&self) -> bool {
         self.tab == PanelTab::Problems
+    }
+
+    pub fn show_tests(&mut self) {
+        self.tab = PanelTab::Tests;
     }
 
     pub fn show_debug(&mut self) {
@@ -945,6 +953,7 @@ impl BottomPanel {
                 PanelTab::Problems => problems_ui(ui, theme, lsp, task_files, cwd, cmds),
                 PanelTab::Output => output_ui(ui, theme, lsp, settings.font_size),
                 PanelTab::Debug => self.debug_ui(ui, body, theme, settings.font_size),
+                PanelTab::Tests => test_output_ui(ui, theme, &self.test_output, settings.font_size),
             }
         });
     }
@@ -1147,6 +1156,19 @@ fn output_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, font_size: f32) {
                 ui.label(RichText::new(line).font(FontId::monospace(font_size - 1.0)).color(theme.text));
             });
         }
+    });
+}
+
+fn test_output_ui(ui: &mut Ui, theme: &Theme, text: &str, font_size: f32) {
+    if text.is_empty() {
+        return empty(ui, theme, "The output of the last test run appears here.");
+    }
+    ScrollArea::both().id_salt("test_output").auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(RichText::new(text).font(FontId::monospace(font_size - 1.0)).color(theme.text));
+        });
     });
 }
 
