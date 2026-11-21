@@ -29,6 +29,7 @@ pub enum Command {
     Find,
     Replace,
     ToggleComment,
+    ToggleBlockComment,
     MoveLineUp,
     MoveLineDown,
     CopyLineUp,
@@ -158,6 +159,7 @@ fn defaults() -> Vec<Binding> {
         e(Modifiers::ALT, Key::ArrowDown, MoveLineDown),
         e(sa, Key::ArrowUp, CopyLineUp),
         e(sa, Key::ArrowDown, CopyLineDown),
+        e(sa, Key::A, ToggleBlockComment),
         e(cs, Key::K, DeleteLine),
         e(cs, Key::Enter, InsertLineAbove),
         e(C, Key::Enter, InsertLineBelow),
@@ -211,7 +213,7 @@ pub fn all() -> Vec<Command> {
     use Command::*;
     vec![
         NewFile, OpenFile, OpenFolder, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, OpenSettings, OpenSettingsJson,
-        OpenKeybindings, Exit, Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, MoveLineUp, MoveLineDown, CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove,
+        OpenKeybindings, Exit, Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, MoveLineUp, MoveLineDown, CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove,
         InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll, SelectAll, AddCursorAbove,
         AddCursorBelow, SelectNextOccurrence, ShowExplorer, ShowSourceControl, ToggleSidebar, TogglePanel, ToggleAi,
         SplitEditor, ToggleMinimap, ToggleWordWrap, ToggleTheme, ZoomIn, ZoomOut, ZoomReset, GoToFile, ShowCommands, FindInFiles,
@@ -367,6 +369,7 @@ impl Command {
             Find => "Find",
             Replace => "Replace",
             ToggleComment => "Toggle Line Comment",
+            ToggleBlockComment => "Toggle Block Comment",
             MoveLineUp => "Move Line Up",
             MoveLineDown => "Move Line Down",
             CopyLineUp => "Copy Line Up",

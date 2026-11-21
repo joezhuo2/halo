@@ -783,6 +783,45 @@ impl Document {
         self.apply(sels, edits, Kind::Other, After::Map)
     }
 
+    pub fn toggle_block_comment(&mut self, sels: &mut Vec<Sel>, open: &str, close: &str) -> bool {
+        let (o, c) = (open.chars().count(), close.chars().count());
+        let mut edits: EditList = vec![];
+        let mut widen = vec![];
+        for s in sels.iter() {
+            let (mut from, mut to) = (s.start(), s.end());
+            if s.is_empty() {
+                let line = self.line_of(from);
+                (from, to) = (self.line_start(line) + self.indent_of(line), self.line_end(line));
+            }
+            let text = self.text_of(from, to);
+            let body = text.trim();
+            let start = from + text.chars().count() - text.trim_start().chars().count();
+            let end = start + body.chars().count();
+            widen.push(0);
+            if body.len() >= open.len() + close.len() && body.starts_with(open) && body.ends_with(close) {
+                let inner = &body[open.len()..body.len() - close.len()];
+                edits.push((start, start + o + usize::from(inner.starts_with(' ')), String::new()));
+                edits.push((end - c - usize::from(inner.len() > 1 && inner.ends_with(' ')), end, String::new()));
+            } else if from < to {
+                edits.push((from, from, format!("{open} ")));
+                edits.push((to, to, format!(" {close}")));
+                widen.pop();
+                widen.push(if s.is_empty() { 0 } else { o + 1 });
+            }
+        }
+        let changed = self.apply(sels, edits, Kind::Other, After::Map);
+        if changed && sels.len() == widen.len() {
+            for (s, by) in sels.iter_mut().zip(widen) {
+                match s.head > s.anchor {
+                    true => s.anchor -= by,
+                    false => s.head -= by,
+                }
+            }
+            self.fix_after(sels);
+        }
+        changed
+    }
+
     pub fn word_left(&self, pos: usize) -> usize {
         let mut i = pos.min(self.len());
         while i > 0 && self.rope.char(i - 1).is_whitespace() && self.rope.char(i - 1) != '\n' {
@@ -1280,6 +1319,18 @@ mod tests {
         assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("  one\n  \n  two", 8));
         d.insert_line(&mut sels, false);
         assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("  one\n  \n  \n  two", 11));
+    }
+
+    #[test]
+    fn toggles_block_comments() {
+        let mut d = doc("a = b + c;\n  next();");
+        let mut sels = vec![Sel::new(4, 9), Sel::caret(15)];
+        d.toggle_block_comment(&mut sels, "/*", "*/");
+        assert_eq!(d.rope.to_string(), "a = /* b + c */;\n  /* next(); */");
+        assert_eq!((sels[0].start(), sels[0].end()), (4, 15));
+        d.toggle_block_comment(&mut sels, "/*", "*/");
+        assert_eq!(d.rope.to_string(), "a = b + c;\n  next();");
+        assert_eq!((sels[0].start(), sels[0].end()), (4, 9));
     }
 
     #[test]

@@ -130,6 +130,20 @@ fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
     }
 }
 
+fn block_tokens(path: Option<&Path>) -> Option<(&'static str, &'static str)> {
+    let ext = path.and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    match (ext.as_str(), comment_tokens(path)) {
+        ("py", _) => Some(("\"\"\"", "\"\"\"")),
+        ("lua", _) => Some(("--[[", "]]")),
+        ("hs", _) => Some(("{-", "-}")),
+        ("ps1", _) => Some(("<#", "#>")),
+        ("sql", _) => Some(("/*", "*/")),
+        (_, (open, Some(close))) => Some((open, close)),
+        (_, ("//", None)) => Some(("/*", "*/")),
+        _ => None,
+    }
+}
+
 fn visible_text(buf: &Document, line: usize) -> String {
     let text = buf.line_text(line);
     if text.len() <= MAX_COLS {
@@ -618,7 +632,7 @@ impl Editors {
                 });
             }
             Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence | MoveLineUp
-            | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
+            | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
                 self.with_active(|buf, tab| {
@@ -645,6 +659,13 @@ impl Editors {
                         }
                         AddCursorBelow => {
                             buf.add_cursor(sels, true);
+                        }
+                        ToggleBlockComment => {
+                            let line = comment_tokens(buf.path.as_deref());
+                            match block_tokens(buf.path.as_deref()) {
+                                Some((open, close)) => buf.toggle_block_comment(sels, open, close),
+                                None => buf.toggle_comment(sels, line.0, line.1),
+                            };
                         }
                         MoveLineUp | MoveLineDown => drop(buf.move_lines(sels, cmd == MoveLineDown)),
                         CopyLineUp | CopyLineDown => drop(buf.copy_lines(sels, cmd == CopyLineDown)),
