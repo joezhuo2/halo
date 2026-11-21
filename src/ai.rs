@@ -3,14 +3,32 @@ use crate::terminal::Terminal;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use eframe::egui::{self, Align, Align2, CornerRadius, FontId, Id, Layout, Rect, RichText, Sense, Ui, UiBuilder, ViewportCommand, pos2, vec2};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const CLIS: [(&str, &str); 2] = [("Claude", "claude"), ("Codex", "codex")];
 const TERMINAL_ID: u64 = 1 << 40;
 
+fn locate(cli: &str) -> Option<PathBuf> {
+    let exe = if cfg!(windows) { format!("{cli}.exe") } else { cli.to_owned() };
+    // Claude's native installer puts it in ~/.local/bin, which this process's PATH may not have yet
+    crate::lsp::find_program(cli).or_else(|| Some(dirs::home_dir()?.join(".local").join("bin").join(exe)).filter(|p| p.is_file()))
+}
+
+fn install(tab: usize) -> (String, Vec<String>) {
+    let (program, args): (&str, &[&str]) = match (tab, cfg!(windows)) {
+        (0, true) => ("powershell.exe", &["-NoProfile", "-Command", "irm https://claude.ai/install.ps1 | iex"]),
+        (0, false) => ("bash", &["-c", "curl -fsSL https://claude.ai/install.sh | bash"]),
+        (_, true) => ("cmd.exe", &["/c", "npm install -g @openai/codex"]),
+        (_, false) => ("npm", &["install", "-g", "@openai/codex"]),
+    };
+    (program.into(), args.iter().map(|a| a.to_string()).collect())
+}
+
 fn launch(cli: &str, cwd: Option<&Path>) -> (String, Vec<String>) {
     if cwd.and_then(crate::wsl::parse).is_some() {
         crate::wsl::wrap(cwd, "bash", &["-lic".into(), cli.into()])
+    } else if let Some(exe) = locate(cli).filter(|p| !cfg!(windows) || p.extension().is_some_and(|e| e == "exe")) {
+        (exe.to_string_lossy().into_owned(), vec![])
     } else if cfg!(windows) {
         ("cmd.exe".into(), vec!["/c".into(), cli.into()])
     } else {
@@ -23,6 +41,7 @@ pub struct AiPanel {
     tab: usize,
     sessions: [Option<Terminal>; 2],
     errors: [Option<String>; 2],
+    found: [Option<bool>; 2],
     focused: bool,
 }
 
@@ -35,14 +54,14 @@ impl AiPanel {
         self.focused = false;
     }
 
-    fn spawn(&mut self, cli: &str, cwd: Option<&Path>, ctx: &egui::Context) {
-        let (program, args) = launch(cli, cwd);
+    fn spawn(&mut self, (program, args): (String, Vec<String>), cwd: Option<&Path>, ctx: &egui::Context) {
+        self.found = Default::default();
         match Terminal::spawn(TERMINAL_ID + self.tab as u64, CLIS[self.tab].0, &program, &args, cwd, ctx.clone()) {
             Ok(terminal) => {
                 self.sessions[self.tab] = Some(terminal);
                 self.errors[self.tab] = None;
             }
-            Err(error) => self.errors[self.tab] = Some(format!("Could not start {cli}: {error}")),
+            Err(error) => self.errors[self.tab] = Some(format!("Could not start {program}: {error}")),
         }
     }
 
@@ -72,7 +91,7 @@ impl AiPanel {
         ui.allocate_rect(full, Sense::hover());
 
         let before = self.tab;
-        let mut start = false;
+        let (mut start, mut setup) = (false, false);
         ui.scope_builder(UiBuilder::new().max_rect(header.shrink2(vec2(10.0, 0.0))), |ui| {
             ui.horizontal_centered(|ui| {
                 ui::tabs(ui, theme, Id::new("ai_tab"), &CLIS.map(|c| c.0), &mut self.tab);
@@ -118,20 +137,30 @@ impl AiPanel {
                     self.focused = session.has_focus();
                 }
                 None => {
+                    let wsl = cwd.and_then(crate::wsl::parse).is_some();
+                    let found = wsl || *self.found[self.tab].get_or_insert_with(|| locate(cli).is_some());
                     ui.set_opacity(ui::fade_in(ui, Id::new(("ai_start", self.tab))));
                     ui.vertical_centered(|ui| {
                         ui.add_space(28.0);
                         ui.label(RichText::new(icons::ROBOT).size(30.0).color(theme.text_dim));
                         ui.add_space(4.0);
-                        ui.label(RichText::new(format!("Runs the {cli} CLI in the open folder.")).color(theme.text_dim));
-                        ui.add_space(10.0);
-                        start |= ui.button(RichText::new("Start session").color(theme.accent)).clicked();
+                        if found {
+                            ui.label(RichText::new(format!("Runs the {cli} CLI in the open folder.")).color(theme.text_dim));
+                            ui.add_space(10.0);
+                            start |= ui.button(RichText::new("Start session").color(theme.accent)).clicked();
+                        } else {
+                            ui.label(RichText::new(format!("The {cli} CLI is not installed.")).color(theme.text_dim));
+                            ui.add_space(10.0);
+                            setup |= ui.button(RichText::new(format!("Install {name} CLI")).color(theme.accent)).clicked();
+                        }
                     });
                 }
             }
         });
         if start {
-            self.spawn(cli, cwd, &ctx);
+            self.spawn(launch(cli, cwd), cwd, &ctx);
+        } else if setup {
+            self.spawn(install(self.tab), cwd, &ctx);
         }
     }
 }
@@ -150,7 +179,8 @@ mod tests {
         assert!(panel.sessions.iter().all(Option::is_none));
         assert!(!panel.exec(&Command::Copy, &ctx));
 
-        panel.spawn("halo-no-such-cli-xyz", None, &ctx);
+        assert!(locate("halo-no-such-cli-xyz").is_none());
+        panel.spawn(launch("halo-no-such-cli-xyz", None), None, &ctx);
         let started = std::time::Instant::now();
         let ended = |p: &AiPanel| p.errors[0].is_some() || p.sessions[0].as_ref().is_some_and(|s| !s.is_alive());
         while !ended(&panel) && started.elapsed() < std::time::Duration::from_secs(15) {

@@ -10,6 +10,9 @@ All notable changes to Halo are documented here. The format follows
 
 - **Windows jump list**: right-click the taskbar icon for recent folders,
   recent files and a New Window task. Items can be pinned to the list.
+- **Install the AI CLIs**: when the Claude or Codex CLI is missing, the AI
+  panel offers an Install button that runs the official installer in the
+  panel's terminal.
 
 ### Fixed
 
