@@ -161,6 +161,11 @@ impl DiffTab {
         }
     }
 
+    #[cfg(test)]
+    pub fn hunk_count(&self) -> usize {
+        self.model.hunks.len()
+    }
+
     pub fn pads(&self) -> Vec<(usize, u32)> {
         if self.inline { diff::inline_pads(&self.model.hunks) } else { diff::pads(&self.model.hunks, false) }
     }
@@ -1001,6 +1006,38 @@ mod tests {
 
     fn hunks(editors: &Editors) -> usize {
         active(editors).0.diff.as_ref().map_or(0, |d| d.model.hunks.len())
+    }
+
+    #[test]
+    #[ignore = "needs git inside the Ubuntu-24.04 WSL distro"]
+    fn opens_changes_of_a_nested_wsl_file_open_or_not() {
+        let ctx = egui::Context::default();
+        let dir = PathBuf::from(format!(r"\\wsl.localhost\Ubuntu-24.04\tmp\halo-diff-wsl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src").join("kv")).unwrap();
+        for args in [&["init", "-q", "-b", "trunk"][..], &["config", "user.email", "t@example.com"], &["config", "user.name", "t"]] {
+            crate::git::exec(&dir, args).unwrap();
+        }
+        let file = dir.join("src").join("kv").join("a.cpp");
+        std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+        crate::git::exec(&dir, &["add", "."]).unwrap();
+        crate::git::exec(&dir, &["commit", "-q", "-m", "init"]).unwrap();
+        std::fs::write(&file, "one\nTWO\nthree\nfour\n").unwrap();
+        let args = strings(&["diff", "--", "src/kv/a.cpp"]);
+
+        let mut editors = Editors::new();
+        assert!(editors.compare("a.cpp (changes)", &args, &dir, false, &ctx));
+        settle(&ctx, &mut editors, "the diff tab", |e| e.active_tab().is_some_and(|(g, t)| e.groups[g].tabs[t].diff.is_some()));
+        assert_eq!(hunks(&editors), 2);
+
+        let mut editors = Editors::new();
+        editors.open(&file);
+        settle(&ctx, &mut editors, "the file", |e| e.active_tab().is_some());
+        assert!(editors.compare("a.cpp (changes)", &args, &dir, false, &ctx));
+        settle(&ctx, &mut editors, "the diff tab", |e| e.active_tab().is_some_and(|(g, t)| e.groups[g].tabs[t].diff.is_some()));
+        assert_eq!(hunks(&editors), 2);
+        assert_eq!(editors.groups[0].tabs.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

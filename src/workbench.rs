@@ -633,6 +633,7 @@ impl Halo {
         let ai = self.showing(Ai);
         ui.scope_builder(UiBuilder::new().max_rect(frame).id_salt("editor_area"), |ui| {
             ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+            self.editors.poll_background(ui.ctx());
             if self.editors.is_empty() {
                 self.welcome(ui);
             } else {
@@ -998,6 +999,59 @@ mod tests {
         app.cmds.push(Command::ResetViewLocations);
         run(&ctx, &mut app, 0.9, vec![]);
         assert_eq!(app.session.layout.place(TestResults), Place::Panel);
+    }
+
+    fn open_changes_in(dir: std::path::PathBuf) {
+        let run_git = |args: &[&str]| crate::git::exec(&dir, args).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        run_git(&["init", "-q", "-b", "trunk"]);
+        run_git(&["config", "user.email", "t@example.com"]);
+        run_git(&["config", "user.name", "t"]);
+        let file = dir.join("src").join("a.cpp");
+        std::fs::write(&file, "one\ntwo\n").unwrap();
+        run_git(&["add", "."]);
+        run_git(&["commit", "-q", "-m", "init"]);
+        std::fs::write(&file, "one\nTWO\n").unwrap();
+
+        let (ctx, mut app) = headless();
+        app.cmds.push(Command::OpenPath(dir.clone()));
+        run(&ctx, &mut app, 0.0, vec![]);
+        app.git.wait(|g| g.changes(false).len() == 1);
+        let diff = Command::OpenDiff("a.cpp (changes)".into(), ["diff", "--", "src/a.cpp"].map(str::to_owned).to_vec());
+        let mut time = 0.1;
+        let mut settle = |app: &mut Halo, what: &str, done: &dyn Fn(&Halo) -> bool| {
+            for _ in 0..300 {
+                time += 0.05;
+                run(&ctx, app, time, vec![]);
+                if done(app) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("timed out waiting for {what}: open {:?}, active {:?}, hunks {:?}, top {:?}", app.editors.open_paths(), app.editors.active_path(), app.editors.active_diff_hunks(), app.git.top());
+        };
+        let diff_shown = |app: &Halo| app.editors.active_diff_hunks() == Some(1);
+        app.cmds.push(diff.clone());
+        settle(&mut app, "the diff of a closed file", &diff_shown);
+        app.cmds.push(Command::CloseAllEditors);
+        settle(&mut app, "no editors", &|app| app.editors.is_empty());
+        app.cmds.push(Command::OpenPath(file.clone()));
+        settle(&mut app, "the file", &|app| app.editors.active_path().is_some());
+        app.cmds.push(diff);
+        settle(&mut app, "the diff of an open file", &diff_shown);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn headless_opens_changes_from_source_control_whether_the_file_is_open_or_not() {
+        open_changes_in(std::env::temp_dir().join(format!("halo-open-changes-{}", std::process::id())));
+    }
+
+    #[test]
+    #[ignore = "needs git inside the Ubuntu-24.04 WSL distro"]
+    fn headless_opens_changes_in_wsl() {
+        open_changes_in(std::path::PathBuf::from(format!(r"\\wsl.localhost\Ubuntu-24.04\var\tmp\halo-open-changes-{}", std::process::id())));
     }
 
     #[test]

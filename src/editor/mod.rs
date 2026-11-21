@@ -1124,6 +1124,19 @@ impl Editors {
         self.groups.iter().all(|g| g.tabs.is_empty())
     }
 
+    // diffs and merges add their tab only when loaded, so poll them even while the welcome page shows
+    pub fn poll_background(&mut self, ctx: &egui::Context) {
+        self.poll_loads(ctx);
+        self.poll_diffs(ctx);
+        self.poll_merges();
+    }
+
+    #[cfg(test)]
+    pub fn active_diff_hunks(&self) -> Option<usize> {
+        let (g, t) = self.active_tab()?;
+        self.groups[g].tabs[t].diff.as_ref().map(|d| d.hunk_count())
+    }
+
     pub fn columns(&self) -> usize {
         self.grid.wins.first().map_or(1, |win| win.node.leaves().len())
     }
@@ -1619,6 +1632,13 @@ impl Editors {
                     }
                     let tab = &group.tabs[t];
                     let id = Id::new(("editor_tab", g, tab.doc));
+                    // a diff, merge or preview tab shares its file's document, so it needs its own id
+                    let id = match (&tab.diff, &tab.merge, &tab.md) {
+                        (Some(diff), ..) => id.with(&diff.title),
+                        (_, Some(_), _) => id.with("merge"),
+                        (.., Some(_)) => id.with("markdown"),
+                        _ => id,
+                    };
                     let duration = if self.drag.is_some() && !crate::a11y::reduced() { ui::ANIM } else { 0.0 };
                     let x = ui.ctx().animate_value_with_time(id.with("left"), left, duration);
                     let r = Rect::from_min_size(row.min + vec2(x, 0.0), vec2(face.width(), TAB_H));
