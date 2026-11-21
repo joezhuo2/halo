@@ -2,9 +2,11 @@ mod buffer;
 pub mod diff;
 mod diff_view;
 mod emmet;
+mod grid;
 mod highlight;
 mod image_view;
 mod intel;
+mod layout;
 mod prefs;
 mod load;
 mod markdown;
@@ -108,6 +110,7 @@ struct Group {
     tabs: Vec<Tab>,
     active: usize,
     recent: Vec<u64>,
+    used: bool,
 }
 
 #[derive(Default)]
@@ -141,7 +144,7 @@ enum TabAction {
 #[derive(Clone, Copy)]
 enum DropAt {
     Tab(usize, usize),
-    Split(usize, bool),
+    Split(usize, layout::Dir),
 }
 
 struct TabFace {
@@ -266,6 +269,7 @@ pub struct Editors {
     previews: Vec<(usize, u64, markdown::Out)>,
     pub terminals: HashMap<u64, crate::terminal::Terminal>,
     renaming: Option<(u64, String, bool)>,
+    grid: grid::Grid,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -591,6 +595,7 @@ impl Editors {
             previews: vec![],
             terminals: HashMap::new(),
             renaming: None,
+            grid: Default::default(),
         }
     }
 
@@ -650,6 +655,7 @@ impl Editors {
         let group = &mut self.groups[self.active];
         group.tabs.push(Tab { doc, sels, ..Default::default() });
         group.active = group.tabs.len() - 1;
+        group.used = true;
         self.want_focus = true;
     }
 
@@ -802,6 +808,7 @@ impl Editors {
         let at = tab_slot(at, tab.pinned, pinned, group.tabs.len());
         group.tabs.insert(at, tab);
         group.active = at;
+        group.used = true;
         self.active = tg;
         self.want_focus = true;
     }
@@ -812,10 +819,9 @@ impl Editors {
         }
         match at {
             DropAt::Tab(g, index) => self.place_tab((sg, st), g, index),
-            DropAt::Split(g, right) => {
-                let at = g + right as usize;
-                self.groups.insert(at, Group::default());
-                self.place_tab((sg + (at <= sg) as usize, st), at, 0);
+            DropAt::Split(g, dir) => {
+                let at = self.split_group(g, dir);
+                self.place_tab((sg, st), at, 0);
             }
         }
     }
@@ -919,6 +925,7 @@ impl Editors {
                 }
                 return true;
             }
+            _ if self.grid_exec(cmd) => return true,
             _ => {}
         }
         if let Some((g, t)) = self.active_tab().filter(|_| !matches!(cmd, CloseEditor | NextEditor | PrevEditor | KeepEditor))
@@ -964,12 +971,6 @@ impl Editors {
             CloseEditor if self.groups[g].tabs[t].pinned => {}
             CloseEditor => self.request_close(g, t),
             MarkdownPreview | MarkdownPreviewSide => self.open_preview(*cmd == MarkdownPreviewSide),
-            SplitEditor => {
-                let sels = self.groups[g].tabs[t].sels.clone();
-                self.groups.insert(g + 1, Group::default());
-                self.active = g + 1;
-                self.add_tab(doc_id, sels);
-            }
             NextEditor | PrevEditor => {
                 let count = self.recent_order(g).len().max(1);
                 let at = self.switcher.filter(|open| open.0 == g).map_or(0, |open| open.1);
@@ -1127,7 +1128,7 @@ impl Editors {
     pub fn restore_pins(&mut self, pins: &[(usize, PathBuf)]) {
         for (g, path) in pins {
             while self.groups.len() <= *g {
-                self.groups.push(Group::default());
+                self.split_group(self.groups.len() - 1, layout::Dir::Right);
             }
             let id = match self.find_doc(path) {
                 Some(id) => id,
@@ -1441,10 +1442,6 @@ impl Editors {
 
     pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, settings: &Settings, git: &Git, cmds: &mut Vec<Command>) {
         self.focused = false;
-        self.drop = None;
-        if self.drag.is_some() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
-            self.drag = None;
-        }
         self.active = self.active.min(self.groups.len().saturating_sub(1));
         let ended: Vec<u64> = self.terminals.iter().filter(|(_, t)| !t.is_alive()).map(|(id, _)| *id).collect();
         for id in ended {
@@ -1464,35 +1461,10 @@ impl Editors {
         self.poll_diffs(ui.ctx());
         self.poll_merges();
         self.process(settings, ui.ctx());
-        let rect = ui.available_rect_before_wrap();
-        let count = self.groups.len();
-        let width = rect.width() / count as f32;
         let mut pending = vec![];
-        for g in 0..count {
-            let area = Rect::from_min_size(pos2(rect.left() + g as f32 * width, rect.top()), vec2(width, rect.height()));
-            let fade = ui::fade_in(ui, Id::new(("editor_group_fade", g, count)));
-            ui.scope_builder(UiBuilder::new().max_rect(area).id_salt(("editor_group", g)), |ui| {
-                ui.set_clip_rect(area.intersect(ui.clip_rect()));
-                if count > 1 && g + 1 == count {
-                    ui.set_opacity(fade);
-                }
-                self.group_ui(ui, g, area, theme, settings, git, &mut pending);
-            });
-            if g > 0 {
-                ui.painter().vline(area.left(), area.y_range(), Stroke::new(1.0, theme.border));
-            }
-        }
-        ui.allocate_rect(rect, Sense::hover());
+        self.area_ui(ui, 0, theme, settings, git, &mut pending);
         self.after_previews();
-        let mut outer = false;
-        for cmd in pending {
-            outer |= matches!(cmd, Command::ToggleAi | Command::OpenPath(_));
-            if outer {
-                cmds.push(cmd);
-            } else {
-                self.exec(&cmd, settings, ui.ctx());
-            }
-        }
+        self.run_pending(pending, settings, ui.ctx(), cmds);
         self.after_views();
         if self.take_git_refresh() | self.take_merge_refresh() {
             cmds.push(Command::RefreshExplorer);
@@ -1503,80 +1475,8 @@ impl Editors {
                 false => drop(self.save_doc(id, false)),
             }
         }
-        if let Some((g, at)) = self.switcher {
-            let order = self.recent_order(g);
-            if order.is_empty() || !ui.input(|i| i.modifiers.command || i.modifiers.ctrl) {
-                let doc = order.get(at.min(order.len().saturating_sub(1)));
-                if let Some(t) = doc.and_then(|doc| self.groups[g].tabs.iter().position(|tab| tab.doc == *doc)) {
-                    self.groups[g].active = t;
-                    self.active = g;
-                }
-                self.switcher = None;
-                self.want_focus = true;
-            } else {
-                let top = pos2(rect.left() + (g as f32 + 0.5) * width, rect.top() + 70.0);
-                egui::Area::new(Id::new("editor_switcher")).order(egui::Order::Foreground).pivot(Align2::CENTER_TOP).fixed_pos(top).show(ui.ctx(), |ui| {
-                    egui::Frame::new().fill(theme.raised).stroke(Stroke::new(1.0, theme.accent)).corner_radius(CornerRadius::same(6)).inner_margin(4.0).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                        for (index, doc) in order.iter().enumerate() {
-                            let (r, row) = ui.allocate_exact_size(vec2(320.0, 24.0), Sense::hover());
-                            ui::row_bg(ui, theme, r, row.id, false, index == at);
-                            let title = self.docs.get(doc).map(|d| d.buf.title.clone()).or_else(|| self.terminals.get(doc).map(|t| t.title())).unwrap_or_default();
-                            ui.painter().with_clip_rect(r).text(r.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(13.0), theme.text);
-                        }
-                    });
-                });
-            }
-        }
-        if let Some(drag) = &self.drag {
-            let ctx = ui.ctx();
-            ctx.set_cursor_icon(CursorIcon::Grabbing);
-            if let Some(pos) = ctx.pointer_latest_pos() {
-                let on_strip = rect.contains(pos) && pos.y < rect.top() + TAB_H;
-                let mut origin = pos - drag.grab;
-                let mut painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("editor_tab_drag")));
-                if on_strip {
-                    origin.y = rect.top();
-                } else {
-                    painter.set_opacity(0.78);
-                }
-                let tab = Rect::from_min_size(origin, vec2(drag.face.width(), TAB_H));
-                painter.rect(tab, CornerRadius::same(3), theme.raised, Stroke::new(1.0, theme.border), StrokeKind::Inside);
-                drag.face.paint(&painter, tab, theme, 1.0, 0.0, None);
-            }
-            if !ctx.input(|i| i.pointer.primary_down()) {
-                let source = self.groups.get(drag.group).and_then(|group| group.tabs.iter().position(|t| t.doc == drag.doc));
-                if let (Some(t), Some(at)) = (source, self.drop.take())
-                    && ctx.input(|i| i.pointer.button_released(PointerButton::Primary))
-                {
-                    self.drop_tab((drag.group, t), at);
-                }
-                self.drag = None;
-                ctx.request_repaint();
-            }
-        }
-        self.dialogs(ui.ctx());
         self.merge_dialog(ui.ctx());
-        if self.groups.len() > 1 && self.closing.is_none() {
-            let before = self.groups.len();
-            let mut index = 0;
-            let mut active = self.active;
-            self.groups.retain(|group| {
-                let keep = !group.tabs.is_empty();
-                if !keep && index < active {
-                    active -= 1;
-                }
-                index += 1;
-                keep
-            });
-            if self.groups.is_empty() {
-                self.groups.push(Group::default());
-            }
-            self.active = active.min(self.groups.len() - 1);
-            if self.groups.len() != before {
-                self.want_focus = true;
-            }
-        }
+        self.close_empty_groups();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1620,22 +1520,16 @@ impl Editors {
                 ui.scope_builder(UiBuilder::new().max_rect(body).id_salt(("editor_terminal", doc_id)), |ui| {
                     terminal.ui(ui, theme, settings.font_size, pending);
                 });
-                if terminal.has_focus() {
+                if terminal.has_focus() && self.grid.os_focus {
                     (self.focused, self.active) = (true, g);
                 }
             }
             self.groups[g].tabs[t] = tab;
         }
         if let Some(pos) = self.drag.as_ref().and_then(|_| ui.ctx().pointer_latest_pos()).filter(|pos| body.contains(*pos)) {
-            let x = (pos.x - body.left()) / body.width();
-            let middle = body.center().x;
-            let (at, zone) = match x {
-                x if x < 0.3 => (DropAt::Split(g, false), body.with_max_x(middle)),
-                x if x > 0.7 => (DropAt::Split(g, true), body.with_min_x(middle)),
-                _ => (DropAt::Tab(g, self.groups[g].tabs.len()), body),
-            };
-            self.drop = Some(at);
-            ui.painter().rect_filled(zone, CornerRadius::ZERO, ui::with_alpha(theme.accent, 0.12));
+            let dir = layout::zone(body, pos);
+            self.drop = Some(dir.map_or(DropAt::Tab(g, self.groups[g].tabs.len()), |dir| DropAt::Split(g, dir)));
+            ui.painter().rect_filled(layout::half(body, dir), CornerRadius::ZERO, ui::with_alpha(theme.accent, 0.12));
         }
     }
 
@@ -1646,9 +1540,11 @@ impl Editors {
         let active = group.active;
         let active_group = g == self.active;
         let mut action = None;
-        let last = g + 1 == self.groups.len();
+        let last = self.grid.corner == Some(g);
+        let floating = self.win_of(g) != 0;
         let md = group.tabs.get(active).is_some_and(|t| t.md.is_none() && self.docs.get(&t.doc).is_some_and(|d| d.buf.path.as_deref().is_some_and(markdown::is_markdown)));
         let tabs_rect = Rect::from_min_max(strip.min, pos2(strip.right() - if last { 60.0 } else { 34.0 } - if md { 26.0 } else { 0.0 }, strip.bottom()));
+        let maximize = ui.interact(tabs_rect, Id::new(("editor_strip", g)), Sense::click()).double_clicked();
         ui.scope_builder(UiBuilder::new().max_rect(tabs_rect), |ui| {
             ScrollArea::horizontal().id_salt(("editor_tabs", g)).scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                 let faces: Vec<_> = group.tabs.iter().map(|tab| {
@@ -1778,6 +1674,15 @@ impl Editors {
                             action = Some(TabAction::ReopenText(t));
                             ui.close();
                         }
+                        ui.separator();
+                        let moves = [Command::MoveEditorToNewWindow, Command::CopyEditorToNewWindow, Command::MoveEditorToMainWindow];
+                        for cmd in moves.into_iter().take(if floating { 3 } else { 2 }) {
+                            if ui.button(cmd.label()).clicked() {
+                                action = Some(TabAction::Activate(t));
+                                pending.push(cmd);
+                                ui.close();
+                            }
+                        }
                         if let Some(terminal) = self.terminals.get_mut(&tab.doc) {
                             ui.separator();
                             if ui.button("Rename...").clicked() {
@@ -1818,11 +1723,15 @@ impl Editors {
         }
         let split = Rect::from_center_size(pos2(strip.right() - 17.0, strip.center().y), vec2(24.0, 24.0));
         ui.scope_builder(UiBuilder::new().max_rect(split), |ui| {
-            if ui::icon_button(ui, theme, icons::SQUARE_SPLIT_HORIZONTAL, 24.0, false, "Split Editor Right (Ctrl+\\)").clicked() {
+            if ui::icon_button(ui, theme, icons::SQUARE_SPLIT_HORIZONTAL, 24.0, false, "Split Editor Right (Ctrl+\\), Alt+click to split down").clicked() {
                 self.active = g;
-                pending.push(Command::SplitEditor);
+                pending.push(if ui.input(|i| i.modifiers.alt) { Command::SplitEditorDown } else { Command::SplitEditor });
             }
         });
+        if maximize {
+            self.active = g;
+            pending.push(Command::ToggleMaximizeGroup);
+        }
         match action {
             Some(TabAction::Activate(t)) => {
                 self.groups[g].active = t;
@@ -1968,7 +1877,7 @@ impl Editors {
             ui.memory_mut(|m| m.request_focus(id));
             self.want_focus = false;
         }
-        let has_focus = ui.memory(|m| m.has_focus(id));
+        let has_focus = ui.memory(|m| m.has_focus(id)) && self.grid.os_focus;
         if has_focus {
             self.focused = true;
             self.active = g;
@@ -3148,6 +3057,7 @@ end", "word ".repeat(100)))], &settings);
         let mut editors = Editors::new();
         editors.restore_pins(&[(0, files[1].clone()), (1, files[2].clone()), (0, files[0].clone())]);
         assert_eq!(editors.groups.len(), 2);
+        assert_eq!(editors.grid.wins[0].node, layout::line(true, [layout::Node::Leaf(0), layout::Node::Leaf(1)]));
         assert_eq!(editors.pinned_paths(), vec![(0, files[1].clone()), (0, files[0].clone()), (1, files[2].clone())]);
         assert!(editors.groups.iter().flat_map(|g| &g.tabs).all(|t| t.pinned && !t.preview));
         std::fs::remove_dir_all(dir).unwrap();
@@ -3172,7 +3082,7 @@ end", "word ".repeat(100)))], &settings);
         assert!(editors.goto.is_none() && !editors.find.open && editors.active_path().is_none());
         editors.exec(&Command::SetTerminalColor(Some(4)), &settings, &ctx);
         assert_eq!(editors.active_terminal().map(|t| t.color), Some(Some(4)));
-        editors.drop_tab((0, 1), DropAt::Split(0, true));
+        editors.drop_tab((0, 1), DropAt::Split(0, layout::Dir::Right));
         frame_with(&ctx, &mut editors, vec![], &settings);
         assert_eq!((editors.groups.len(), editors.groups[1].tabs.len(), editors.active), (2, 1, 1));
         let terminal = editors.take_terminal().unwrap();
@@ -3559,7 +3469,7 @@ end", "word ".repeat(100)))], &settings);
         assert!((tab_rect(1, 3).left() - target.left() - editors.drag.as_ref().unwrap().face.width()).abs() < 1.0);
         let body = pos2(end.x, 250.0);
         frame(&ctx, &mut editors, vec![Event::PointerMoved(body)]);
-        assert!(matches!(editors.drop, Some(DropAt::Split(1, false))));
+        assert!(matches!(editors.drop, Some(DropAt::Split(1, layout::Dir::Left))));
         frame(&ctx, &mut editors, vec![key(Key::Escape, Default::default())]);
         frame(&ctx, &mut editors, vec![primary(body, false)]);
         assert!(editors.drag.is_none());
@@ -3620,9 +3530,10 @@ end", "word ".repeat(100)))], &settings);
         editors.exec(&Command::CloseEditor, &settings, &ctx);
         assert_eq!(docs(&editors, 0).len(), 3);
 
-        editors.drop_tab((0, 2), DropAt::Split(0, false));
-        assert_eq!((docs(&editors, 0), docs(&editors, 1), editors.active), (vec![2], vec![1, 3], 0));
-        editors.drop_tab((0, 0), DropAt::Tab(1, 1));
+        editors.drop_tab((0, 2), DropAt::Split(0, layout::Dir::Left));
+        assert_eq!((docs(&editors, 1), docs(&editors, 0), editors.active), (vec![2], vec![1, 3], 1));
+        assert_eq!(editors.grid.wins[0].node.leaves(), vec![1, 0]);
+        editors.drop_tab((1, 0), DropAt::Tab(0, 1));
         frame(&ctx, &mut editors, vec![]);
         assert_eq!((editors.groups.len(), docs(&editors, 0)), (1, vec![1, 2, 3]));
     }
