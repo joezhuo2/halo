@@ -436,7 +436,7 @@ impl Halo {
                 });
                 ui.scope_builder(UiBuilder::new().max_rect(full.with_min_y(split)), |ui| {
                     ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
-                    outline(ui, &self.theme, symbols, &mut self.session.outline, &mut self.cmds);
+                    outline(ui, &self.theme, symbols, self.editors.outline_loading(), &mut self.session.outline, &mut self.cmds);
                 });
             });
         self.session.sidebar = open;
@@ -719,7 +719,7 @@ fn strip_unc(path: PathBuf) -> PathBuf {
     }
 }
 
-fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>, open: &mut bool, cmds: &mut Vec<Command>) {
+fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>, loading: bool, open: &mut bool, cmds: &mut Vec<Command>) {
     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
     let painter = ui.painter().with_clip_rect(rect);
@@ -728,6 +728,9 @@ fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>,
     let caret = if *open && symbols.is_some() { icons::CARET_DOWN } else { icons::CARET_RIGHT };
     painter.text(pos2(rect.left() + 12.0, rect.center().y), Align2::CENTER_CENTER, caret, FontId::proportional(10.0), theme.text);
     painter.text(pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, "OUTLINE", FontId::proportional(11.5), theme.text);
+    if loading {
+        ui::spinner(ui, pos2(rect.right() - 14.0, rect.center().y), 5.0, theme.text_dim);
+    }
     if resp.on_hover_text("Symbols of the active file, from its language server").clicked() {
         *open ^= true;
     }

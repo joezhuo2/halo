@@ -430,6 +430,12 @@ impl Editors {
         (!doc.lang.symbols.is_empty()).then(|| (doc.lang.symbols.as_slice(), line))
     }
 
+    pub fn outline_loading(&self) -> bool {
+        let Some(id) = self.active_tab().map(|(g, t)| self.groups[g].tabs[t].doc) else { return false };
+        let Some(doc) = self.docs.get(&id).filter(|d| d.lang.attached) else { return false };
+        doc.lang.requested != doc.buf.version || self.intel.wants.iter().any(|(_, want)| matches!(want, Want::Symbols { doc, .. } if *doc == id))
+    }
+
     pub(super) fn process(&mut self, settings: &Settings, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         self.intel.last_rects = std::mem::take(&mut self.intel.rects);
