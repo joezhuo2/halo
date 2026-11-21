@@ -19,6 +19,7 @@ enum Item {
     Symbol(usize, String),
     Workspace(lsp::Symbol),
     Line(usize, usize),
+    Searching,
     Note(&'static str),
 }
 
@@ -218,7 +219,7 @@ impl Search {
             return match (folder, q.chars().count() >= 2) {
                 (None, _) => vec![Item::Note("Open a folder to search text in files")],
                 (_, false) => vec![Item::Note("Type at least two characters to search text in files")],
-                _ if self.hits.0 != q => vec![Item::Note("Searching...")],
+                _ if self.hits.0 != q => vec![Item::Searching],
                 _ => none(self.hits.1.clone(), "No results"),
             };
         }
@@ -232,7 +233,7 @@ impl Search {
         if query.starts_with('#') {
             return match (self.servers, self.waiting.is_empty()) {
                 (false, _) => vec![Item::Note("No language server is running yet. Open a source file of the project first")],
-                (_, false) if self.globals.is_empty() => vec![Item::Note("Searching...")],
+                (_, false) if self.globals.is_empty() => vec![Item::Searching],
                 _ => none(self.globals.clone(), "No symbols found"),
             };
         }
@@ -277,7 +278,7 @@ impl Search {
                 cmds.push(Command::GoTo(symbol.line + 1, symbol.col + 1));
             }
             Item::Line(line, column) => cmds.push(Command::GoTo(*line, *column)),
-            Item::Note(_) => return,
+            Item::Searching | Item::Note(_) => return,
         }
         self.open = false;
     }
@@ -321,10 +322,12 @@ impl Search {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 ScrollArea::vertical().max_height(ROW * 14.0).show(ui, |ui| {
                     for (index, item) in self.items.1.iter().enumerate() {
-                        let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
-                        let note = matches!(item, Item::Note(_));
-                        ui::row_bg(ui, theme, r, row.id, row.hovered() && !note, index == self.selected && !note);
                         let (icon, label, detail) = match item {
+                            Item::Searching => {
+                                let rows = ui.scope(|ui| ui::skeleton(ui, theme, 3)).response;
+                                rows.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), "Searching"));
+                                continue;
+                            }
                             Item::File(path, _) => {
                                 let (dir, name) = path.rsplit_once('/').map_or(("", path.as_str()), |(d, n)| (d, n));
                                 (icons::FILE, name.to_owned(), dir.to_owned())
@@ -339,6 +342,9 @@ impl Search {
                             Item::Line(line, column) => (icons::ARROW_RIGHT, format!("Go to line {line}, column {column}"), String::new()),
                             Item::Note(text) => (icons::INFO, (*text).to_owned(), String::new()),
                         };
+                        let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+                        let note = matches!(item, Item::Note(_));
+                        ui::row_bg(ui, theme, r, row.id, row.hovered() && !note, index == self.selected && !note);
                         let painter = ui.painter().with_clip_rect(r.shrink2(vec2(8.0, 0.0)));
                         let color = if note { theme.text_dim } else { theme.text };
                         painter.text(r.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, icon, FontId::proportional(14.0), theme.text_dim);

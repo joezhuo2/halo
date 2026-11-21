@@ -1,4 +1,5 @@
 use crate::git::command;
+use crate::theme::Theme;
 use eframe::egui::{self, RichText, Ui};
 use std::path::Path;
 use std::sync::mpsc::{Receiver, channel};
@@ -73,7 +74,9 @@ impl Accounts {
         let mut switch = None;
         match &self.list {
             None => {
-                ui.label("Loading...");
+                let theme = if ui.visuals().dark_mode { Theme::dark() } else { Theme::light() };
+                let rows = ui.scope(|ui| crate::ui::skeleton(ui, &theme, 3)).response;
+                rows.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), "Loading accounts"));
             }
             Some(Err(error)) if error.starts_with("Could not run gh") => {
                 ui.label("Install the GitHub CLI (gh) to manage accounts.");

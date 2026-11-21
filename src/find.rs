@@ -150,7 +150,6 @@ impl FindPanel {
             ctx.request_repaint();
         });
         self.rx = Some(rx);
-        self.note = "Searching...".into();
     }
 
     fn report(&self) -> String {
@@ -245,7 +244,9 @@ impl FindPanel {
             }
             go |= field(ui, &mut self.query.include, "Files to include, like src, *.rs", false);
             go |= field(ui, &mut self.query.exclude, "Files to exclude", false);
-            ui.label(RichText::new(&self.note).size(12.0).color(theme.text_dim));
+            if self.rx.is_none() {
+                ui.label(RichText::new(&self.note).size(12.0).color(theme.text_dim));
+            }
             if clear {
                 self.results.clear();
                 self.note.clear();
@@ -258,6 +259,10 @@ impl FindPanel {
             }
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             ScrollArea::vertical().id_salt("find_results").auto_shrink(false).show(ui, |ui| {
+                if self.rx.is_some() && self.results.is_empty() {
+                    let rows = ui.scope(|ui| ui::skeleton(ui, theme, 5)).response;
+                    rows.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), "Searching"));
+                }
                 for (index, file) in self.results.iter_mut().enumerate() {
                     let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
                     ui::row_bg(ui, theme, r, row.id, row.hovered(), false);

@@ -1,5 +1,6 @@
 use crate::command::Command;
-use eframe::egui::{RichText, Ui};
+use crate::theme::Theme;
+use eframe::egui::{self, RichText, Ui};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
@@ -88,7 +89,9 @@ impl Wsl {
         }
         match &self.distros {
             None => {
-                ui.label("Loading...");
+                let theme = if ui.visuals().dark_mode { Theme::dark() } else { Theme::light() };
+                let rows = ui.scope(|ui| crate::ui::skeleton(ui, &theme, 3)).response;
+                rows.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), "Loading WSL distributions"));
             }
             Some(list) if list.is_empty() => {
                 ui.label("No WSL distributions are installed.");
