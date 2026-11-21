@@ -1,6 +1,7 @@
 use crate::command::Command;
 use crate::lsp::{Diagnostic, Lsp};
 use crate::settings::{Settings, ShellProfile};
+use crate::terminal_find::FindBar;
 use crate::terminal_links::{Link, Target};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
@@ -192,6 +193,7 @@ pub struct Terminal {
     pub pid: Option<u32>,
     cwd: Option<PathBuf>,
     links: (i32, String, Vec<(usize, usize)>, Vec<Link>),
+    find: FindBar,
 }
 
 impl Drop for Terminal {
@@ -258,6 +260,7 @@ impl Terminal {
             pid,
             cwd: options.working_directory,
             links: Default::default(),
+            find: FindBar::default(),
         })
     }
 
@@ -295,7 +298,16 @@ impl Terminal {
     }
 
     pub fn has_focus(&self) -> bool {
-        self.focused
+        self.focused || self.find.has_focus
+    }
+
+    fn reveal(&self, line: i32) {
+        let mut term = self.term.lock();
+        let (rows, offset) = (term.screen_lines() as i32, term.grid().display_offset() as i32);
+        if !(0..rows).contains(&(line + offset)) {
+            let target = (rows / 2 - line).clamp(0, term.history_size() as i32);
+            term.scroll_display(Scroll::Delta(target - offset));
+        }
     }
 
     pub fn focus(&mut self) {
@@ -384,6 +396,7 @@ impl Terminal {
         self.focused = resp.has_focus();
         let now = ui.input(|i| i.time);
         let mode = *self.term.lock().mode();
+        let mut step = 0;
 
         if self.focused {
             ui.memory_mut(|m| {
@@ -402,6 +415,14 @@ impl Terminal {
                         None => self.write([3u8]),
                     },
                     Event::Cut => self.write([0x18u8]),
+                    Event::Key { key: Key::F, pressed: true, modifiers, .. } if modifiers.command && !modifiers.alt => {
+                        self.find.show();
+                        continue;
+                    }
+                    Event::Key { key: Key::F3, pressed: true, modifiers, .. } if self.find.open => {
+                        step = if modifiers.shift { -1 } else { 1 };
+                        continue;
+                    }
                     Event::Key { key, pressed: true, modifiers, .. } => {
                         if let Some(bytes) = encode_key(key, modifiers, mode.contains(TermMode::APP_CURSOR)) {
                             self.write(bytes);
@@ -414,6 +435,20 @@ impl Terminal {
             }
         }
 
+        let mut scroll_to = None;
+        if let Some(fresh) = self.find.due(now) {
+            let term = self.term.lock();
+            let top = term.topmost_line().0;
+            let (text, cells) = crate::terminal_links::join(&grid_rows(&term, top, term.bottommost_line().0));
+            drop(term);
+            self.find.run(&text, &cells, top, now, fresh);
+            if fresh {
+                scroll_to = self.find.current.and_then(|c| self.find.matches[c].first()).map(|s| s.0);
+            }
+        }
+        if self.find.open {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
         let offset = self.term.lock().grid().display_offset();
         let link = match (ui.input(|i| i.modifiers.command), resp.hover_pos()) {
             (true, Some(pos)) => self.hovered_link(self.point_at(rect, pos, cell, offset).0),
@@ -545,6 +580,13 @@ impl Terminal {
         }
         flush(&mut run, run_at);
         flush_bg(&mut bg_run);
+        for (index, segments) in self.find.matches.iter().enumerate() {
+            let alpha = if self.find.current == Some(index) { 0.6 } else { 0.25 };
+            for &(line, from, to) in segments.iter().filter(|s| (0..self.size.1 as i32).contains(&(s.0 + offset))) {
+                let r = Rect::from_min_max(cell_pos(line + offset, from), cell_pos(line + offset + 1, to));
+                backgrounds.push(egui::Shape::rect_filled(r, CornerRadius::same(2), ui::with_alpha(theme.accent, alpha)));
+            }
+        }
         painter.set(under_text, egui::Shape::Vec(backgrounds));
         if let Some((top, cells, _)) = &link {
             for &(r, c) in cells {
@@ -573,6 +615,19 @@ impl Terminal {
                     ctx.request_repaint_after(std::time::Duration::from_millis(50));
                 }
             }
+        }
+        drop(term);
+        if self.find.open {
+            let (bar_step, closed) = self.find.ui(ui, rect.expand2(vec2(10.0, 4.0)), theme);
+            step += bar_step;
+            self.want_focus |= closed;
+        }
+        if step != 0 {
+            scroll_to = self.find.step(step > 0);
+        }
+        if let Some(line) = scroll_to {
+            self.reveal(line);
+            ctx.request_repaint();
         }
     }
 }
