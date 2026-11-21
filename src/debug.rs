@@ -2,6 +2,7 @@ use crate::app::{Halo, note};
 use crate::command::Command;
 use crate::dap::{self, Incoming};
 use crate::settings::Settings;
+use crate::tasks::{Outcome, Tasks};
 use crate::terminal::BottomPanel;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
@@ -634,6 +635,7 @@ pub struct Env<'a> {
     pub settings: &'a Settings,
     pub marks: &'a mut Marks,
     pub bottom: &'a mut BottomPanel,
+    pub tasks: &'a mut Tasks,
     pub panel: &'a mut bool,
     pub cmds: &'a mut Vec<Command>,
     pub ctx: &'a egui::Context,
@@ -659,6 +661,7 @@ pub struct Debug {
     stamp: (Option<PathBuf>, Option<SystemTime>, f64),
     selected: String,
     live: Option<Live>,
+    pending: Option<(Config, bool, std::sync::mpsc::Receiver<Outcome>)>,
     watches: Vec<String>,
     filters: Vec<(String, String, bool)>,
     open: [bool; 4],
@@ -677,6 +680,7 @@ impl Default for Debug {
             stamp: (None, None, f64::NEG_INFINITY),
             selected: String::new(),
             live: None,
+            pending: None,
             watches: vec![],
             filters: vec![],
             open: [true; 4],
@@ -738,7 +742,12 @@ impl Debug {
             return ui::notify("launch.json has no configurations. Use Debug: Add Configuration... to add one.");
         };
         let vars = Vars { folder: folder.to_path_buf(), file: env.file.clone() };
-        self.begin(config.resolve(&vars), no_debug, env);
+        let config = config.resolve(&vars);
+        let Some(task) = config.pre_launch_task.clone() else { return self.begin(config, no_debug, env) };
+        match env.tasks.run_label(&task, env.folder, env.file.clone(), env.settings, env.bottom, env.ctx) {
+            Ok(done) => self.pending = Some((config, no_debug, done)),
+            Err(error) => ui::notify(format!("preLaunchTask \"{task}\": {error}")),
+        }
     }
 
     fn begin(&mut self, config: Config, no_debug: bool, env: &mut Env) {
@@ -811,6 +820,7 @@ impl Debug {
     }
 
     fn stop(&mut self, env: &mut Env) {
+        self.pending = None;
         let Some(live) = self.live.as_mut() else { return };
         live.stopping += 1;
         match live.stopping {
@@ -882,6 +892,12 @@ impl Debug {
     }
 
     pub fn poll(&mut self, env: &mut Env) {
+        if let Some(outcome) = self.pending.as_ref().and_then(|(.., done)| done.try_recv().ok()) {
+            match (outcome.ok, self.pending.take()) {
+                (true, Some((config, no_debug, _))) => self.begin(config, no_debug, env),
+                _ => ui::notify(outcome.error.unwrap_or_else(|| "The preLaunchTask failed, so debugging did not start.".to_owned())),
+            }
+        }
         let now = env.ctx.input(|i| i.time);
         let Some(live) = self.live.as_mut() else {
             env.bottom.console.submitted.clear();
@@ -1619,6 +1635,7 @@ impl Halo {
             settings: &self.settings,
             marks: &mut self.editors.marks,
             bottom: &mut self.bottom,
+            tasks: &mut self.tasks,
             panel: &mut self.session.panel,
             cmds: &mut self.cmds,
             ctx,
@@ -1837,7 +1854,7 @@ mod tests {
 
         let ctx = egui::Context::default();
         let settings = Settings::default();
-        let (mut marks, mut bottom, mut panel, mut cmds) = (Marks::default(), BottomPanel::new(), false, vec![]);
+        let (mut marks, mut bottom, mut panel, mut cmds, mut tasks) = (Marks::default(), BottomPanel::new(), false, vec![], Tasks::default());
         marks.toggle(&file, 2);
         marks.set(&file, 3, ["x > 1".into(), String::new(), String::new()]);
         marks.set(&file, 0, [String::new(), String::new(), "a is {a}".into()]);
@@ -1845,7 +1862,7 @@ mod tests {
         debug.watches.push("x * 2".into());
         macro_rules! env {
             () => {
-                Env { folder: Some(&dir), file: Some(file.clone()), settings: &settings, marks: &mut marks, bottom: &mut bottom, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
+                Env { folder: Some(&dir), file: Some(file.clone()), settings: &settings, marks: &mut marks, bottom: &mut bottom, tasks: &mut tasks, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
             };
         }
         macro_rules! pump {
