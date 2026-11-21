@@ -472,6 +472,44 @@ fn diagnostic(value: &Value) -> Diagnostic {
     }
 }
 
+fn map_strings(value: &mut Value, f: &dyn Fn(&str) -> Option<String>) {
+    match value {
+        Value::String(text) => {
+            if let Some(mapped) = f(text) {
+                *text = mapped;
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|v| map_strings(v, f)),
+        Value::Object(map) => {
+            *map = std::mem::take(map)
+                .into_iter()
+                .map(|(key, mut v)| {
+                    map_strings(&mut v, f);
+                    (f(&key).unwrap_or(key), v)
+                })
+                .collect();
+        }
+        _ => {}
+    }
+}
+
+fn to_wsl(distro: &str, text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let distro = distro.to_ascii_lowercase();
+    for host in ["wsl.localhost", "wsl%24"] {
+        let prefix = format!("file:////{host}/{distro}/");
+        if lower.starts_with(&prefix) {
+            return Some(format!("file:///{}", &text[prefix.len()..]));
+        }
+    }
+    crate::wsl::parse(Path::new(text)).filter(|(d, _)| d.eq_ignore_ascii_case(&distro)).map(|(_, linux)| linux)
+}
+
+fn from_wsl(distro: &str, text: &str) -> Option<String> {
+    let rest = text.strip_prefix("file:///").filter(|rest| !rest.starts_with('/'))?;
+    Some(format!("file:////wsl.localhost/{distro}/{rest}"))
+}
+
 pub(crate) fn read_message(reader: &mut impl BufRead) -> Option<Value> {
     let mut length = 0;
     loop {
@@ -609,6 +647,7 @@ fn capability(method: &str) -> Option<&'static str> {
 struct Server {
     command: String,
     name: String,
+    wsl: Option<String>,
     child: Option<Child>,
     tx: Sender<String>,
     rx: Receiver<Value>,
@@ -623,7 +662,10 @@ struct Server {
 
 impl Server {
     fn write(&self, message: &Value) {
-        let _ = self.tx.send(frame(message));
+        let Some(distro) = &self.wsl else { return drop(self.tx.send(frame(message))) };
+        let mut message = message.clone();
+        map_strings(&mut message, &|text| to_wsl(distro, text));
+        let _ = self.tx.send(frame(&message));
     }
 
     fn send(&mut self, message: Value) {
@@ -661,10 +703,24 @@ impl Drop for Server {
 fn spawn(command: &str, root: &Path, ctx: &egui::Context) -> Result<Server, String> {
     let mut parts = command.split_whitespace();
     let name = parts.next().ok_or("the command is empty")?;
-    let program = find_program(name).ok_or_else(|| format!("{name} was not found on PATH"))?;
-    let mut child = crate::terminal::hidden_command(&program.to_string_lossy())
-        .args(parts)
-        .current_dir(root)
+    let wsl = crate::wsl::parse(root).map(|(distro, _)| distro);
+    let mut process = match &wsl {
+        // a login shell so servers installed under ~/.local/bin or by version managers are on PATH
+        Some(_) => {
+            let args: Vec<String> = ["-lc", "exec \"$0\" \"$@\"", name].into_iter().chain(parts).map(str::to_owned).collect();
+            let (program, args) = crate::wsl::wrap(Some(root), "sh", &args);
+            let mut process = crate::terminal::hidden_command(&program);
+            process.args(args);
+            process
+        }
+        None => {
+            let program = find_program(name).ok_or_else(|| format!("{name} was not found on PATH"))?;
+            let mut process = crate::terminal::hidden_command(&program.to_string_lossy());
+            process.args(parts).current_dir(root);
+            process
+        }
+    };
+    let mut child = process
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -683,10 +739,13 @@ fn spawn(command: &str, root: &Path, ctx: &egui::Context) -> Result<Server, Stri
             }
         }
     });
-    let (messages, repaint) = (in_tx.clone(), ctx.clone());
+    let (messages, repaint, distro) = (in_tx.clone(), ctx.clone(), wsl.clone());
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
-        while let Some(message) = read_message(&mut reader) {
+        while let Some(mut message) = read_message(&mut reader) {
+            if let Some(distro) = &distro {
+                map_strings(&mut message, &|text| from_wsl(distro, text));
+            }
             if messages.send(message).is_err() {
                 return;
             }
@@ -705,6 +764,7 @@ fn spawn(command: &str, root: &Path, ctx: &egui::Context) -> Result<Server, Stri
     Ok(Server {
         command: command.to_owned(),
         name: Path::new(name).file_stem().unwrap_or_default().to_string_lossy().into_owned(),
+        wsl,
         child: Some(child),
         tx,
         rx,
@@ -777,21 +837,27 @@ impl Lsp {
 
     pub fn open(&mut self, path: &Path, text: impl FnOnce() -> String, ctx: &egui::Context) -> bool {
         let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-        let Some(command) = self.config.1.get(&ext).filter(|c| self.config.0 && !c.trim().is_empty()).cloned() else { return false };
-        if path.to_string_lossy().starts_with(r"\\") {
+        let Some(program) = self.config.1.get(&ext).filter(|c| self.config.0 && !c.trim().is_empty()).cloned() else { return false };
+        let distro = crate::wsl::parse(path).map(|(distro, _)| distro);
+        if distro.is_none() && path.to_string_lossy().starts_with(r"\\") {
             return false;
         }
         if self.index_of(path).is_some() {
             self.change(path, text());
             return true;
         }
+        let command = match &distro {
+            Some(distro) => format!("{program} [WSL: {distro}]"),
+            None => program.clone(),
+        };
         let index = match self.servers.iter().position(|s| s.command == command) {
             Some(index) => index,
             None if self.failed.contains(&command) => return false,
             None => {
+                let same_side = |f: &PathBuf| crate::wsl::parse(f).map(|(d, _)| d) == distro;
                 let owner = self.folders.iter().map(|(f, _)| f).filter(|f| path.starts_with(f)).max_by_key(|f| f.components().count());
-                let root = owner.cloned().or_else(|| self.root.clone()).or_else(|| path.parent().map(Path::to_path_buf)).unwrap_or_default();
-                match spawn(&command, &root, ctx) {
+                let root = owner.cloned().or_else(|| self.root.clone().filter(same_side)).or_else(|| path.parent().map(Path::to_path_buf)).unwrap_or_default();
+                match spawn(&program, &root, ctx) {
                     Ok(mut server) => {
                         self.next_id += 1;
                         server.init = self.next_id;
@@ -1008,6 +1074,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn maps_wsl_uris_both_ways() {
+        let file = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\joe\a b.cpp");
+        let mut out = json!({"textDocument": {"uri": uri(&file)}, "rootPath": r"\\wsl.localhost\Ubuntu\home\joe", "other": "file:///C:/x"});
+        map_strings(&mut out, &|t| to_wsl("Ubuntu", t));
+        assert_eq!(out, json!({"textDocument": {"uri": "file:///home/joe/a%20b.cpp"}, "rootPath": "/home/joe", "other": "file:///C:/x"}));
+        let mut back = json!({"changes": {"file:///home/joe/a%20b.cpp": [{"uri": "file:///usr/include/vector"}]}});
+        map_strings(&mut back, &|t| from_wsl("Ubuntu", t));
+        let key = uri(&file);
+        assert_eq!(path_of(&back["changes"][&key][0]["uri"].as_str().unwrap().to_owned()), Some(PathBuf::from(r"\\wsl.localhost\Ubuntu\usr\include\vector")));
+        assert!(back["changes"].get(&key).is_some());
+    }
+
+    #[test]
     fn sends_workspace_folders_and_their_changes() {
         let (api, web) = (PathBuf::from("/w/api"), PathBuf::from("/w/web"));
         let two = [(api.clone(), "api".to_owned()), (web.clone(), "web".to_owned())];
@@ -1093,6 +1172,44 @@ mod tests {
         let item = diagnostic(&json!({"range": span, "severity": 2, "code": "E1", "source": "rustc", "message": "unused"}));
         assert_eq!((item.severity, item.source.as_str(), item.start), (2, "rustc(E1)", (2, 4)));
         assert_eq!(hierarchy(&json!([{"from": {"name": "caller", "uri": target, "selectionRange": span}, "fromRanges": []}]))[0].label, "caller");
+    }
+
+    #[test]
+    #[ignore = "needs clangd inside the Ubuntu-24.04 WSL distro"]
+    fn talks_to_clangd_in_wsl() {
+        let root = PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\tmp\halo-lsp");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("a.cpp");
+        let text = "int main() { int x = undefined_name; }\n".to_owned();
+        std::fs::write(&path, &text).unwrap();
+        let mut lsp = Lsp::default();
+        lsp.configure(&Settings::default(), Some(&root));
+        assert!(lsp.open(&path, || text.clone(), &egui::Context::default()));
+        let started = std::time::Instant::now();
+        while lsp.diagnostics(&path).is_empty() {
+            assert!(started.elapsed().as_secs() < 30, "no diagnostics: {:?}", lsp.log);
+            lsp.poll();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(lsp.diagnostics(&path).iter().any(|d| d.message.contains("undefined_name")));
+        let text = "#include <vector>\nvoid f(std::vector<int> v) { v.si }\n".to_owned();
+        lsp.change(&path, text);
+        while lsp.diagnostics(&path).iter().any(|d| d.message.contains("undefined_name")) {
+            assert!(started.elapsed().as_secs() < 60, "no reparse: {:?}", lsp.log);
+            lsp.poll();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let id = lsp.request(&path, "textDocument/completion", at(&path, (1, 33))).unwrap();
+        let reply = loop {
+            assert!(started.elapsed().as_secs() < 60, "no completion: {:?}", lsp.log);
+            lsp.poll();
+            if let Some(reply) = lsp.take(id) {
+                break reply.unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let size = reply["items"].as_array().unwrap().iter().find(|i| i["filterText"] == "size").unwrap_or_else(|| panic!("{reply}")).clone();
+        assert!(size["textEdit"]["newText"].as_str().unwrap().starts_with("size("), "{size}");
     }
 
     #[test]
