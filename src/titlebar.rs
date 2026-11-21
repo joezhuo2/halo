@@ -132,7 +132,8 @@ impl Halo {
             Some(GoToFile), Some(GoToSymbol), Some(GoToWorkspaceSymbol), Some(GoToLine), Some(FindInFiles), Some(ShowCommands), None,
             Some(GoToDefinition), Some(GoToDeclaration), Some(GoToTypeDefinition), Some(GoToImplementation), Some(FindReferences),
             Some(ShowCallHierarchy), Some(ShowTypeHierarchy), None,
-            Some(GoBack), Some(NextEditor), Some(PrevEditor),
+            Some(GoBack), Some(NextEditor), Some(PrevEditor), None,
+            Some(NextChange), Some(PrevChange),
         ]);
         ui.menu_button("Run", |ui| {
             ui.set_min_width(230.0);
