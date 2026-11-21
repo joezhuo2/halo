@@ -40,6 +40,7 @@ mod titlebar;
 mod ui;
 mod update;
 mod when;
+mod workspace;
 mod wsl;
 
 use eframe::egui;
