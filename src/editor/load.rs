@@ -3,6 +3,7 @@ use super::highlight::Highlighter;
 use super::image_view::{self, ImageView};
 use super::intel::from_lsp;
 use super::{Doc, Editors, Tab};
+use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui;
 use eframe::egui::{self, Align, CornerRadius, Layout, Rect, RichText, Ui, UiBuilder, vec2};
@@ -167,7 +168,13 @@ impl Editors {
         }
     }
 
-    pub(super) fn special(&mut self, ui: &mut Ui, body: &mut Rect, theme: &Theme, doc: &mut Doc, tab: &Tab) -> bool {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn special(&mut self, ui: &mut Ui, g: usize, body: &mut Rect, theme: &Theme, settings: &Settings, doc: &mut Doc, tab: &mut Tab) -> bool {
+        if let (Some(md), Content::Text) = (tab.md.as_mut(), &doc.content) {
+            let out = md.ui(ui, theme, *body, &doc.buf, doc.top, settings.font_size + 1.0);
+            self.previews.extend(out.into_iter().map(|out| (g, tab.doc, out)));
+            return true;
+        }
         let force = |doc: &mut Doc| {
             if let Some(path) = doc.buf.path.clone() {
                 doc.content = Content::Loading { rx: spawn(path, true), at: None };

@@ -6,6 +6,7 @@ mod highlight;
 mod image_view;
 mod intel;
 mod load;
+mod markdown;
 mod snippet;
 
 use crate::command::{self, Command, Scope};
@@ -71,6 +72,7 @@ struct Doc {
     stale: bool,
     blame: crate::blame::Blame,
     content: Content,
+    top: usize,
 }
 
 #[derive(Default)]
@@ -91,6 +93,7 @@ struct Tab {
     trail: Vec<Vec<Sel>>,
     seen: (u64, Vec<Sel>),
     diff: Option<Box<diff_view::DiffTab>>,
+    md: Option<Box<markdown::MdTab>>,
 }
 
 #[derive(Default)]
@@ -235,6 +238,7 @@ pub struct Editors {
     disk_jobs: Vec<(u64, bool)>,
     diffs: diff_view::Diffs,
     large_bytes: u64,
+    previews: Vec<(usize, u64, markdown::Out)>,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -552,6 +556,7 @@ impl Editors {
             disk_jobs: vec![],
             diffs: Default::default(),
             large_bytes: 20 << 20,
+            previews: vec![],
         }
     }
 
@@ -564,7 +569,7 @@ impl Editors {
     fn with_active<R>(&mut self, f: impl FnOnce(&mut Document, &mut Tab) -> R) -> Option<R> {
         let (g, t) = self.active_tab()?;
         let tab = &mut self.groups[g].tabs[t];
-        let doc = self.docs.get_mut(&tab.doc)?;
+        let doc = self.docs.get_mut(&tab.doc).filter(|_| tab.md.is_none())?;
         doc.buf.clamp(&mut tab.sels);
         let result = f(&mut doc.buf, tab);
         tab.reveal = tab.sels.last().map(|s| s.head);
@@ -579,7 +584,7 @@ impl Editors {
             self.banner = Some((note.clone(), None));
         }
         let hl = Highlighter::new(buf.path.as_deref().filter(|_| !buf.large), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0, stale: false, blame: Default::default(), content: Content::Text });
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0, stale: false, blame: Default::default(), content: Content::Text, top: 0 });
         id
     }
 
@@ -649,7 +654,7 @@ impl Editors {
 
     fn show_doc(&mut self, id: u64) {
         let group = &mut self.groups[self.active];
-        match group.tabs.iter().position(|t| t.doc == id && t.diff.is_none()) {
+        match group.tabs.iter().position(|t| t.doc == id && t.diff.is_none() && t.md.is_none()) {
             Some(t) => {
                 group.active = t;
                 self.want_focus = true;
@@ -725,7 +730,7 @@ impl Editors {
             source.active -= 1;
         }
         let group = &mut self.groups[tg];
-        group.tabs.retain(|t| t.doc != tab.doc || t.diff.is_some() != tab.diff.is_some());
+        group.tabs.retain(|t| t.doc != tab.doc || t.diff.is_some() != tab.diff.is_some() || t.md.is_some() != tab.md.is_some());
         let pinned = group.tabs.iter().filter(|t| t.pinned).count();
         let at = tab_slot(at, tab.pinned, pinned, group.tabs.len());
         group.tabs.insert(at, tab);
@@ -872,6 +877,7 @@ impl Editors {
             }
             CloseEditor if self.groups[g].tabs[t].pinned => {}
             CloseEditor => self.request_close(g, t),
+            MarkdownPreview | MarkdownPreviewSide => self.open_preview(*cmd == MarkdownPreviewSide),
             SplitEditor => {
                 let sels = self.groups[g].tabs[t].sels.clone();
                 self.groups.insert(g + 1, Group::default());
@@ -1025,7 +1031,7 @@ impl Editors {
     pub fn pinned_paths(&self) -> Vec<(usize, PathBuf)> {
         let mut out = vec![];
         for (g, group) in self.groups.iter().enumerate() {
-            for tab in group.tabs.iter().filter(|t| t.pinned && t.diff.is_none()) {
+            for tab in group.tabs.iter().filter(|t| t.pinned && t.diff.is_none() && t.md.is_none()) {
                 out.extend(self.docs.get(&tab.doc).and_then(|d| d.buf.path.clone()).map(|path| (g, path)));
             }
         }
@@ -1116,7 +1122,7 @@ impl Editors {
     fn active_doc(&mut self) -> Option<(&mut Doc, &mut Tab)> {
         let (g, t) = self.active_tab()?;
         let tab = &mut self.groups[g].tabs[t];
-        Some((self.docs.get_mut(&tab.doc).filter(|doc| !doc.buf.read_only)?, tab))
+        Some((self.docs.get_mut(&tab.doc).filter(|doc| !doc.buf.read_only && tab.md.is_none())?, tab))
     }
 
     pub fn set_eol(&mut self, crlf: bool) {
@@ -1358,6 +1364,7 @@ impl Editors {
             }
         }
         ui.allocate_rect(rect, Sense::hover());
+        self.after_previews();
         let mut outer = false;
         for cmd in pending {
             outer |= matches!(cmd, Command::ToggleAi | Command::OpenPath(_));
@@ -1476,7 +1483,7 @@ impl Editors {
             }
             if let Some(mut doc) = self.docs.remove(&doc_id) {
                 let mut body = body;
-                if !self.special(ui, &mut body, theme, &mut doc, &tab) {
+                if !self.special(ui, g, &mut body, theme, settings, &mut doc, &mut tab) {
                     let area = self.diff_frame(ui, body, theme, &doc, &mut tab, pending);
                     self.view(ui, g, area, theme, settings, git, pending, &mut doc, &mut tab);
                     self.diff_after(ui, body, theme, settings, &mut tab, pending);
@@ -1506,13 +1513,14 @@ impl Editors {
         let active_group = g == self.active;
         let mut action = None;
         let last = g + 1 == self.groups.len();
-        let tabs_rect = Rect::from_min_max(strip.min, pos2(strip.right() - if last { 60.0 } else { 34.0 }, strip.bottom()));
+        let md = group.tabs.get(active).is_some_and(|t| t.md.is_none() && self.docs.get(&t.doc).is_some_and(|d| d.buf.path.as_deref().is_some_and(markdown::is_markdown)));
+        let tabs_rect = Rect::from_min_max(strip.min, pos2(strip.right() - if last { 60.0 } else { 34.0 } - if md { 26.0 } else { 0.0 }, strip.bottom()));
         ui.scope_builder(UiBuilder::new().max_rect(tabs_rect), |ui| {
             ScrollArea::horizontal().id_salt(("editor_tabs", g)).scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                 let faces: Vec<_> = group.tabs.iter().map(|tab| {
                     let buf = &self.docs[&tab.doc].buf;
-                    let dirty = buf.is_dirty();
-                    let title = tab.diff.as_ref().map_or(&buf.title, |d| &d.title).clone();
+                    let dirty = buf.is_dirty() && tab.md.is_none();
+                    let title = tab.diff.as_ref().map_or_else(|| if tab.md.is_some() { format!("Preview {}", buf.title) } else { buf.title.clone() }, |d| d.title.clone());
                     let mut name = LayoutJob::simple_singleline(title, FontId::proportional(13.0), Color32::PLACEHOLDER);
                     name.sections[0].format.italics = tab.preview && !dirty;
                     TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned }
@@ -1605,6 +1613,15 @@ impl Editors {
             ui.scope_builder(UiBuilder::new().max_rect(ai), |ui| {
                 if ui::icon_button(ui, theme, icons::ROBOT, 24.0, self.ai_open, "Toggle AI Panel (Ctrl+Alt+B)").clicked() {
                     pending.push(Command::ToggleAi);
+                }
+            });
+        }
+        if md {
+            let eye = Rect::from_center_size(pos2(strip.right() - if last { 69.0 } else { 43.0 }, strip.center().y), vec2(24.0, 24.0));
+            ui.scope_builder(UiBuilder::new().max_rect(eye), |ui| {
+                if ui::icon_button(ui, theme, icons::EYE, 24.0, false, "Open Markdown Preview (Ctrl+Shift+V)").clicked() {
+                    self.active = g;
+                    pending.push(Command::MarkdownPreview);
                 }
             });
         }
@@ -2359,6 +2376,7 @@ impl Editors {
             })
             .inner;
         let scroll_y = out.state.offset.y;
+        doc.top = visible.0;
         if let Some(d) = shown.as_mut() {
             (d.scroll, d.text_top, d.line_h) = (scroll_y, text_rect.top(), line_h);
         }

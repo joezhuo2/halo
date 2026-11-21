@@ -105,6 +105,8 @@ pub enum Command {
     ShowNextChange,
     ShowPrevChange,
     ToggleInlineDiff,
+    MarkdownPreview,
+    MarkdownPreviewSide,
     StageHunk,
     RevertHunk,
     UnstageHunk,
@@ -296,6 +298,8 @@ fn defaults() -> Vec<Binding> {
     let sa = Modifiers::SHIFT | Modifiers::ALT;
     vec![
         k(C, Key::F, FormatSelection),
+        k(NONE, Key::V, MarkdownPreviewSide),
+        e(cs, Key::V, MarkdownPreview),
         k(C, Key::I, ShowHover),
         g(cs, Key::M, ShowProblems),
         g(C, Key::T, GoToWorkspaceSymbol),
@@ -402,6 +406,7 @@ pub fn all() -> Vec<Command> {
         SelectAll, AddCursorAbove, AddCursorBelow, SelectNextOccurrence, SelectAllOccurrences, ExpandSelection, ShrinkSelection, CursorUndo,
         ShowExplorer, ShowSourceControl, ShowRunAndDebug, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
         ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff,
+        MarkdownPreview, MarkdownPreviewSide,
         GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, NextEditor, PrevEditor, GoBack, GoForward, ReopenClosed,
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
@@ -552,7 +557,7 @@ impl Command {
             SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence | SelectAllOccurrences | ExpandSelection
             | ShrinkSelection | CursorUndo => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
-            | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff => "View",
+            | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | MarkdownPreview | MarkdownPreviewSide => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
@@ -665,6 +670,8 @@ impl Command {
             ShowNextChange => "Show Next Change",
             ShowPrevChange => "Show Previous Change",
             ToggleInlineDiff => "Toggle Inline Diff View",
+            MarkdownPreview => "Markdown: Open Preview",
+            MarkdownPreviewSide => "Markdown: Open Preview to the Side",
             StageHunk => "Stage Hunk",
             RevertHunk => "Revert Hunk",
             UnstageHunk => "Unstage Hunk",
