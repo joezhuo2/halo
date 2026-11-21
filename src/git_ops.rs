@@ -85,7 +85,7 @@ fn parse_remotes(text: &str) -> Vec<Remote> {
 }
 
 pub fn operation(top: &Path) -> Result<Option<&'static str>, String> {
-    let dir = crate::wsl::local(top, exec(top, &["rev-parse", "--absolute-git-dir"])?.trim_end());
+    let dir = crate::wsl::local(top, super::read(top, &["rev-parse", "--absolute-git-dir"])?.trim_end());
     Ok(if dir.join("rebase-merge").is_dir() || dir.join("rebase-apply/rebasing").is_file() {
         Some("rebase")
     } else if dir.join("MERGE_HEAD").is_file() {
@@ -98,17 +98,23 @@ pub fn operation(top: &Path) -> Result<Option<&'static str>, String> {
 }
 
 pub fn load(top: &Path) -> Result<Details, String> {
-    let head = run(top, &["log", "-1", "--format=%H%x00%P%x00%B"]).unwrap_or_default();
+    let (operation, [head, stashes, tags, remotes, worktrees]) = std::thread::scope(|s| {
+        let operation = s.spawn(|| operation(top));
+        let log = ["log", "-1", "--format=%H%x00%P%x00%B"];
+        let rest = super::exec_all(top, [&log, &["stash", "list", STASH_FORMAT], &["tag", "--list"], &["remote", "-v"], &["worktree", "list", "--porcelain", "-z"]]);
+        (operation.join().unwrap_or_else(|_| Err("Git stopped unexpectedly.".into())), rest)
+    });
+    let head = head.unwrap_or_default();
     let mut fields = head.trim_end_matches(['\r', '\n']).splitn(3, '\0');
     Ok(Details {
         head: fields.next().unwrap_or_default().to_owned(),
         has_parent: fields.next().is_some_and(|s| !s.is_empty()),
         message: fields.next().unwrap_or_default().to_owned(),
-        operation: operation(top)?,
-        stashes: parse_stashes(&exec(top, &["stash", "list", STASH_FORMAT])?),
-        tags: exec(top, &["tag", "--list"])?.lines().map(str::to_owned).collect(),
-        remotes: parse_remotes(&exec(top, &["remote", "-v"])?),
-        worktrees: parse_worktrees(top, &exec(top, &["worktree", "list", "--porcelain", "-z"])?),
+        operation: operation?,
+        stashes: parse_stashes(&stashes?),
+        tags: tags?.lines().map(str::to_owned).collect(),
+        remotes: parse_remotes(&remotes?),
+        worktrees: parse_worktrees(top, &worktrees?),
     })
 }
 

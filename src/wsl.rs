@@ -23,7 +23,11 @@ pub fn shell_path(path: &Path) -> String {
 
 pub fn local(dir: &Path, shell_path: &str) -> PathBuf {
     match parse(dir) {
-        Some((distro, _)) => to_windows(&distro, shell_path),
+        Some((distro, _)) => {
+            let text = dir.to_string_lossy();
+            let host = text[2..].split('\\').next().unwrap_or_default();
+            PathBuf::from(format!(r"\\{host}\{distro}{}", shell_path.trim_end_matches('/').replace('/', "\\")))
+        }
         None => PathBuf::from(shell_path),
     }
 }
@@ -135,6 +139,8 @@ mod tests {
         assert_eq!(shell_path(&unc.join("src").join("a.rs")), "/home/joe/proj/src/a.rs");
         assert_eq!(shell_path(Path::new(r"C:\a b\c.py")), r"C:\a b\c.py");
         assert_eq!(local(unc, "/srv/x"), Path::new(r"\\wsl.localhost\Ubuntu\srv\x"));
+        assert_eq!(local(Path::new(r"\\wsl$\Ubuntu\home\joe"), "/home/joe/proj/"), Path::new(r"\\wsl$\Ubuntu\home\joe\proj"));
+        assert_eq!(local(Path::new(r"\\WSL$\Ubuntu"), "/"), Path::new(r"\\WSL$\Ubuntu"));
         assert_eq!(local(Path::new(r"C:\x"), "C:/x/y"), Path::new("C:/x/y"));
 
         let args = ["status".to_owned()];

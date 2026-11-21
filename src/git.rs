@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FileState {
@@ -95,7 +96,7 @@ struct Status {
 
 #[allow(clippy::large_enum_variant)]
 enum Msg {
-    Status(PathBuf, Option<Status>),
+    Status(PathBuf, Result<Status, String>),
     Diff(PathBuf, Vec<(usize, LineChange, bool)>),
     Done(Option<PathBuf>, Result<Option<PathBuf>, String>),
     Repos(PathBuf, Vec<PathBuf>, bool),
@@ -127,6 +128,7 @@ pub struct Git {
     cloned: Option<PathBuf>,
     busy: bool,
     error: Option<String>,
+    status_error: Option<String>,
     diffs: RefCell<HashMap<PathBuf, (Option<LineChanges>, bool)>>,
     page: u64,
     paging: bool,
@@ -138,6 +140,16 @@ pub fn run(dir: &Path, args: &[&str]) -> Option<String> {
 
 pub fn exec(dir: &Path, args: &[&str]) -> Result<String, String> {
     command("git", dir, args)
+}
+
+const READ_LIMIT: Duration = Duration::from_secs(30);
+
+pub fn read(dir: &Path, args: &[&str]) -> Result<String, String> {
+    command_within("git", dir, args, Some(READ_LIMIT))
+}
+
+pub fn exec_all<const N: usize>(dir: &Path, all: [&[&str]; N]) -> [Result<String, String>; N] {
+    std::thread::scope(|s| all.map(|args| s.spawn(move || read(dir, args))).map(|h| h.join().unwrap_or_else(|_| Err("Git stopped unexpectedly.".into()))))
 }
 
 pub fn tracked<T>(title: Option<String>, work: impl FnOnce(&dyn Fn(String)) -> Result<T, String>) -> Result<T, String> {
@@ -152,6 +164,37 @@ pub fn tracked<T>(title: Option<String>, work: impl FnOnce(&dyn Fn(String)) -> R
 }
 
 pub fn command(program: &str, dir: &Path, args: &[&str]) -> Result<String, String> {
+    command_within(program, dir, args, None)
+}
+
+fn output_within(mut command: std::process::Command, limit: Duration) -> std::io::Result<Option<std::process::Output>> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = vec![];
+            pipe.map(|mut p| p.read_to_end(&mut bytes));
+            bytes
+        })
+    };
+    let out = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let err = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    Ok(Some(std::process::Output { status, stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() }))
+}
+
+fn command_within(program: &str, dir: &Path, args: &[&str], limit: Option<Duration>) -> Result<String, String> {
     let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     let (program, args) = crate::wsl::wrap(Some(dir), program, &args);
     let shown = format!("{program} {}", args.join(" ").replace('\n', " "));
@@ -163,10 +206,19 @@ pub fn command(program: &str, dir: &Path, args: &[&str]) -> Result<String, Strin
         command.creation_flags(0x0800_0000);
     }
     let started = std::time::Instant::now();
-    let output = command.output().map_err(|e| {
+    let output = match limit {
+        Some(limit) => output_within(command, limit),
+        None => command.output().map(Some),
+    };
+    let output = output.map_err(|e| {
         crate::output::log("Git", format!("$ {shown} could not run: {e}"));
         format!("Could not run {program}: {e}")
     })?;
+    let Some(output) = output else {
+        let error = format!("{shown} did not finish within {} s and was stopped.", limit.unwrap_or_default().as_secs_f32());
+        crate::output::log("Git", &error);
+        return Err(error);
+    };
     let exit = output.status.code().map_or("none".to_owned(), |code| code.to_string());
     crate::output::log("Git", format!("$ {shown} ({} ms) exit {exit}", started.elapsed().as_millis()));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -381,17 +433,19 @@ fn find_repos(folder: &Path) -> (Vec<PathBuf>, bool) {
     (repos, own)
 }
 
-fn load_status(root: &Path, details: bool, count: usize) -> Option<Status> {
-    let top = crate::wsl::local(root, run(root, &["rev-parse", "--show-toplevel"])?.trim());
-    let text = run(root, &["--no-optional-locks", "status", "--porcelain=v1", "-z", "--branch", "--ignored"])?;
-    let (branch, tracking, entries) = parse_status(&text);
-    let branches = run(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]).unwrap_or_default();
-    let branches = branches.lines().map(str::to_owned).collect();
-    let log = log_page(root, tracking.is_some(), 0, count);
+fn load_status(root: &Path, details: bool, count: usize) -> Result<Status, String> {
+    let status = ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--branch", "--ignored"];
+    let n = count.to_string();
+    let log = ["log", "--topo-order", "-n", &n, LOG_FORMAT, "HEAD", "@{upstream}"];
+    let refs = ["for-each-ref", "--format=%(refname:short)", "refs/heads"];
+    let [top, text, branches, upstream_log, head_log, short] =
+        exec_all(root, [&["rev-parse", "--show-toplevel"], &status, &refs, &log, &log[..6], &["rev-parse", "--short", "HEAD"]]);
+    let top = crate::wsl::local(root, top?.trim());
+    let (branch, tracking, entries) = parse_status(&text?);
+    let branches = branches.unwrap_or_default().lines().map(str::to_owned).collect();
+    let log = parse_log(&tracking.and(upstream_log.ok()).or(head_log.ok()).unwrap_or_default());
     let more = log.len() >= count;
-    let branch = branch
-        .or_else(|| run(root, &["rev-parse", "--short", "HEAD"]).map(|s| s.trim().to_owned()))
-        .unwrap_or_default();
+    let branch = branch.or_else(|| short.ok().map(|s| s.trim().to_owned())).unwrap_or_default();
     let top_key = key(&top);
     let mut files = HashMap::new();
     let mut folders: HashMap<String, FileState> = HashMap::new();
@@ -420,7 +474,7 @@ fn load_status(root: &Path, details: bool, count: usize) -> Option<Status> {
         files.insert(full, state);
     }
     let details = details.then(|| ops::load(&top));
-    Some(Status { details, top, branch, tracking, branches, log, more, staged, unstaged, files, folders })
+    Ok(Status { details, top, branch, tracking, branches, log, more, staged, unstaged, files, folders })
 }
 
 impl Git {
@@ -448,6 +502,7 @@ impl Git {
             cloned: None,
             busy: false,
             error: None,
+            status_error: None,
             diffs: RefCell::new(HashMap::new()),
             page: 0,
             paging: false,
@@ -493,6 +548,7 @@ impl Git {
         self.shown = None;
         self.prs = None;
         self.error = None;
+        self.status_error = None;
         self.diffs.borrow_mut().clear();
         self.refresh(ctx);
     }
@@ -630,7 +686,7 @@ impl Git {
         let count = self.log().len().max(LOG_FIRST);
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let status = load_status(&root, details, count);
+            let status = std::panic::catch_unwind(|| load_status(&root, details, count)).unwrap_or_else(|_| Err("Git status stopped unexpectedly.".into()));
             let _ = tx.send(Msg::Status(root, status));
             ctx.request_repaint();
         });
@@ -644,6 +700,10 @@ impl Git {
                     self.running = false;
                     let current = self.root.as_ref() == Some(&root);
                     if current {
+                        self.status_error = status.as_ref().err().filter(|e| !e.contains("not a git repository")).cloned();
+                    }
+                    if current && self.status_error.is_none() {
+                        let status = status.ok();
                         self.repo_name = status
                             .as_ref()
                             .and_then(|s| s.top.file_name())
@@ -739,7 +799,7 @@ impl Git {
     }
 
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_deref().or(self.status_error.as_deref())
     }
 
     pub fn set_error(&mut self, error: String) {
@@ -892,8 +952,8 @@ impl Git {
         let (top, tx, ctx, path) = (status.top.clone(), self.tx.clone(), ctx.clone(), path.to_path_buf());
         std::thread::spawn(move || {
             let file = crate::wsl::shell_path(&path);
-            let all = run(&top, &["diff", "--no-color", "-U0", "HEAD", "--", &file]).unwrap_or_default();
-            let unstaged = run(&top, &["diff", "--no-color", "-U0", "--", &file]).unwrap_or_default();
+            let [all, unstaged] =
+                exec_all(&top, [&["diff", "--no-color", "-U0", "HEAD", "--", &file], &["diff", "--no-color", "-U0", "--", &file]]).map(Result::unwrap_or_default);
             let _ = tx.send(Msg::Diff(path, mark_staged(parse_diff(&all), &parse_diff(&unstaged))));
             ctx.request_repaint();
         });
@@ -987,7 +1047,26 @@ mod tests {
         assert_eq!(parse_diff(&diff), vec![(1, LineChange::Modified), (2, LineChange::Modified)]);
         let marked = mark_staged(parse_diff(&diff), &[(2, LineChange::Modified)]);
         assert_eq!(marked, vec![(1, LineChange::Modified, true), (2, LineChange::Modified, false)]);
-        assert!(load_status(&std::env::temp_dir(), false, 10).is_none() || std::env::temp_dir().join(".git").exists());
+        assert!(load_status(&std::env::temp_dir(), false, 10).is_err() || std::env::temp_dir().join(".git").exists());
+
+        let ctx = egui::Context::default();
+        let mut g = Git::new();
+        g.set_roots(vec![dir.clone()], &ctx);
+        g.wait(|g| !g.loading() && g.top().is_some());
+        assert_eq!(g.error(), None);
+        std::fs::write(dir.join(".git/index"), "broken").unwrap();
+        g.refresh(&ctx);
+        g.wait(|g| !g.loading() && g.error().is_some());
+        assert!(g.top().is_some(), "the last good status stays on screen");
+        std::fs::remove_file(dir.join(".git/index")).unwrap();
+        git(&["reset", "-q"]);
+        g.refresh(&ctx);
+        g.wait(|g| !g.loading() && g.error().is_none());
+
+        let nap = ["-c", "alias.nap=!sleep 5", "nap"];
+        let started = std::time::Instant::now();
+        let error = command_within("git", &dir, &nap, Some(Duration::from_millis(300))).unwrap_err();
+        assert!(error.contains("did not finish") && started.elapsed() < Duration::from_secs(4), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

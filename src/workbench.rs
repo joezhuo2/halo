@@ -1035,6 +1035,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn gutter_in(base: std::path::PathBuf, nested: bool) {
+        let dir = if nested { base.join("repo") } else { base.clone() };
+        let run_git = |args: &[&str]| crate::git::exec(&dir, args).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        run_git(&["init", "-q", "-b", "trunk"]);
+        run_git(&["config", "user.email", "t@example.com"]);
+        run_git(&["config", "user.name", "t"]);
+        let file = dir.join("src").join("a.cpp");
+        std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+        run_git(&["add", "."]);
+        run_git(&["commit", "-q", "-m", "init"]);
+
+        let (ctx, mut app) = headless();
+        app.cmds.push(Command::OpenPath(base.clone()));
+        app.cmds.push(Command::OpenPath(file.clone()));
+        let time = std::cell::Cell::new(0.0);
+        let settle = |app: &mut Halo, what: &str, done: &dyn Fn(&Halo) -> bool| {
+            for _ in 0..1000 {
+                time.set(time.get() + 0.05);
+                run(&ctx, app, time.get(), vec![]);
+                if done(app) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("timed out waiting for {what}: loading {}, error {:?}, top {:?}, active {:?}, changes {:?}", app.git.loading(), app.git.error(), app.git.top(), app.editors.active_path(), app.editors.active_path().and_then(|p| app.git.line_changes(&p)));
+        };
+        settle(&mut app, "the repository", &|app| app.git.top().is_some() && !app.git.loading() && app.editors.active_path().is_some());
+        app.git.request_details(&ctx);
+        run(&ctx, &mut app, time.get(), vec![egui::Event::Text("X".into())]);
+        app.cmds.push(Command::Save);
+        settle(&mut app, "the saved edit", &|_| std::fs::read_to_string(&file).unwrap().starts_with('X'));
+        let path = app.editors.active_path().unwrap();
+        settle(&mut app, "the gutter marks", &|app| !app.git.loading() && app.git.line_changes(&path).is_some_and(|c| !c.is_empty()));
+        assert_eq!(app.git.changes(false).len(), 1);
+        assert_eq!(app.git.state(&path), Some(crate::git::FileState::Modified));
+        for _ in 0..20 {
+            settle(&mut app, "a quiet refresh", &|app| !app.git.loading());
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn headless_shows_gutter_marks_after_an_edit_and_settles() {
+        gutter_in(std::env::temp_dir().join(format!("halo-gutter-{}", std::process::id())), false);
+        gutter_in(std::env::temp_dir().join(format!("halo-gutter-nested-{}", std::process::id())), true);
+    }
+
+    #[test]
+    #[ignore = "needs git inside the Ubuntu-24.04 WSL distro"]
+    fn headless_shows_gutter_marks_in_wsl() {
+        let dir = |name: &str| std::path::PathBuf::from(format!(r"\\wsl.localhost\Ubuntu-24.04\var\tmp\halo-{name}-{}", std::process::id()));
+        gutter_in(dir("gutter"), false);
+        gutter_in(dir("gutter-nested"), true);
+    }
+
     #[test]
     fn headless_opens_changes_from_source_control_whether_the_file_is_open_or_not() {
         open_changes_in(std::env::temp_dir().join(format!("halo-open-changes-{}", std::process::id())));
