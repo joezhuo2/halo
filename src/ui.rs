@@ -170,6 +170,136 @@ pub fn section_header(ui: &mut Ui, theme: &Theme, text: &str) {
     ui.add_space(4.0);
 }
 
+fn back_out(t: f32) -> f32 {
+    let u = t.clamp(0.0, 1.0) - 1.0;
+    1.0 + 2.701_58 * u * u * u + 1.701_58 * u * u
+}
+
+fn cubic_out(t: f32) -> f32 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
+fn skeleton_fraction(row: usize) -> f32 {
+    0.35 + 0.05 * ((row * 7 + 3) % 11) as f32
+}
+
+#[allow(dead_code)]
+pub fn spinner(ui: &Ui, center: egui::Pos2, radius: f32, color: Color32) {
+    if !ui.is_rect_visible(Rect::from_center_size(center, Vec2::splat(radius * 2.0 + 2.0))) {
+        return;
+    }
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    let start = (ui.input(|i| i.time) * 5.0 % std::f64::consts::TAU) as f32;
+    let points = (0..=16).map(|i| center + radius * Vec2::angled(start + i as f32 / 16.0 * 1.5 * std::f32::consts::PI)).collect();
+    ui.painter().add(egui::Shape::line(points, egui::Stroke::new(1.5, color)));
+}
+
+#[allow(dead_code)]
+pub fn shimmer(ui: &Ui, theme: &Theme, rect: Rect) {
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    ui.painter().rect_filled(rect, CornerRadius::same(3), mix(theme.panel, theme.text_dim, 0.18));
+    let phase = (ui.input(|i| i.time) % 1.2 / 1.2) as f32;
+    let band = (rect.width() * 0.4).max(24.0);
+    let x = rect.left() - band / 2.0 + phase * (rect.width() + band);
+    let mut mesh = egui::Mesh::default();
+    for (dx, color) in [(-band / 2.0, Color32::TRANSPARENT), (0.0, with_alpha(theme.text, 0.1)), (band / 2.0, Color32::TRANSPARENT)] {
+        mesh.colored_vertex(egui::pos2(x + dx, rect.top()), color);
+        mesh.colored_vertex(egui::pos2(x + dx, rect.bottom()), color);
+    }
+    for i in [0, 2] {
+        mesh.add_triangle(i, i + 1, i + 2);
+        mesh.add_triangle(i + 1, i + 3, i + 2);
+    }
+    ui.painter().with_clip_rect(rect).add(mesh);
+}
+
+#[allow(dead_code)]
+pub fn skeleton(ui: &mut Ui, theme: &Theme, rows: usize) {
+    for row in 0..rows {
+        let (_, r) = ui.allocate_space(egui::vec2(ui.available_width(), 22.0));
+        let width = (r.width() * skeleton_fraction(row)).min(r.width() - 12.0).max(0.0);
+        shimmer(ui, theme, Rect::from_min_size(egui::pos2(r.left() + 12.0, r.center().y - 4.0), egui::vec2(width, 8.0)));
+    }
+}
+
+#[allow(dead_code)]
+pub fn checkbox(ui: &mut Ui, theme: &Theme, value: &mut bool, text: impl Into<egui::WidgetText>) -> Response {
+    let galley = text.into().into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button);
+    let label = if galley.is_empty() { 0.0 } else { 8.0 + galley.size().x };
+    let (rect, mut resp) = ui.allocate_exact_size(egui::vec2(16.0 + label, galley.size().y.max(16.0)), Sense::click());
+    if resp.clicked() {
+        *value ^= true;
+        resp.mark_changed();
+    }
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, galley.text()));
+    let ctx = ui.ctx();
+    let border = ctx.animate_bool_with_time(resp.id.with("border"), resp.hovered() || *value, 0.2);
+    let fill = ctx.animate_bool_with_time(resp.id.with("fill"), *value, 0.35);
+    let mark = ctx.animate_bool_with_time(resp.id.with("mark"), *value && fill >= 0.34, if *value { 0.25 } else { 0.15 });
+    let press = anim(ui, resp.id.with("press"), resp.is_pointer_button_down_on());
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    let painter = ui.painter();
+    let s = 16.0 * (1.0 - 0.15 * press);
+    let center = egui::pos2(rect.left() + 8.0, rect.center().y);
+    let bx = Rect::from_center_size(center, Vec2::splat(s));
+    let scale = if *value { back_out(fill) } else { fill * fill };
+    if scale > 0.0 {
+        painter.rect_filled(Rect::from_center_size(center, Vec2::splat(s * scale)), s * scale / 4.0, theme.accent);
+    }
+    let edge = mix(mix(theme.border, theme.text_dim, 0.4), theme.accent, border);
+    painter.rect_stroke(bx, s / 4.0, egui::Stroke::new(1.5, edge), egui::StrokeKind::Inside);
+    if resp.has_focus() {
+        painter.rect_stroke(bx.expand(2.0), s / 4.0 + 2.0, egui::Stroke::new(1.0, theme.accent), egui::StrokeKind::Outside);
+    }
+    if mark > 0.0 {
+        let at = |x: f32, y: f32| bx.min + egui::vec2(x, y) * (s / 20.0);
+        let points = [at(5.0, 10.5), at(8.2, 13.7), at(15.0, 6.8)];
+        let width = 0.1 * s;
+        let mut clip = bx.expand(width);
+        clip.max.x = egui::lerp(points[0].x - width..=points[2].x + width, mark);
+        let painter = painter.with_clip_rect(clip);
+        painter.line(points.to_vec(), egui::Stroke::new(width, theme.panel));
+        painter.circle_filled(points[0], width / 2.0, theme.panel);
+        painter.circle_filled(points[2], width / 2.0, theme.panel);
+    }
+    painter.galley(egui::pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0), galley, theme.text);
+    resp
+}
+
+#[allow(dead_code)]
+pub fn caret(painter: &egui::Painter, center: egui::Pos2, open: f32, color: Color32) {
+    let galley = painter.layout_no_wrap(icons::CARET_RIGHT.to_owned(), FontId::proportional(11.0), color);
+    let pos = center - galley.size() / 2.0;
+    painter.add(egui::epaint::TextShape::new(pos, galley, color).with_angle_and_anchor(open * std::f32::consts::FRAC_PI_2, Align2::CENTER_CENTER));
+}
+
+#[allow(dead_code)]
+pub fn section(ui: &mut Ui, theme: &Theme, title: &str, open: &mut bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), Sense::click());
+    if resp.clicked() {
+        *open ^= true;
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::CollapsingHeader, ui.is_enabled(), title));
+    let h = anim(ui, resp.id.with("hover"), ui.rect_contains_pointer(rect));
+    let t = anim(ui, resp.id.with("open"), *open);
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, CornerRadius::ZERO, mix(theme.panel, theme.bar, 0.5 + 0.5 * h));
+    painter.hline(rect.x_range(), rect.top() + 0.5, egui::Stroke::new(1.0, theme.border));
+    caret(&painter, egui::pos2(rect.left() + 12.0, rect.center().y), t, theme.text);
+    painter.text(egui::pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, title, FontId::proportional(11.5), theme.text);
+    resp
+}
+
+#[allow(dead_code)]
+pub fn reveal(ui: &Ui, id: Id, open: bool) -> f32 {
+    cubic_out(ui.ctx().animate_bool_with_time(id, open, ANIM * 1.4))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +313,17 @@ mod tests {
         assert_eq!(at(54, 32), Color32::from_rgb(191, 224, 240));
         assert_eq!(logo_image(64, false).pixels[42 * 64 + 42], Color32::WHITE);
         assert!((0..64 * 64).all(|i| at(i % 64, i / 64) == at(63 - i % 64, i / 64) && at(i % 64, i / 64) == at(i % 64, 63 - i / 64)));
+    }
+
+    #[test]
+    fn eases_and_varies_skeleton_rows() {
+        for ease in [back_out, cubic_out] {
+            assert!(ease(0.0).abs() < 1e-5 && (ease(1.0) - 1.0).abs() < 1e-5);
+            assert!(ease(0.1) > 0.0 && ease(-1.0) == ease(0.0) && ease(2.0) == ease(1.0));
+        }
+        assert!((0..20).any(|i| back_out(i as f32 / 20.0) > 1.05));
+        assert!((0..20).all(|i| cubic_out(i as f32 / 20.0) <= cubic_out((i + 1) as f32 / 20.0)));
+        assert!((0..50).all(|row| (0.35..=0.85).contains(&skeleton_fraction(row))));
+        assert!((0..4).map(skeleton_fraction).any(|f| f != skeleton_fraction(0)));
     }
 }
