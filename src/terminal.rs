@@ -441,6 +441,9 @@ impl Terminal {
         let base = integration.dropped + term.history_size() as i64;
         let (from, (end, col)) = ((record.output? - base).max(term.topmost_line().0 as i64), record.end?);
         let end = end - base;
+        if end < term.topmost_line().0 as i64 || end > term.bottommost_line().0 as i64 {
+            return None;
+        }
         let last = match col {
             0 if end <= from => return Some(String::new()),
             0 => Point::new(Line(end as i32 - 1), term.last_column()),
