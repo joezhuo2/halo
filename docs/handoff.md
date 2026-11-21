@@ -6,7 +6,7 @@ Written 2026-11-20. Read [requirements.md](requirements.md), [decisions.md](deci
 
 - Repository: `C:\Users\Joe\Documents\halo`, remote `origin` = https://github.com/joezhuo2/halo.
 - Branches: `main` was created from `m1-shell` (all of milestone 1) and pushed. Milestone 2 is on `m2-scm` and milestone 3 on `m3-ai` (branched from `m2-scm`); neither is pushed or merged. Milestone 4 is on `m4-packaging` (branched from `m3-ai`), also not pushed.
-- Build: `cargo build` is warning-free. `cargo test` passes 28 tests.
+- Build: `cargo build` is warning-free. `cargo test` passes 31 tests.
 - Run: `cargo run --release`, or `target\release\halo.exe [folder-or-file]`.
 - Config written by the app: `%APPDATA%\halo\settings.json`, `session.json` and, once opened, `keybindings.json`. eframe also stores window size and position under `%APPDATA%\Halo`.
 
@@ -44,6 +44,14 @@ Mouse interactions were not exercised (only keyboard input and screenshots). Cov
 - Settings page: no control was changed through the page. Loading a grammar folder and a file association were never run. The notice toasts were never seen.
 - Run: tasks, the Run menu, a missing run command, and Run File inside a WSL folder were never run.
 - WSL: the Switch to WSL menu (distribution list, Reopen Folder, Open Folder, Reopen in Windows) was never opened; push, pull and pull requests inside WSL were never run.
+
+## Interface rework before 0.1.0 (2026-11-20)
+
+Checked by window capture in test mode: menu spacing, the logo, the source control toolbar, the terminal header, the status bar theme switch, the AI button beside Split Editor, and every Settings category.
+
+Not exercised, because posted mouse input is not delivered: dragging tabs to reorder or split, pinning from the tab menu, recording a key in Keyboard Shortcuts, the color pickers, and the theme fade. Tab moves and pins are covered by a unit test; the rest is untested.
+
+Pinned tabs are not saved in `session.json`. The AI toggle only shows in the tab strip, so it is hidden while no file is open (the View menu and `Ctrl+Alt+B` still work).
 
 ## Known gaps and limits
 

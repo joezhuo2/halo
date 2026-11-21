@@ -88,7 +88,7 @@ The API differs a lot from older egui. Check signatures in `~/.cargo/registry/sr
 
 ## Testing
 
-`cargo test` runs 28 tests, among them: the edit engine, highlighting, git parsing against a real temporary repository, explorer logic on a temp folder, key encoding and colour mapping for the terminal, a real shell round trip through the PTY, and a headless editor test that types through egui input.
+`cargo test` runs 31 tests, among them: the edit engine, highlighting, git parsing against a real temporary repository, explorer logic on a temp folder, key encoding and colour mapping for the terminal, a real shell round trip through the PTY, and a headless editor test that types through egui input.
 
 Rendering is checked by eye. During milestone 1 this was done by launching the debug build, sending keystrokes and capturing the window. Do not send keystrokes or capture the screen: if Halo is not in front they reach another application, and a test window in front takes the owner's own keys and clicks.
 

@@ -28,6 +28,18 @@ Create Halo: an ultra-lightweight clone of VS Code.
 - Put all instructions in `docs/` as Markdown files.
 - Stop once milestone 1 is finished and leave handoff notes; work continues in a new session. See [handoff.md](handoff.md).
 
+## Interface rework before 0.1.0 (2026-11-20)
+
+- More comfortable spacing and hover highlights for the title bar menus; consistent padding for buttons, text boxes, menus and dialogs across the app; thinner scroll bars.
+- The focused terminal is highlighted, not the last one clicked.
+- Tabs can be dragged to reorder or to create side by side views, and can be pinned.
+- A theme switch at the bottom right with a cheap animation; the AI button moves beside Split Editor.
+- Terminal cells with a background must not black out their glyphs (the Claude logo).
+- Settings follows the VS Code layout with tabs on the left: font and font size, auto save, a key binding editor for `keybindings.json`, every `settings.json` option by category, installed languages, and color options.
+- The icon is a rounded hexagon with a four-petal star, centered; the star is black when the system is in dark mode.
+- Action buttons must not overlap text, and row text needs padding before it is cut off.
+- The README follows the style of https://github.com/joezhuo2/tickr, with screenshots and a GIF tour.
+
 ## Standing rules from the owner's global instructions
 
 - Small commits, no secrets.
