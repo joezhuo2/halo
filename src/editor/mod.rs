@@ -132,6 +132,7 @@ struct TabFace {
     name: std::sync::Arc<egui::Galley>,
     dirty: bool,
     pinned: bool,
+    close: u8,
 }
 
 impl TabFace {
@@ -143,13 +144,26 @@ impl TabFace {
         Rect::from_center_size(pos2(r.right() - 18.0, r.center().y), vec2(20.0, 20.0))
     }
 
+    fn close_at(&self, r: Rect) -> Option<Rect> {
+        match self.close {
+            1 => Some(Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), vec2(20.0, 20.0))),
+            2 if !self.pinned => None,
+            _ => Some(Self::close_rect(r)),
+        }
+    }
+
     fn paint(&self, p: &egui::Painter, r: Rect, theme: &Theme, active: f32, hover: f32, close_hover: Option<f32>) {
-        p.text(pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, icons::FILE_CODE, FontId::proportional(14.0),
+        let shift = if self.close == 1 { 22.0 } else { 0.0 };
+        p.text(pos2(r.left() + 14.0 + shift, r.center().y), Align2::LEFT_CENTER, icons::FILE_CODE, FontId::proportional(14.0),
             ui::mix(theme.text_dim, theme.accent, active * 0.8));
-        let text_pos = pos2(r.left() + 34.0, r.center().y - self.name.size().y / 2.0);
+        let text_pos = pos2(r.left() + 34.0 + shift, r.center().y - self.name.size().y / 2.0);
         p.galley(text_pos, self.name.clone(), ui::mix(theme.text_dim, theme.text, active.max(hover)));
-        let close = Self::close_rect(r);
-        if self.dirty && close_hover.is_none() {
+        let close = self.close_at(r).unwrap_or_else(|| Self::close_rect(r));
+        if self.close == 2 && !self.pinned {
+            if self.dirty {
+                p.circle_filled(close.center(), 4.0, ui::mix(theme.text_dim, theme.text, active));
+            }
+        } else if self.dirty && close_hover.is_none() {
             p.circle_filled(close.center(), 4.0, ui::mix(theme.text_dim, theme.text, active));
         } else if self.pinned || hover.max(active) > 0.0 {
             let ch = close_hover.unwrap_or_default();
@@ -607,6 +621,7 @@ impl Editors {
     }
 
     fn place(&mut self, id: u64, preview: bool) {
+        let preview = preview && self.config.enable_preview;
         let group = &mut self.groups[self.active];
         let clean = |tab: &Tab| tab.preview && !self.docs.get(&tab.doc).is_some_and(|d| d.buf.is_dirty());
         let Some(at) = group.tabs.iter().position(clean).filter(|_| preview) else {
@@ -1462,7 +1477,12 @@ impl Editors {
                     let dirty = buf.is_dirty();
                     let mut name = LayoutJob::simple_singleline(buf.title.clone(), FontId::proportional(13.0), Color32::PLACEHOLDER);
                     name.sections[0].format.italics = tab.preview && !dirty;
-                    TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned }
+                    let close = match self.config.tab_close_button.as_str() {
+                        "left" => 1,
+                        "off" => 2,
+                        _ => 0,
+                    };
+                    TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned, close }
                 }).collect();
                 let widths: Vec<_> = faces.iter().map(|f| (f.width(), f.pinned)).collect();
                 let pos = ui.ctx().pointer_latest_pos().filter(|p| strip.contains(*p));
@@ -1497,7 +1517,7 @@ impl Editors {
                     let pinned = face.pinned;
                     let a = ui::anim(ui, id.with("active"), t == active);
                     let h = ui::anim(ui, id.with("hover"), resp.hovered());
-                    let over_close = resp.hovered() && ui.rect_contains_pointer(TabFace::close_rect(r));
+                    let over_close = resp.hovered() && face.close_at(r).is_some_and(|c| ui.rect_contains_pointer(c));
                     let ch = ui::anim(ui, id.with("close"), over_close);
                     let p = ui.painter();
                     p.rect_filled(r, CornerRadius::ZERO, ui::mix(ui::mix(theme.panel, theme.hover, h * 0.5), theme.bg, a));

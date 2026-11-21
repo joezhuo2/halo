@@ -60,6 +60,12 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("minimap_side", "editor.minimap.side"),
     ("detect_indentation", "editor.detectIndentation"),
     ("hot_exit", "files.hotExit"),
+    ("tab_close_button", "workbench.editor.tabCloseButton"),
+    ("enable_preview", "workbench.editor.enablePreview"),
+    ("confirm_delete", "explorer.confirmDelete"),
+    ("explorer_sort", "explorer.sortOrder"),
+    ("zoom_level", "window.zoomLevel"),
+    ("restore_session", "window.restoreWindows"),
     ("auto_update", "update.mode"),
 ];
 
@@ -95,6 +101,7 @@ pub fn to_halo(key: &str, value: Value) -> Value {
         ("auto_save", Value::Bool(b)) => json!(if b { "afterDelay" } else { "off" }),
         ("auto_close" | "auto_close_quotes" | "auto_surround", Value::String(s)) => json!(s != "never"),
         ("hot_exit", Value::String(s)) => json!(s != "off"),
+        ("restore_session", Value::String(s)) => json!(s != "none"),
         ("auto_update", Value::String(s)) => json!(!matches!(s.as_str(), "none" | "manual")),
         ("inlay_hints", Value::String(s)) => json!(s.starts_with("on")),
         ("semantic_highlighting", Value::String(_)) => json!(true),
@@ -117,6 +124,7 @@ pub fn to_vscode(key: &str, value: Value) -> Value {
     match key {
         "auto_close" | "auto_close_quotes" | "auto_surround" => on(&value, "languageDefined", "never"),
         "hot_exit" => on(&value, "onExit", "off"),
+        "restore_session" => on(&value, "all", "none"),
         "auto_update" => on(&value, "default", "none"),
         "inlay_hints" => on(&value, "on", "off"),
         "associations" => match value {

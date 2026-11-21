@@ -84,13 +84,27 @@ pub struct Explorer {
     scroll_to: Option<PathBuf>,
     edit: Option<Edit>,
     confirm_delete: Option<PathBuf>,
+    pub confirm: bool,
+    pub sort: String,
     error: Option<String>,
     focused: bool,
     collapsed: bool,
     animation: Option<FolderAnimation>,
 }
 
-fn read_dir(dir: &Path) -> Vec<Entry> {
+fn sort_entries(entries: &mut [Entry], order: &str) {
+    let modified = |e: &Entry| std::cmp::Reverse(std::fs::metadata(&e.path).and_then(|m| m.modified()).ok());
+    let ext = |e: &Entry| Path::new(&e.name).extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+    match order {
+        "mixed" => entries.sort_by_cached_key(|e| e.name.to_lowercase()),
+        "filesFirst" => entries.sort_by_cached_key(|e| (e.is_dir, e.name.to_lowercase())),
+        "type" => entries.sort_by_cached_key(|e| (!e.is_dir, ext(e), e.name.to_lowercase())),
+        "modified" => entries.sort_by_cached_key(|e| (!e.is_dir, modified(e), e.name.to_lowercase())),
+        _ => entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase())),
+    }
+}
+
+fn read_dir(dir: &Path, order: &str) -> Vec<Entry> {
     let Ok(reader) = std::fs::read_dir(dir) else { return vec![] };
     let mut entries: Vec<Entry> = reader
         .flatten()
@@ -105,7 +119,7 @@ fn read_dir(dir: &Path) -> Vec<Entry> {
             Some(Entry { path, name, is_dir })
         })
         .collect();
-    entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase()));
+    sort_entries(&mut entries, order);
     entries
 }
 
@@ -179,6 +193,8 @@ impl Explorer {
             scroll_to: None,
             edit: None,
             confirm_delete: None,
+            confirm: true,
+            sort: String::new(),
             error: None,
             focused: false,
             collapsed: false,
@@ -187,9 +203,11 @@ impl Explorer {
     }
 
     pub fn set_root(&mut self, root: Option<PathBuf>) {
+        let prefs = (std::mem::take(&mut self.sort), self.confirm);
         *self = Self::new();
+        (self.sort, self.confirm) = prefs;
         if let Some(root) = &root {
-            self.children.insert(root.clone(), read_dir(root));
+            self.children.insert(root.clone(), read_dir(root, &self.sort));
         }
         self.root = root;
     }
@@ -198,7 +216,7 @@ impl Explorer {
         let loaded: Vec<PathBuf> = self.children.keys().cloned().collect();
         for dir in loaded {
             if dir.is_dir() {
-                self.children.insert(dir.clone(), read_dir(&dir));
+                self.children.insert(dir.clone(), read_dir(&dir, &self.sort));
             } else {
                 self.children.remove(&dir);
                 self.expanded.remove(&dir);
@@ -213,7 +231,7 @@ impl Explorer {
 
     fn expand(&mut self, dir: &Path) {
         if !self.children.contains_key(dir) {
-            self.children.insert(dir.to_path_buf(), read_dir(dir));
+            self.children.insert(dir.to_path_buf(), read_dir(dir, &self.sort));
         }
         self.expanded.insert(dir.to_path_buf());
         self.dirty = true;
@@ -737,8 +755,8 @@ impl Explorer {
         }
         if let Some(path) = self.confirm_delete.clone() {
             let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned();
-            let mut choice = None;
-            let modal = ui::modal(ui.ctx(), "explorer_delete").show(ui.ctx(), |ui| {
+            let mut choice = (!self.confirm).then_some(true);
+            let modal = choice.is_none().then(|| ui::modal(ui.ctx(), "explorer_delete").show(ui.ctx(), |ui| {
                 ui::outline(ui);
                 ui.set_width(340.0);
                 ui.heading("Delete");
@@ -752,8 +770,8 @@ impl Explorer {
                         choice = Some(false);
                     }
                 });
-            });
-            if modal.should_close() {
+            }));
+            if modal.is_some_and(|m| m.should_close()) {
                 choice = Some(false);
             }
             if let Some(delete) = choice {
@@ -840,6 +858,17 @@ mod tests {
         assert_eq!(cmds[0], Command::OpenPath(dir.join("made.txt")));
 
         assert!(validate("a/b").is_err() && validate("").is_err() && validate("ok.rs").is_ok());
+        let entry = |name: &str, is_dir| Entry { path: dir.join(name), name: name.into(), is_dir };
+        let mut list = vec![entry("b.rs", false), entry("Z", true), entry("a.txt", false), entry("c.rs", false)];
+        let names = |list: &[Entry]| list.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
+        sort_entries(&mut list, "mixed");
+        assert_eq!(names(&list), ["a.txt", "b.rs", "c.rs", "Z"]);
+        sort_entries(&mut list, "filesFirst");
+        assert_eq!(names(&list), ["a.txt", "b.rs", "c.rs", "Z"]);
+        sort_entries(&mut list, "type");
+        assert_eq!(names(&list), ["Z", "b.rs", "c.rs", "a.txt"]);
+        sort_entries(&mut list, "default");
+        assert_eq!(names(&list), ["Z", "a.txt", "b.rs", "c.rs"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

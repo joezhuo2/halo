@@ -56,6 +56,7 @@ pub struct Halo {
     focused: bool,
     pub chord: Option<egui::KeyboardShortcut>,
     auto_save_focus: (bool, bool),
+    zoom_level: Option<f32>,
     theme_fade: Option<(f64, egui::Color32)>,
     icon_dark: Option<bool>,
     update: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
@@ -102,6 +103,7 @@ impl Halo {
             focused: true,
             chord: None,
             auto_save_focus: (false, true),
+            zoom_level: None,
             theme_fade: None,
             icon_dark: None,
             update: None,
@@ -114,10 +116,12 @@ impl Halo {
         }
 
         let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().or_else(|_| std::path::absolute(&p)).ok()).map(strip_unc);
+        let restore = app.settings.restore_session;
+        let last = app.session.folder.clone().filter(|f| restore && f.is_dir());
         let (folder, files) = match arg {
             Some(path) if path.is_dir() => (Some(path), vec![]),
-            Some(path) => (app.session.folder.clone().filter(|f| f.is_dir()), vec![path]),
-            None => (app.session.folder.clone().filter(|f| f.is_dir()), app.session.files.clone()),
+            Some(path) => (last, vec![path]),
+            None => (last, if restore { app.session.files.clone() } else { vec![] }),
         };
         let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
         app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
@@ -172,6 +176,15 @@ impl Halo {
     }
 
     pub(crate) fn apply_settings(&mut self, ctx: &egui::Context) {
+        if self.zoom_level != Some(self.settings.zoom_level) {
+            self.zoom_level = Some(self.settings.zoom_level);
+            ctx.set_zoom_factor(1.2f32.powf(self.settings.zoom_level).clamp(0.5, 3.0));
+        }
+        self.explorer.confirm = self.settings.confirm_delete;
+        if self.explorer.sort != self.settings.explorer_sort {
+            self.explorer.sort = self.settings.explorer_sort.clone();
+            self.explorer.refresh();
+        }
         self.theme = Theme::of(&self.settings);
         self.theme.apply(ctx);
         if self.font != self.settings.font_family {
