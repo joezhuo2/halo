@@ -50,3 +50,12 @@
 - Tabs: preview tabs, the recent switcher, reopen closed editor, back and forward.
 - Auto update (`update.rs`): installs the latest release at startup through `curl`, `tar` and the system hash tool. Never run against a real newer release.
 - Not built: folding ranges and selection ranges from language servers, CSS Emmet, keyboard box selection, visual-row Home and End under word wrap, searching unsaved buffers in the search view, pickers in the command list, and encodings beyond UTF-8, UTF-16 and ISO 8859-1.
+
+## M7: interface polish (0.1.3, done)
+
+- Shared loaders and animation helpers in `ui.rs`: spinner, shimmer, skeleton rows, an animated checkbox, a collapsible section header and a reveal easing.
+- Side bar: the outline is always collapsible with loading and empty states, and a timeline of the commits of the active file (`timeline.rs`).
+- Source control: collapsible and resizable sections. Explorer: collapse animations.
+- Editor: clickable links in hover text, notices that expire, a shimmer for loading reference counts, and saving keeps a preview tab.
+- Settings: keyboard shortcuts grouped by category.
+- Not built: skeleton rows in the explorer (folders are listed synchronously), resizing the outline and timeline, and timeline diffs for files outside the open repository.

@@ -151,6 +151,8 @@ file extension.
 - **Symbols:** `Ctrl+T` searches the workspace, the **Outline** section under
   the explorer lists the active file, and the breadcrumbs above the text show
   the path and the enclosing symbols.
+- **Timeline:** the section under the outline lists the commits that changed
+  the active file. Click one to open its diff of the file.
 - **Semantic highlighting**, **inlay hints** for inferred types and parameter
   names, and **call** (`Shift+Alt+H`) and **type hierarchy** in the peek list.
 - Server messages go to the **Output** panel, and the status bar shows what
@@ -171,6 +173,8 @@ Each of these can be switched off under **Settings > Text Editor**.
   `Ctrl+Enter`.
 - Switch or create branches, push, pull, fetch, stash and pop, and
   synchronize from the status bar.
+- The changes, pull requests and commits sections can be minimized, and
+  resized by dragging the line between them.
 - **Commit graph** with lanes and branch labels. Click a commit to list its
   files, and a file to open its diff.
 - **Pull requests** through the `gh` CLI: list, create, check out, approve,
@@ -229,7 +233,7 @@ what it searches:
 | Terminal | Default profile and the list of profiles |
 | Run and Tasks | The run command for each file extension, and named tasks |
 | Languages | Grammars folder, file associations, language servers and their commands, and the installed languages |
-| Keyboard Shortcuts | Every command with its key |
+| Keyboard Shortcuts | Every command with its key, grouped by category |
 
 To change a key, click it in **Keyboard Shortcuts** and press the new one.
 Escape cancels, the cross removes the key and the arrow restores the default.
