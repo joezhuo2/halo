@@ -339,6 +339,8 @@ fn terminal_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings) {
             ui.selectable_value(&mut s.default_terminal, name.clone(), name);
         }
     });
+    let about = "Let PowerShell, bash and zsh report their prompts, commands, exit codes and folder, for command marks and navigation.";
+    toggle(ui, theme, "Terminal", "Shell Integration", about, &mut s.shell_integration);
     item(ui, theme, "Terminal", "Profiles", "The name, program and arguments of each shell.");
     let mut remove = None;
     grid(ui, "settings_profiles", 4, |ui| {

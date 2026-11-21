@@ -146,6 +146,8 @@ struct TabFace {
     name: std::sync::Arc<egui::Galley>,
     dirty: bool,
     pinned: bool,
+    icon: &'static str,
+    tint: Option<Color32>,
 }
 
 impl TabFace {
@@ -158,9 +160,9 @@ impl TabFace {
     }
 
     fn paint(&self, p: &egui::Painter, r: Rect, theme: &Theme, active: f32, hover: f32, close_hover: Option<f32>) {
-        if !crate::icon_theme::paint(p, pos2(r.left() + 21.0, r.center().y), 14.0, self.name.text(), crate::icon_theme::Kind::File, 1.0) {
-            p.text(pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, icons::FILE_CODE, FontId::proportional(14.0),
-                ui::mix(theme.text_dim, theme.accent, active * 0.8));
+        if self.icon != icons::FILE_CODE || !crate::icon_theme::paint(p, pos2(r.left() + 21.0, r.center().y), 14.0, self.name.text(), crate::icon_theme::Kind::File, 1.0) {
+            p.text(pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, self.icon, FontId::proportional(14.0),
+                self.tint.unwrap_or(ui::mix(theme.text_dim, theme.accent, active * 0.8)));
         }
         let text_pos = pos2(r.left() + 34.0, r.center().y - self.name.size().y / 2.0);
         p.galley(text_pos, self.name.clone(), ui::mix(theme.text_dim, theme.text, active.max(hover)));
@@ -246,6 +248,8 @@ pub struct Editors {
     merges: merge_view::Merges,
     large_bytes: u64,
     previews: Vec<(usize, u64, markdown::Out)>,
+    pub terminals: HashMap<u64, crate::terminal::Terminal>,
+    renaming: Option<(u64, String, bool)>,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -566,7 +570,32 @@ impl Editors {
             merges: Default::default(),
             large_bytes: 20 << 20,
             previews: vec![],
+            terminals: HashMap::new(),
+            renaming: None,
         }
+    }
+
+    pub fn add_terminal(&mut self, terminal: crate::terminal::Terminal) {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.terminals.insert(id, terminal);
+        self.add_tab(id, vec![]);
+    }
+
+    pub fn active_terminal(&mut self) -> Option<&mut crate::terminal::Terminal> {
+        let (g, t) = self.active_tab()?;
+        self.terminals.get_mut(&self.groups[g].tabs[t].doc)
+    }
+
+    pub fn take_terminal(&mut self) -> Option<crate::terminal::Terminal> {
+        let (g, t) = self.active_tab()?;
+        let terminal = self.terminals.remove(&self.groups[g].tabs[t].doc)?;
+        self.close_tab(g, t);
+        Some(terminal)
+    }
+
+    pub fn terminal_focused(&self) -> bool {
+        self.focused && self.active_tab().is_some_and(|(g, t)| self.terminals.contains_key(&self.groups[g].tabs[t].doc))
     }
 
     fn active_tab(&self) -> Option<(usize, usize)> {
@@ -641,6 +670,9 @@ impl Editors {
     }
 
     fn drop_doc(&mut self, doc: u64) {
+        if self.references(doc) == 0 {
+            self.terminals.remove(&doc);
+        }
         if self.references(doc) == 0
             && let Some(path) = self.docs.remove(&doc).and_then(|d| d.buf.path)
         {
@@ -861,6 +893,18 @@ impl Editors {
                 return true;
             }
             _ => {}
+        }
+        if let Some((g, t)) = self.active_tab().filter(|_| !matches!(cmd, CloseEditor | NextEditor | PrevEditor | KeepEditor))
+            && let Some(terminal) = self.terminals.get_mut(&self.groups[g].tabs[t].doc)
+        {
+            match cmd {
+                KillTerminal => self.close_tab(g, t),
+                RenameTerminal => self.renaming = Some((self.groups[g].tabs[t].doc, terminal.title(), true)),
+                _ => {
+                    terminal.exec(cmd, ctx);
+                }
+            }
+            return true;
         }
         if self.merge_exec(cmd, ctx) || self.diff_exec(cmd, ctx) {
             self.last_input = ctx.input(|i| i.time);
@@ -1354,6 +1398,14 @@ impl Editors {
             self.drag = None;
         }
         self.active = self.active.min(self.groups.len().saturating_sub(1));
+        let ended: Vec<u64> = self.terminals.iter().filter(|(_, t)| !t.is_alive()).map(|(id, _)| *id).collect();
+        for id in ended {
+            self.terminals.remove(&id);
+            for group in &mut self.groups {
+                group.tabs.retain(|t| t.doc != id);
+                group.active = group.active.min(group.tabs.len().saturating_sub(1));
+            }
+        }
         self.tidy = (settings.trim_trailing_whitespace, settings.insert_final_newline);
         self.history.context = settings.local_history.then(|| ui.ctx().clone());
         self.large_bytes = settings.large_mb << 20;
@@ -1418,7 +1470,7 @@ impl Editors {
                         for (index, doc) in order.iter().enumerate() {
                             let (r, row) = ui.allocate_exact_size(vec2(320.0, 24.0), Sense::hover());
                             ui::row_bg(ui, theme, r, row.id, false, index == at);
-                            let title = self.docs.get(doc).map(|d| d.buf.title.as_str()).unwrap_or_default();
+                            let title = self.docs.get(doc).map(|d| d.buf.title.clone()).or_else(|| self.terminals.get(doc).map(|t| t.title())).unwrap_or_default();
                             ui.painter().with_clip_rect(r).text(r.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(13.0), theme.text);
                         }
                     });
@@ -1481,7 +1533,8 @@ impl Editors {
         let strip = Rect::from_min_size(rect.min, vec2(rect.width(), TAB_H));
         self.tab_strip(ui, g, strip, theme, pending);
         let mut body = Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max);
-        if settings.breadcrumbs && !self.groups[g].tabs.is_empty() {
+        let terminal = self.groups[g].tabs.get(self.groups[g].active).is_some_and(|tab| self.terminals.contains_key(&tab.doc));
+        if settings.breadcrumbs && !self.groups[g].tabs.is_empty() && !terminal {
             let bar = Rect::from_min_size(body.min, vec2(body.width(), 22.0));
             self.breadcrumbs(ui, bar, theme, g);
             body.min.y = bar.bottom();
@@ -1508,6 +1561,17 @@ impl Editors {
                     self.merge_after(ui, body, theme, settings, &mut doc, &mut tab);
                 }
                 self.docs.insert(doc_id, doc);
+            } else if let Some(terminal) = self.terminals.get_mut(&doc_id) {
+                if g == self.active && std::mem::take(&mut self.want_focus) {
+                    terminal.focus();
+                }
+                ui.painter().rect_filled(body, CornerRadius::ZERO, theme.panel);
+                ui.scope_builder(UiBuilder::new().max_rect(body).id_salt(("editor_terminal", doc_id)), |ui| {
+                    terminal.ui(ui, theme, settings.font_size, pending);
+                });
+                if terminal.has_focus() {
+                    (self.focused, self.active) = (true, g);
+                }
             }
             self.groups[g].tabs[t] = tab;
         }
@@ -1537,17 +1601,27 @@ impl Editors {
         ui.scope_builder(UiBuilder::new().max_rect(tabs_rect), |ui| {
             ScrollArea::horizontal().id_salt(("editor_tabs", g)).scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                 let faces: Vec<_> = group.tabs.iter().map(|tab| {
-                    let buf = &self.docs[&tab.doc].buf;
-                    let dirty = buf.is_dirty() && tab.md.is_none();
-                    let title = match (&tab.diff, &tab.merge) {
-                        (Some(d), _) => d.title.clone(),
-                        (_, Some(m)) => m.title.clone(),
-                        _ if tab.md.is_some() => format!("Preview {}", buf.title),
-                        _ => buf.title.clone(),
+                    let terminal = self.terminals.get(&tab.doc);
+                    let (title, dirty) = match (terminal, self.docs.get(&tab.doc)) {
+                        (Some(terminal), _) => (terminal.title(), false),
+                        (_, Some(doc)) => {
+                            let title = match (&tab.diff, &tab.merge) {
+                                (Some(d), _) => d.title.clone(),
+                                (_, Some(m)) => m.title.clone(),
+                                _ if tab.md.is_some() => format!("Preview {}", doc.buf.title),
+                                _ => doc.buf.title.clone(),
+                            };
+                            (title, doc.buf.is_dirty() && tab.md.is_none())
+                        }
+                        _ => (String::new(), false),
                     };
                     let mut name = LayoutJob::simple_singleline(title, FontId::proportional(13.0), Color32::PLACEHOLDER);
                     name.sections[0].format.italics = tab.preview && !dirty;
-                    TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned }
+                    let (icon, tint) = match terminal {
+                        Some(terminal) => (icons::TERMINAL_WINDOW, Some(terminal.tint(theme)).filter(|c| *c != theme.text_dim)),
+                        None => (icons::FILE_CODE, None),
+                    };
+                    TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned, icon, tint }
                 }).collect();
                 let widths: Vec<_> = faces.iter().map(|f| (f.width(), f.pinned)).collect();
                 let pos = ui.ctx().pointer_latest_pos().filter(|p| strip.contains(*p));
@@ -1592,7 +1666,22 @@ impl Editors {
                         let color = if active_group { theme.accent } else { theme.text_dim };
                         p.rect_filled(line, CornerRadius::ZERO, ui::with_alpha(color, a));
                     }
-                    face.paint(p, r, theme, a, h, over_close.then_some(ch));
+                    match self.renaming.as_mut().filter(|rename| rename.0 == tab.doc) {
+                        Some((_, text, focus)) => {
+                            let field = ui.put(r.shrink2(vec2(6.0, 5.0)), TextEdit::singleline(text).margin(ui::FIELD));
+                            if std::mem::take(focus) {
+                                field.request_focus();
+                            }
+                            if field.lost_focus() {
+                                if let Some(terminal) = self.terminals.get_mut(&tab.doc).filter(|_| !ui.input(|i| i.key_pressed(Key::Escape))) {
+                                    terminal.label = Some(text.trim().to_owned()).filter(|t| !t.is_empty());
+                                }
+                                self.renaming = None;
+                                self.want_focus = true;
+                            }
+                        }
+                        None => face.paint(p, r, theme, a, h, over_close.then_some(ch)),
+                    }
                     if resp.clicked() {
                         action = Some(match (over_close, pinned) {
                             (true, true) => TabAction::Pin(t),
@@ -1606,9 +1695,14 @@ impl Editors {
                     if resp.middle_clicked() && !pinned {
                         action = Some(TabAction::Close(t));
                     }
-                    let buf = &self.docs[&tab.doc].buf;
-                    let svg = matches!(self.docs[&tab.doc].content, Content::Image(_)) && buf.path.as_deref().and_then(Path::extension).is_some_and(|e| e.eq_ignore_ascii_case("svg"));
-                    let tip = buf.path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| buf.title.clone());
+                    let svg = self.docs.get(&tab.doc).is_some_and(|d| {
+                        matches!(d.content, Content::Image(_)) && d.buf.path.as_deref().and_then(Path::extension).is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+                    });
+                    let tip = match (self.terminals.get(&tab.doc), self.docs.get(&tab.doc)) {
+                        (Some(terminal), _) => terminal.cwd().map_or_else(|| terminal.title(), |dir| dir.display().to_string()),
+                        (_, Some(doc)) => doc.buf.path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| doc.buf.title.clone()),
+                        _ => String::new(),
+                    };
                     resp.on_hover_text(tip).context_menu(|ui| {
                         ui.set_min_width(160.0);
                         ui::menu_pad(ui);
@@ -1627,6 +1721,23 @@ impl Editors {
                         if svg && ui.button("Reopen as Text").clicked() {
                             action = Some(TabAction::ReopenText(t));
                             ui.close();
+                        }
+                        if let Some(terminal) = self.terminals.get_mut(&tab.doc) {
+                            ui.separator();
+                            if ui.button("Rename...").clicked() {
+                                self.renaming = Some((tab.doc, terminal.title(), true));
+                            }
+                            ui.menu_button("Change Color", |ui| {
+                                for (color, name) in crate::terminal::color_names() {
+                                    if ui.button(name).clicked() {
+                                        terminal.color = color;
+                                    }
+                                }
+                            });
+                            if ui.button("Move Terminal into Panel").clicked() {
+                                action = Some(TabAction::Activate(t));
+                                pending.push(Command::MoveTerminalToPanel);
+                            }
                         }
                     });
                 }
@@ -1700,7 +1811,7 @@ impl Editors {
             }
             Some(TabAction::ReopenText(t)) => self.reopen_text(self.groups[g].tabs[t].doc),
             Some(TabAction::CopyPath(t)) => {
-                if let Some(path) = &self.docs[&self.groups[g].tabs[t].doc].buf.path {
+                if let Some(path) = self.docs.get(&self.groups[g].tabs[t].doc).and_then(|doc| doc.buf.path.as_ref()) {
                     ui.ctx().copy_text(path.to_string_lossy().into_owned());
                 }
             }
@@ -2937,6 +3048,39 @@ end", "word ".repeat(100)))], &settings);
         assert_eq!(editors.pinned_paths(), vec![(0, files[1].clone()), (0, files[0].clone()), (1, files[2].clone())]);
         assert!(editors.groups.iter().flat_map(|g| &g.tabs).all(|t| t.pinned && !t.preview));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn moves_a_terminal_into_the_editor_area_and_back() {
+        let ctx = egui::Context::default();
+        let shell = if cfg!(windows) { "cmd.exe" } else { "sh" };
+        let profile = crate::settings::ShellProfile { name: "test".into(), program: shell.into(), args: vec![] };
+        let settings = Settings { terminals: vec![profile], default_terminal: "test".into(), ..Settings::default() };
+        let mut panel = crate::terminal::BottomPanel::new();
+        panel.exec(&Command::NewTerminal, &settings, None, &ctx);
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        editors.add_terminal(panel.take_active().unwrap());
+        assert!(panel.take_active().is_none());
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        assert!(editors.terminal_focused() && editors.has_focus());
+        assert!(editors.exec(&Command::Save, &settings, &ctx) && editors.exec(&Command::GoToLine, &settings, &ctx));
+        assert!(editors.goto.is_none() && !editors.find.open && editors.active_path().is_none());
+        editors.exec(&Command::SetTerminalColor(Some(4)), &settings, &ctx);
+        assert_eq!(editors.active_terminal().map(|t| t.color), Some(Some(4)));
+        editors.drop_tab((0, 1), DropAt::Split(0, true));
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        assert_eq!((editors.groups.len(), editors.groups[1].tabs.len(), editors.active), (2, 1, 1));
+        let terminal = editors.take_terminal().unwrap();
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        assert!(editors.terminals.is_empty() && editors.groups.len() == 1);
+        panel.adopt(terminal);
+        let terminal = panel.take_active().unwrap();
+        editors.add_terminal(terminal);
+        assert_eq!(editors.terminals.len(), 1);
+        editors.exec(&Command::CloseEditor, &settings, &ctx);
+        assert!(editors.terminals.is_empty());
     }
 
     #[test]

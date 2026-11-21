@@ -30,6 +30,7 @@ pub struct Settings {
     pub colors: BTreeMap<String, BTreeMap<String, String>>,
     pub default_terminal: String,
     pub terminals: Vec<ShellProfile>,
+    pub shell_integration: bool,
     pub grammars: String,
     pub associations: BTreeMap<String, String>,
     pub run: BTreeMap<String, String>,
@@ -80,6 +81,7 @@ impl Default for Settings {
             colors: BTreeMap::new(),
             default_terminal: terminals.first().map(|p| p.name.clone()).unwrap_or_default(),
             terminals,
+            shell_integration: true,
             grammars: dir().join("grammars").to_string_lossy().into_owned(),
             associations: BTreeMap::new(),
             run: [

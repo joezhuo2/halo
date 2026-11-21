@@ -382,6 +382,36 @@ impl Halo {
                 self.explorer.refresh();
                 self.git.refresh(ctx);
             }
+            RunRecentLine => {
+                let lines = match self.editors.active_terminal().filter(|_| self.zone == Zone::Editor) {
+                    Some(terminal) => terminal.recent(),
+                    None => self.bottom.recent(),
+                };
+                let items: Vec<_> = lines.into_iter().map(|line| (line.clone(), String::new(), RunCommandLine(line))).collect();
+                match items.is_empty() {
+                    true => ui::notify("No commands were seen in the active terminal yet. It needs shell integration."),
+                    false => self.search.pick("Select a command to run", items),
+                }
+            }
+            ChangeTerminalColor => {
+                let items = crate::terminal::color_names().map(|(color, name)| (name.to_owned(), String::new(), SetTerminalColor(color)));
+                self.search.pick("Select a color for the terminal", items.into());
+            }
+            NewTerminalInEditor => match self.bottom.create(&self.settings, cwd.as_deref(), ctx) {
+                Ok(terminal) => self.editors.add_terminal(terminal),
+                Err(error) => ui::notify(error),
+            },
+            MoveTerminalToEditor => match self.bottom.take_active() {
+                Some(terminal) => self.editors.add_terminal(terminal),
+                None => ui::notify("There is no terminal in the panel to move. Task terminals stay in the panel."),
+            },
+            MoveTerminalToPanel => match self.editors.take_terminal() {
+                Some(terminal) => {
+                    self.bottom.adopt(terminal);
+                    self.session.panel = true;
+                }
+                None => ui::notify("The active editor is not a terminal."),
+            },
             NewTerminal | NewTerminalWith(_) | SplitTerminal => {
                 self.session.panel = true;
                 self.bottom.exec(&cmd, &self.settings, cwd.as_deref(), ctx);
@@ -425,7 +455,7 @@ impl Halo {
 
     fn global_shortcuts(&mut self, ctx: &egui::Context) {
         let bindings = command::bindings();
-        let editor = self.zone == Zone::Editor;
+        let editor = self.zone == Zone::Editor && !self.editors.terminal_focused();
         ctx.input_mut(|i| {
             let Some(first) = self.chord else {
                 for binding in bindings.iter() {

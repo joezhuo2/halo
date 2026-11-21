@@ -150,6 +150,17 @@ pub enum Command {
     NewTerminalWith(String),
     SplitTerminal,
     KillTerminal,
+    ScrollToPrevMark,
+    ScrollToNextMark,
+    RunRecentLine,
+    RunCommandLine(String),
+    CopyLastCommandOutput,
+    RenameTerminal,
+    ChangeTerminalColor,
+    SetTerminalColor(Option<usize>),
+    NewTerminalInEditor,
+    MoveTerminalToEditor,
+    MoveTerminalToPanel,
 
     RunFile,
     RunTask(String),
@@ -464,7 +475,9 @@ pub fn all() -> Vec<Command> {
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
         OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
-        ShowTestOutput, RunAllTestsWithCoverage, ToggleCoverageDisplay, NewTerminal, SplitTerminal, KillTerminal, GitSync, ToggleInlineBlame, OpenLineChanges,
+        ShowTestOutput, RunAllTestsWithCoverage, ToggleCoverageDisplay, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
+        CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, NewTerminalInEditor, MoveTerminalToEditor, MoveTerminalToPanel,
+        GitSync, ToggleInlineBlame, OpenLineChanges,
         StageHunk, RevertHunk, UnstageHunk, StageSelectedRanges, RevertSelectedRanges, UnstageSelectedRanges,
         MergeOpen, MergeAcceptIncoming, MergeAcceptCurrent, MergeAcceptBoth, MergeAcceptAllIncoming, MergeAcceptAllCurrent,
         MergeNextConflict, MergePrevConflict, MergeToggleBase, MergeComplete,
@@ -622,7 +635,9 @@ impl Command {
             | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
             | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
-            NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal => "Terminal",
+            NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
+            | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
+            | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
             OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) | StageHunk | RevertHunk
             | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges | MergeOpen | OpenMerge(_)
@@ -772,6 +787,17 @@ impl Command {
             NewTerminalWith(_) => "New Terminal",
             SplitTerminal => "Split Terminal",
             KillTerminal => "Kill Terminal",
+            ScrollToPrevMark => "Terminal: Scroll to Previous Command",
+            ScrollToNextMark => "Terminal: Scroll to Next Command",
+            RunRecentLine => "Terminal: Run Recent Command...",
+            RunCommandLine(_) => "Terminal: Run Command",
+            CopyLastCommandOutput => "Terminal: Copy Last Command Output",
+            RenameTerminal => "Terminal: Rename...",
+            ChangeTerminalColor => "Terminal: Change Color...",
+            SetTerminalColor(_) => "Terminal: Set Color",
+            NewTerminalInEditor => "Terminal: Create New Terminal in Editor Area",
+            MoveTerminalToEditor => "Terminal: Move Terminal into Editor Area",
+            MoveTerminalToPanel => "Terminal: Move Terminal into Panel",
             RunFile => "Run File",
             RunTask(_) => "Run Task",
             RunTaskPicker => "Tasks: Run Task...",
