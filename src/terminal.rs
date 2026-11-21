@@ -103,6 +103,33 @@ fn resolve(color: AnsiColor, theme: &Theme) -> Option<Color32> {
     })
 }
 
+fn word_step(line: &[char], col: usize, forward: bool, word: bool) -> usize {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let len = line.len();
+    let mut i = col.min(len);
+    match (word, forward) {
+        (false, true) => return (i + 1).min(len),
+        (false, false) => return i.saturating_sub(1),
+        (true, true) => {
+            while i < len && !is_word(line[i]) {
+                i += 1;
+            }
+            while i < len && is_word(line[i]) {
+                i += 1;
+            }
+        }
+        (true, false) => {
+            while i > 0 && !is_word(line[i - 1]) {
+                i -= 1;
+            }
+            while i > 0 && is_word(line[i - 1]) {
+                i -= 1;
+            }
+        }
+    }
+    i
+}
+
 pub fn encode_key(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
     let mods = 1 + u8::from(m.shift) + 2 * u8::from(m.alt) + 4 * u8::from(m.ctrl);
     let arrow = |c: char| match (mods > 1, app_cursor) {
@@ -121,6 +148,8 @@ pub fn encode_key(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
         Key::Home => arrow('H'),
         Key::End => arrow('F'),
         Key::Insert => tilde(2),
+        // readline and PSReadLine both delete the word to the right on Alt+D
+        Key::Delete if m.ctrl && !m.shift && !m.alt => "d".to_owned(),
         Key::Delete => tilde(3),
         Key::PageUp => tilde(5),
         Key::PageDown => tilde(6),
@@ -232,6 +261,7 @@ pub struct Terminal {
     pub color: Option<usize>,
     pub profile: Option<ShellProfile>,
     restored: bool,
+    key_sel: Option<Point>,
 }
 
 impl Drop for Terminal {
@@ -318,6 +348,7 @@ impl Terminal {
             color: None,
             profile: None,
             restored: !prelude.is_empty(),
+            key_sel: None,
         })
     }
 
@@ -438,6 +469,30 @@ impl Terminal {
         let first = term.topmost_line().max(term.bottommost_line() - 500);
         let text = term.bounds_to_string(Point::new(first, Column(0)), Point::new(term.bottommost_line(), term.last_column()));
         text.trim_end().to_owned()
+    }
+
+    fn shell_selects(&self) -> bool {
+        self.profile.as_ref().is_some_and(|p| {
+            let program = p.program.to_lowercase();
+            program.contains("pwsh") || program.contains("powershell")
+        })
+    }
+
+    fn select_by_key(&mut self, forward: bool, word: bool) {
+        let mut term = self.term.lock();
+        let cursor = term.grid().cursor.point;
+        let from = self.key_sel.filter(|_| term.selection.is_some()).unwrap_or(cursor);
+        let cols = term.columns();
+        let line: Vec<char> = (0..cols).map(|c| term.grid()[from.line][Column(c)].c).collect();
+        let to = word_step(&line, from.column.0, forward, word);
+        let (end, side) = if to >= cols { (Point::new(from.line, Column(cols - 1)), Side::Right) } else { (Point::new(from.line, Column(to)), Side::Left) };
+        if self.key_sel.is_none() || term.selection.is_none() {
+            term.selection = Some(Selection::new(SelectionType::Simple, cursor, Side::Left));
+        }
+        if let Some(selection) = term.selection.as_mut() {
+            selection.update(end, side);
+        }
+        self.key_sel = Some(Point::new(from.line, Column(to)));
     }
 
     pub fn selection(&self) -> Option<String> {
@@ -578,7 +633,10 @@ impl Terminal {
             let events = ui.input(|i| i.events.clone());
             for event in events {
                 match event {
-                    Event::Text(text) => self.write(text),
+                    Event::Text(text) => {
+                        self.key_sel = None;
+                        self.write(text)
+                    }
                     Event::Paste(text) => self.paste(&text),
                     Event::Copy => match self.selection() {
                         Some(text) => {
@@ -602,7 +660,14 @@ impl Terminal {
                         step = if modifiers.shift { -1 } else { 1 };
                         continue;
                     }
+                    Event::Key { key: key @ (Key::ArrowLeft | Key::ArrowRight), pressed: true, modifiers, .. }
+                        if modifiers.shift && !modifiers.alt && !self.shell_selects() =>
+                    {
+                        self.select_by_key(key == Key::ArrowRight, modifiers.ctrl);
+                        continue;
+                    }
                     Event::Key { key, pressed: true, modifiers, .. } => {
+                        self.key_sel = None;
                         if let Some(bytes) = encode_key(key, modifiers, mode.contains(TermMode::APP_CURSOR)) {
                             self.write(bytes);
                             self.term.lock().scroll_display(Scroll::Bottom);
@@ -1673,6 +1738,10 @@ mod tests {
         assert_eq!(encode_key(Key::ArrowUp, none, true).unwrap(), b"\x1bOA");
         assert_eq!(encode_key(Key::ArrowLeft, Modifiers::CTRL, true).unwrap(), b"\x1b[1;5D");
         assert_eq!(encode_key(Key::Delete, Modifiers::SHIFT, false).unwrap(), b"\x1b[3;2~");
+        assert_eq!(encode_key(Key::Delete, Modifiers::CTRL, false).unwrap(), b"\x1bd");
+        let line: Vec<char> = "git  commit -m".chars().collect();
+        assert_eq!((word_step(&line, 0, true, true), word_step(&line, 3, true, true), word_step(&line, 14, false, true)), (3, 11, 13));
+        assert_eq!((word_step(&line, 11, false, true), word_step(&line, 5, true, false), word_step(&line, 0, false, false)), (5, 6, 0));
         assert_eq!(encode_key(Key::F1, none, false).unwrap(), b"\x1bOP");
         assert_eq!(encode_key(Key::F5, none, false).unwrap(), b"\x1b[15~");
         assert_eq!(encode_key(Key::D, Modifiers::CTRL, false).unwrap(), [4]);
@@ -1712,6 +1781,39 @@ mod tests {
         assert!(seen);
         assert!(terminal.is_alive());
         assert!(Terminal::spawn(2, "bad", "halo-no-such-program-xyz", &[], None, egui::Context::default()).is_err());
+    }
+
+    #[test]
+    fn pastes_selects_with_shift_arrows_and_copies() {
+        let ctx = egui::Context::default();
+        let (program, args): (&str, Vec<String>) = if cfg!(windows) { ("cmd.exe", vec![]) } else { ("sh", vec![]) };
+        let mut terminal = Terminal::spawn(1, "test", program, &args, None, ctx.clone()).unwrap();
+        let theme = Theme::dark();
+        let mut frame = |terminal: &mut Terminal, events: Vec<Event>| {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 400.0))), events, focused: true, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| terminal.ui(ui, &theme, 14.0, &mut vec![]));
+            out.textures_delta.clear();
+            out.platform_output
+        };
+        frame(&mut terminal, vec![]);
+        frame(&mut terminal, vec![]);
+        let started = std::time::Instant::now();
+        let typed = |t: &Terminal| t.text().contains("halo-paste-word");
+        frame(&mut terminal, vec![Event::Paste("echo halo-paste-word".into())]);
+        while !typed(&terminal) && started.elapsed().as_secs() < 15 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(typed(&terminal), "{}", terminal.text());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let key = |key, modifiers| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        let word_left = Modifiers { ctrl: true, shift: true, command: true, ..Default::default() };
+        frame(&mut terminal, vec![key(Key::ArrowLeft, word_left)]);
+        assert_eq!(terminal.selection().as_deref(), Some("word"));
+        frame(&mut terminal, vec![key(Key::ArrowLeft, word_left), key(Key::ArrowRight, Modifiers::SHIFT)]);
+        assert_eq!(terminal.selection().as_deref(), Some("aste-word"));
+        let out = frame(&mut terminal, vec![Event::Copy]);
+        assert!(out.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == "aste-word")));
+        assert_eq!(terminal.selection(), None);
     }
 
     fn integrated(program: &str, base: &[&str], lines: &[&str]) -> (Terminal, Vec<Record>, PathBuf) {
