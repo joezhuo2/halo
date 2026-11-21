@@ -469,7 +469,7 @@ fn diagnostic(value: &Value) -> Diagnostic {
     }
 }
 
-fn read_message(reader: &mut impl BufRead) -> Option<Value> {
+pub(crate) fn read_message(reader: &mut impl BufRead) -> Option<Value> {
     let mut length = 0;
     loop {
         let mut line = String::new();
@@ -489,12 +489,12 @@ fn read_message(reader: &mut impl BufRead) -> Option<Value> {
     Some(serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
-fn frame(message: &Value) -> String {
+pub(crate) fn frame(message: &Value) -> String {
     let body = message.to_string();
     format!("Content-Length: {}\r\n\r\n{body}", body.len())
 }
 
-fn find_program(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_program(name: &str) -> Option<PathBuf> {
     let direct = Path::new(name);
     if direct.components().count() > 1 {
         return direct.is_file().then(|| direct.to_path_buf());

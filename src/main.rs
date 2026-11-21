@@ -4,6 +4,7 @@ mod accounts;
 mod ai;
 mod app;
 mod command;
+mod dap;
 mod editor;
 mod explorer;
 mod find;
