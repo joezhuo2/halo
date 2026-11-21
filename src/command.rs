@@ -83,6 +83,34 @@ pub enum Command {
     TogglePanel,
     ToggleAi,
     SplitEditor,
+    SplitEditorDown,
+    SplitEditorLeft,
+    SplitEditorUp,
+    LayoutSingle,
+    LayoutTwoColumns,
+    LayoutThreeColumns,
+    LayoutTwoRows,
+    LayoutThreeRows,
+    LayoutGrid,
+    LayoutTwoRowsRight,
+    LayoutTwoColumnsBottom,
+    ToggleMaximizeGroup,
+    ResetGroupSizes,
+    FocusGroupLeft,
+    FocusGroupRight,
+    FocusGroupUp,
+    FocusGroupDown,
+    MoveEditorLeft,
+    MoveEditorRight,
+    MoveEditorUp,
+    MoveEditorDown,
+    CloseGroup,
+    MoveEditorToNewWindow,
+    CopyEditorToNewWindow,
+    MoveEditorToMainWindow,
+    NewWindow,
+    OpenFolderInNewWindow,
+    DuplicateWorkspace,
     ToggleMinimap,
     ToggleWordWrap,
     ToggleTheme,
@@ -358,6 +386,7 @@ pub struct Entry {
 }
 
 pub const SEND_TO_SHELL: &str = "!terminalFocus || !config.terminal.integrated.sendKeybindingsToShell";
+const NOT_TEXT: &str = "!editorTextFocus";
 
 fn defaults() -> Vec<Binding> {
     use Command::*;
@@ -460,6 +489,18 @@ fn defaults() -> Vec<Binding> {
         g(C, Key::J, TogglePanel),
         g(C, Key::Backtick, TogglePanel),
         g(C, Key::Backslash, SplitEditor),
+        k(C, Key::Backslash, SplitEditorDown),
+        k(C, Key::M, ToggleMaximizeGroup),
+        k(C, Key::ArrowLeft, FocusGroupLeft),
+        k(C, Key::ArrowRight, FocusGroupRight),
+        k(C, Key::ArrowUp, FocusGroupUp),
+        k(C, Key::ArrowDown, FocusGroupDown),
+        k(NONE, Key::O, CopyEditorToNewWindow),
+        g(ca, Key::ArrowLeft, MoveEditorLeft),
+        g(ca, Key::ArrowRight, MoveEditorRight),
+        g(ca, Key::ArrowUp, MoveEditorUp),
+        g(ca, Key::ArrowDown, MoveEditorDown),
+        g(cs, Key::N, NewWindow),
         g(C, Key::Tab, NextEditor),
         g(C, Key::Equals, ZoomIn),
         g(C, Key::Minus, ZoomOut),
@@ -482,13 +523,17 @@ fn defaults() -> Vec<Binding> {
             (b.when, b.cond) = (SEND_TO_SHELL.to_owned(), shell.clone());
         }
     }
+    let text = crate::when::parse(NOT_TEXT).ok().map(Arc::new);
+    for b in list.iter_mut().filter(|b| matches!(b.command, MoveEditorUp | MoveEditorDown)) {
+        (b.when, b.cond) = (NOT_TEXT.to_owned(), text.clone());
+    }
     list
 }
 
 pub fn all() -> Vec<Command> {
     use Command::*;
     let mut commands = vec![
-        NewFile, OpenFile, OpenFolder, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, OpenSettings, OpenSettingsJson,
+        NewFile, NewWindow, OpenFile, OpenFolder, OpenFolderInNewWindow, DuplicateWorkspace, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, OpenSettings, OpenSettingsJson,
         OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected,
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
@@ -496,6 +541,10 @@ pub fn all() -> Vec<Command> {
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
         SelectAll, AddCursorAbove, AddCursorBelow, SelectNextOccurrence, SelectAllOccurrences, ExpandSelection, ShrinkSelection, CursorUndo,
         ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
+        SplitEditorDown, SplitEditorLeft, SplitEditorUp, LayoutSingle, LayoutTwoColumns, LayoutThreeColumns, LayoutTwoRows, LayoutThreeRows,
+        LayoutGrid, LayoutTwoRowsRight, LayoutTwoColumnsBottom, ToggleMaximizeGroup, ResetGroupSizes, FocusGroupLeft, FocusGroupRight,
+        FocusGroupUp, FocusGroupDown, MoveEditorLeft, MoveEditorRight, MoveEditorUp, MoveEditorDown, CloseGroup, MoveEditorToNewWindow,
+        CopyEditorToNewWindow, MoveEditorToMainWindow,
         ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff, FilterExplorer, FocusOpenEditors,
         MarkdownPreview, MarkdownPreviewSide,
         GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, NextEditor, PrevEditor, GoBack, GoForward, ReopenClosed,
@@ -677,7 +726,8 @@ impl Command {
             NewFile | OpenFile | OpenFolder | OpenFolderIn(_) | OpenPath(_) | Save | SaveAs | SaveAll | CloseEditor
             | CloseFolder | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit | ImportTheme
             | BrowseThemes | SelectTheme | ImportThemeFile(_) | SetTheme(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
-            | ImportIconThemeFile(_) | SetIconTheme(_) | CutFiles | CopyFiles | PasteFiles | CloseAllEditors | ShowTab(..) | CloseTab(..) => "File",
+            | ImportIconThemeFile(_) | SetIconTheme(_) | CutFiles | CopyFiles | PasteFiles | CloseAllEditors | ShowTab(..) | CloseTab(..)
+            | NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => "File",
             Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
             | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection => "Edit",
@@ -685,7 +735,11 @@ impl Command {
             | ShrinkSelection | CursorUndo => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
             | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | FilterExplorer
-            | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide => "View",
+            | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
+            | LayoutTwoColumns | LayoutThreeColumns | LayoutTwoRows | LayoutThreeRows | LayoutGrid | LayoutTwoRowsRight | LayoutTwoColumnsBottom
+            | ToggleMaximizeGroup | ResetGroupSizes | FocusGroupLeft | FocusGroupRight | FocusGroupUp | FocusGroupDown | MoveEditorLeft
+            | MoveEditorRight | MoveEditorUp | MoveEditorDown | CloseGroup | MoveEditorToNewWindow | CopyEditorToNewWindow
+            | MoveEditorToMainWindow => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
@@ -784,6 +838,34 @@ impl Command {
             TogglePanel => "Toggle Panel",
             ToggleAi => "Toggle AI Panel",
             SplitEditor => "Split Editor Right",
+            SplitEditorDown => "Split Editor Down",
+            SplitEditorLeft => "Split Editor Left",
+            SplitEditorUp => "Split Editor Up",
+            LayoutSingle => "Editor Layout: Single",
+            LayoutTwoColumns => "Editor Layout: Two Columns",
+            LayoutThreeColumns => "Editor Layout: Three Columns",
+            LayoutTwoRows => "Editor Layout: Two Rows",
+            LayoutThreeRows => "Editor Layout: Three Rows",
+            LayoutGrid => "Editor Layout: Grid (2x2)",
+            LayoutTwoRowsRight => "Editor Layout: Two Rows Right",
+            LayoutTwoColumnsBottom => "Editor Layout: Two Columns Bottom",
+            ToggleMaximizeGroup => "Toggle Maximize Editor Group",
+            ResetGroupSizes => "Reset Editor Group Sizes",
+            FocusGroupLeft => "Focus Editor Group Left",
+            FocusGroupRight => "Focus Editor Group Right",
+            FocusGroupUp => "Focus Editor Group Above",
+            FocusGroupDown => "Focus Editor Group Below",
+            MoveEditorLeft => "Move Editor into Group Left",
+            MoveEditorRight => "Move Editor into Group Right",
+            MoveEditorUp => "Move Editor into Group Above",
+            MoveEditorDown => "Move Editor into Group Below",
+            CloseGroup => "Close Editor Group",
+            MoveEditorToNewWindow => "Move Editor into New Window",
+            CopyEditorToNewWindow => "Copy Editor into New Window",
+            MoveEditorToMainWindow => "Move Editor into Main Window",
+            NewWindow => "New Window",
+            OpenFolderInNewWindow => "Open Folder in New Window...",
+            DuplicateWorkspace => "Duplicate Workspace in New Window",
             ToggleMinimap => "Toggle Minimap",
             ToggleWordWrap => "Toggle Word Wrap",
             ToggleTheme => "Toggle Light/Dark Theme",

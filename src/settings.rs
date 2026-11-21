@@ -393,6 +393,7 @@ pub struct Session {
     pub folder: Option<PathBuf>,
     pub files: Vec<PathBuf>,
     pub pinned: Vec<(usize, PathBuf)>,
+    pub grid: Option<serde_json::Value>,
     pub backups: Vec<Backup>,
     pub recent: Vec<PathBuf>,
     pub sidebar: bool,
@@ -413,6 +414,7 @@ impl Default for Session {
             folder: None,
             files: vec![],
             pinned: vec![],
+            grid: None,
             backups: vec![],
             recent: vec![],
             sidebar: true,
@@ -439,7 +441,9 @@ impl Session {
     }
 
     pub fn save(&self) {
-        write(&Self::path(), self);
+        if !crate::windows::secondary() {
+            write(&Self::path(), self);
+        }
     }
 
     pub fn remember(&mut self, folder: &Path) {

@@ -1,7 +1,8 @@
 use super::buffer::{Document, Sel};
 use super::highlight::Highlighter;
 use super::image_view;
-use super::{Editors, Group};
+use super::Editors;
+use super::layout::Dir;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use eframe::egui::text::{LayoutJob, TextFormat};
@@ -681,10 +682,11 @@ impl Editors {
         if self.groups[g].tabs[t].md.is_some() || !markdown {
             return;
         }
-        if side && g + 1 == self.groups.len() {
-            self.groups.push(Group::default());
-        }
-        self.show_preview(doc, g + side as usize);
+        let to = match side {
+            true => self.neighbor(g, Dir::Right).unwrap_or_else(|| self.split_group(g, Dir::Right)),
+            false => g,
+        };
+        self.show_preview(doc, to);
     }
 
     fn show_preview(&mut self, doc: u64, group: usize) {

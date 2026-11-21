@@ -124,7 +124,7 @@ impl Halo {
         }
 
         let arg = args.paths.iter().position(|t| t.path.is_dir()).map(|i| args.paths.remove(i).path);
-        let restore = app.settings.restore_session;
+        let restore = app.settings.restore_session && !crate::windows::secondary();
         let last = app.session.folder.clone().filter(|f| restore && f.is_dir());
         let arg_is_none = arg.is_none() && args.paths.is_empty() && args.add.is_empty() && args.diff.is_none() && args.stdin.is_none();
         let (folder, files) = match arg {
@@ -135,7 +135,7 @@ impl Halo {
         let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
         app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
         app.set_folder(folder, ctx);
-        if arg_is_none && restore {
+        if arg_is_none && restore && !app.session.grid.as_ref().is_some_and(|grid| app.editors.restore_grid(grid)) {
             let pins: Vec<_> = app.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
             app.editors.restore_pins(&pins);
         }
@@ -182,9 +182,13 @@ impl Halo {
     }
 
     fn save_session(&mut self) {
+        if crate::windows::secondary() {
+            return;
+        }
         let backups = crate::settings::dir().join("backups");
         self.session.files = self.editors.open_paths();
         self.session.pinned = self.editors.pinned_paths();
+        self.session.grid = Some(self.editors.grid_state());
         self.session.backups = if self.settings.hot_exit { self.editors.backup(&backups) } else { vec![] };
         if !self.settings.hot_exit {
             let _ = std::fs::remove_dir_all(backups);
@@ -250,6 +254,7 @@ impl Halo {
             }
             OpenMerge(path) => self.editors.open_merge(&path, ctx),
             CloseFolder => self.set_folder(None, ctx),
+            NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => self.window_command(&cmd),
             OpenSettings => self.page.open = true,
             OpenSnippets => {
                 crate::editor::write_sample_snippets();
@@ -483,7 +488,7 @@ impl Halo {
         }
     }
 
-    fn global_shortcuts(&mut self, ctx: &egui::Context) {
+    pub(crate) fn global_shortcuts(&mut self, ctx: &egui::Context) {
         let bindings = command::bindings();
         let editor = self.zone == Zone::Editor && !self.editors.terminal_focused();
         let keys = command::context();
@@ -553,7 +558,7 @@ impl Halo {
             let v = i.viewport();
             (v.close_requested(), v.focused.unwrap_or(true))
         });
-        if close_requested && self.settings.hot_exit {
+        if close_requested && self.settings.hot_exit && !crate::windows::secondary() {
             self.save_session();
         } else if close_requested && !self.exiting && self.editors.any_dirty() {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
@@ -886,6 +891,7 @@ impl eframe::App for Halo {
         self.ai_panel(ui);
         self.bottom_panel(ui);
         self.central(ui);
+        self.floating(&ctx);
         self.debug_frame(&ctx, window.top() + 44.0);
         self.testing_frame(&ctx);
         self.dialogs(&ctx);

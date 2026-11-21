@@ -43,6 +43,7 @@ mod titlebar;
 mod ui;
 mod update;
 mod when;
+mod windows;
 mod wsl;
 
 use eframe::egui;
@@ -80,6 +81,7 @@ fn main() -> eframe::Result {
             std::process::exit(launch(&args, &dir));
         }
     }
+    windows::set_secondary(args.new_window);
     let server = if test { None } else { ipc::listen(&dir).ok().flatten() };
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Halo")

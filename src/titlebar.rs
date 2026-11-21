@@ -105,7 +105,7 @@ impl Halo {
     fn menus(&mut self, ui: &mut Ui) {
         use Command::*;
         self.menu(ui, "File", &[
-            Some(NewFile), Some(OpenFile), Some(OpenFolder), None,
+            Some(NewFile), Some(NewWindow), Some(OpenFile), Some(OpenFolder), Some(OpenFolderInNewWindow), None,
             Some(Save), Some(SaveAs), Some(SaveAll), None,
             Some(CompareFile), Some(CompareClipboard), Some(CompareSaved), None,
             Some(CloseEditor), Some(CloseFolder), None,
@@ -127,7 +127,7 @@ impl Halo {
         self.menu(ui, "View", &[
             Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), Some(ShowTesting), None,
             Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), Some(ShowProblems), Some(ShowOutput), Some(ShowNotifications), None,
-            Some(SplitEditor), Some(ToggleMinimap), Some(MarkdownPreview), Some(MarkdownPreviewSide), None,
+            Some(SplitEditor), Some(SplitEditorDown), Some(ToggleMaximizeGroup), Some(ResetGroupSizes), Some(ToggleMinimap), Some(MarkdownPreview), Some(MarkdownPreviewSide), None,
             Some(ToggleTheme), Some(ZoomIn), Some(ZoomOut), Some(ZoomReset),
         ]);
         self.menu(ui, "Go", &[
