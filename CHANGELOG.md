@@ -81,6 +81,20 @@ Covered by tests; not yet checked by hand in the running app.
 - **Secondary side bar** (`Ctrl+Alt+B`) holding the AI view. Views can move
   between the side bars and the panel with "View: Move View..." or by
   dragging.
+- **Accessibility**: screen reader support through AccessKit (roles, names
+  and states for rows, trees, tabs, buttons and notifications; the caret
+  line of the editor, terminal, diff and merge editor as text), High
+  Contrast Dark and High Contrast Light themes that follow Windows high
+  contrast mode, a reduce motion setting, `F6` and `Shift+F6` to cycle the
+  editor, side bar, panel and status bar, visible focus rings, Accessibility
+  Help (`Alt+F1`), and spoken announcements for notifications, problems
+  after a save, debugger stops, test results and find counts.
+- **Multi-root workspaces**: add several folders to a workspace, save it as
+  a `.code-workspace` file and open it again. The Explorer shows each folder
+  as a root; quick open, find and replace in files, Source Control, tasks,
+  launch configurations and language servers cover every folder. Settings
+  gain a Folder layer, and `${workspaceFolder:name}` works in tasks and
+  launch configurations.
 - **Command line**: `halo [options] [paths...]` with `file:line[:column]`,
   `--goto`, `--diff`, `--new-window`, `--reuse-window`, `--wait`, `--add`,
   `-` for standard input, `--help` and `--version`. A second `halo` hands its
@@ -107,6 +121,10 @@ Covered by tests; not yet checked by hand in the running app.
   otherwise. `Ctrl+F5` runs without debugging.
 - Entries in `keybindings.json` now add to the default bindings instead of
   replacing them, as in VS Code.
+- Dim text, comments and several colours of the Dark and Light themes are
+  darker or lighter, so that text reaches a 4.5:1 contrast ratio.
+- `F6` pauses the debugger only while the program is running; otherwise it
+  moves focus to the next part of the window.
 - `Ctrl+Alt+B` toggles the secondary side bar, where the AI view lives.
   "Toggle AI Panel" stays in the command list without a default key.
 - The theme button in the status bar opens the theme picker. `Ctrl+T` still

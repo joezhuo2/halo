@@ -130,6 +130,7 @@ impl Timeline {
                     }
                     Item::Saved(time, _) => (icons::FLOPPY_DISK, "File Saved".to_owned(), history::age(*time), "A version saved in Halo".to_owned()),
                 };
+                ui::item(ui, &row, ui::Role::ListItem, &format!("{title}, {meta}"), false);
                 painter.text(pos2(r.left() + 20.0, r.center().y), egui::Align2::CENTER_CENTER, icon, FontId::proportional(13.0), theme.text_dim);
                 let meta = painter.layout_no_wrap(meta, FontId::proportional(11.5), theme.text_dim);
                 let mut job = egui::text::LayoutJob::simple_singleline(title, FontId::proportional(12.5), theme.text);

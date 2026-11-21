@@ -382,6 +382,7 @@ impl Search {
                         let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
                         let note = matches!(item, Item::Note(_));
                         ui::row_bg(ui, theme, r, row.id, row.hovered() && !note, index == self.selected && !note);
+                        ui::list_item(ui, &row, &format!("{label} {detail}"), index == self.selected && !note, (index, self.items.1.len()));
                         let painter = ui.painter().with_clip_rect(r.shrink2(vec2(8.0, 0.0)));
                         let color = if note { theme.text_dim } else { theme.text };
                         let file = match item {

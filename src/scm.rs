@@ -383,7 +383,8 @@ fn pull_requests(ui: &mut Ui, theme: &Theme, git: &Git, busy: bool, action: &mut
     };
     for pr in prs {
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
-        ui::row_bg(ui, theme, rect, Id::new(("scm_pr", pr.number)), resp.hovered(), false);
+        ui::row_bg(ui, theme, rect, resp.id, resp.hovered(), false);
+        ui::item(ui, &resp, ui::Role::ListItem, &format!("#{} {}", pr.number, pr.title), false);
         let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 28.0));
         let (x, y) = (rect.left() + 14.0, rect.center().y);
         let font = FontId::proportional(13.0);
@@ -516,7 +517,8 @@ fn repositories(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Actio
     for repo in git.repos() {
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
         let selected = git.root() == Some(repo.as_path());
-        ui::row_bg(ui, theme, rect, Id::new(("scm_repo", repo)), resp.hovered(), selected);
+        ui::row_bg(ui, theme, rect, resp.id, resp.hovered(), selected);
+        ui::item(ui, &resp, ui::Role::ListItem, &repo.to_string_lossy(), selected);
         let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
         let (x, y) = (rect.left() + 14.0, rect.center().y);
         let name = repo.file_name().unwrap_or(repo.as_os_str()).to_string_lossy();
@@ -556,6 +558,7 @@ fn graph(
         let is_open = open == Some(commit.hash.as_str());
         if ui.is_rect_visible(rect) {
             ui::row_bg(ui, theme, rect, id, resp.hovered(), is_open);
+            ui::tree_item(ui, &resp, &format!("{}, {}", commit.subject, commit.author), is_open, 0, Some(is_open));
             let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
             let dot = pos2(lane_x(rect, commit.col), rect.center().y);
             for lane in &commit.through {
@@ -599,7 +602,8 @@ fn graph(
         };
         for change in files {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
-            ui::row_bg(ui, theme, rect, Id::new(("scm_commit_file", &change.path)), resp.hovered(), false);
+            ui::row_bg(ui, theme, rect, resp.id, resp.hovered(), false);
+            ui::tree_item(ui, &resp, &change.path, false, 1, None);
             let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
             for lane in commit.through.iter().chain(&commit.down) {
                 painter.vline(lane_x(rect, *lane), rect.y_range(), stroke(*lane));
@@ -678,6 +682,7 @@ fn group(
         let resp = ui.interact(rect, id, Sense::click());
         let hovered = ui.rect_contains_pointer(rect);
         ui::row_bg(ui, theme, rect, id, hovered, false);
+        ui::item(ui, &resp, ui::Role::ListItem, &format!("{}, {:?}", change.path, change.state), false);
 
         let (dir, name) = match change.path.trim_end_matches('/').rsplit_once('/') {
             Some((dir, name)) => (dir, name),

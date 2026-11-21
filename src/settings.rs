@@ -108,6 +108,11 @@ pub struct Settings {
     pub file_nesting: bool,
     pub file_nesting_expand: bool,
     pub file_nesting_patterns: BTreeMap<String, String>,
+    pub auto_detect_high_contrast: bool,
+    pub preferred_high_contrast_theme: String,
+    pub preferred_high_contrast_light_theme: String,
+    pub reduce_motion: String,
+    pub accessibility_support: String,
     pub sidebar_location: String,
     pub panel_location: String,
     pub panel_alignment: String,
@@ -273,6 +278,11 @@ impl Default for Settings {
             ]
             .map(|(parent, children)| (parent.to_owned(), children.to_owned()))
             .into(),
+            auto_detect_high_contrast: true,
+            preferred_high_contrast_theme: "hc-dark".into(),
+            preferred_high_contrast_light_theme: "hc-light".into(),
+            reduce_motion: "auto".into(),
+            accessibility_support: "auto".into(),
             sidebar_location: "left".into(),
             panel_location: "bottom".into(),
             panel_alignment: "center".into(),

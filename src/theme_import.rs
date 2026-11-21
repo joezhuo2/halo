@@ -210,6 +210,7 @@ pub fn build(v: &Value) -> Result<Theme, String> {
         semantic(v, &["enumMember", "variable.readonly", "constant"]),
     ];
     theme.dark = !kind.contains("light");
+    theme.contrast = kind.starts_with("hc");
     theme.tokens = Tokens::new(rules);
     Ok(theme)
 }
@@ -219,7 +220,7 @@ pub fn safe_name(name: &str) -> String {
     let cleaned = cleaned.trim().trim_matches('.').to_owned();
     match cleaned.to_lowercase().as_str() {
         "" => "theme".into(),
-        "dark" | "light" => format!("{cleaned} imported"),
+        "dark" | "light" | "hc-dark" | "hc-light" => format!("{cleaned} imported"),
         _ => cleaned,
     }
 }
@@ -339,7 +340,9 @@ impl Halo {
             }),
             SelectTheme => {
                 let current = |name: &str| if self.settings.theme == name { "current" } else { "" }.to_owned();
-                let mut items: Vec<Choice> = ["dark", "light"].map(|n| (n[..1].to_uppercase() + &n[1..], current(n), SetTheme(n.into()))).into();
+                let mut items: Vec<Choice> = [("dark", "Dark"), ("light", "Light"), ("hc-dark", "High Contrast Dark"), ("hc-light", "High Contrast Light")]
+                    .map(|(n, label)| (label.to_owned(), current(n), SetTheme(n.into())))
+                    .into();
                 items.extend(installed(&config).into_iter().map(|n| (n.clone(), format!("imported {}", current(&n)).trim().to_owned(), SetTheme(n))));
                 items.push(("Import VS Code Theme...".into(), String::new(), ImportTheme));
                 items.push(("Browse Installed VS Code Themes...".into(), String::new(), BrowseThemes));
@@ -414,7 +417,8 @@ mod tests {
         assert_eq!(theme.accent.a(), 255);
 
         let dark = build(&jsonc(r##"{"uiTheme": "hc-black", "colors": {"editor.background": "#000000"}}"##).unwrap()).unwrap();
-        assert!(dark.dark);
+        assert!(dark.dark && dark.contrast && !theme.contrast);
+        assert!(build(&jsonc(r#"{"type": "hcLight"}"#).unwrap()).unwrap().contrast);
         assert_eq!(dark.panel, Theme::dark().panel);
         assert_eq!(dark.bg, Color32::BLACK);
     }

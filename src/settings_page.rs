@@ -48,6 +48,8 @@ const ED: &str = "Editor";
 const PROBLEMS: &str = "Problems";
 const FILES: &str = "Files";
 const LANG: &str = "Languages";
+const A11Y: &str = "Accessibility";
+const THEMES: &[(&str, &str)] = &[("dark", "Dark"), ("light", "Light"), ("hc-dark", "High Contrast Dark"), ("hc-light", "High Contrast Light")];
 
 pub const SETTINGS: &[Meta] = &[
     m("font_family", 0, ED, "Font Family", "The font of the editor and the terminal.", Kind::Custom),
@@ -101,7 +103,12 @@ pub const SETTINGS: &[Meta] = &[
     m("trim_final_newlines", 1, FILES, "Trim Final Newlines", "Remove the empty lines after the last line break when a file is saved.", Kind::Toggle),
     m("eol", 1, FILES, "End of Line", "The line ending of new files.", Kind::Choice(&[("auto", "Default for the system"), ("\n", "LF"), ("\r\n", "CRLF")])),
     m("auto_update", 1, "Application", "Auto Update", "When Halo opens, look for a newer release, install it in the background and use it the next time Halo opens.", Kind::Toggle),
-    m("zoom_level", 2, "Window", "Zoom Level", "The zoom of the whole window. Each step is 20% larger or smaller; 0 is 100%.", Kind::Float(-4.0, 6.0)),
+    m("zoom_level", 2, A11Y, "Zoom Level", "The zoom of the whole window. Each step is 20% larger or smaller; 0 is 100%.", Kind::Float(-4.0, 6.0)),
+    m("auto_detect_high_contrast", 2, A11Y, "Auto Detect High Contrast", "Switch to a high contrast theme while the operating system is in high contrast mode (Windows).", Kind::Toggle),
+    m("preferred_high_contrast_theme", 2, A11Y, "Preferred High Contrast Theme", "The theme used when the operating system is in a dark high contrast mode.", Kind::Choice(THEMES)),
+    m("preferred_high_contrast_light_theme", 2, A11Y, "Preferred High Contrast Light Theme", "The theme used when the operating system is in a light high contrast mode.", Kind::Choice(THEMES)),
+    m("accessibility_support", 2, A11Y, "Accessibility Support", "Optimize for screen readers: word wrap, minimap, code lens, inlay hints and animations are turned off. Auto follows whether a screen reader is active.", Kind::Choice(&[("auto", "Auto"), ("on", "On"), ("off", "Off")])),
+    m("reduce_motion", 2, A11Y, "Reduce Motion", "Jump animations to their end, stop loading shimmers and spinners, and stop the cursor blinking. Auto follows the operating system (Windows).", Kind::Choice(&[("auto", "Auto"), ("on", "On"), ("off", "Off")])),
     m("restore_session", 2, "Window", "Restore Session", "Open the last folder and its files when Halo starts.", Kind::Toggle),
     m("tab_close_button", 2, "Workbench", "Tab Close Button", "Where the close button of an editor tab is.", Kind::Choice(&[("right", "Right"), ("left", "Left"), ("off", "Off")])),
     m("enable_preview", 2, "Workbench", "Enable Preview", "Open files from a single click in a preview tab that the next one replaces.", Kind::Toggle),
@@ -408,9 +415,11 @@ impl Halo {
                         }
                     }
                     let on = ui::anim(ui, resp.id.with("on"), self.page.tab == index && !searching);
+                    ui::item(ui, &resp, ui::Role::Tab, name, self.page.tab == index && !searching);
                     let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
                     let fill = ui::mix(ui::mix(Color32::TRANSPARENT, theme.hover, h), theme.selection, on);
                     ui.painter().rect_filled(r, CornerRadius::same(5), fill);
+                    ui::focus_ring(ui, &theme, r, resp.id);
                     let color = ui::mix(theme.text_dim, theme.text, on.max(h));
                     ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, *icon, FontId::proportional(15.0), color);
                     ui.painter().text(pos2(r.left() + 38.0, r.center().y), Align2::LEFT_CENTER, *name, FontId::proportional(13.0), color);
@@ -583,7 +592,7 @@ fn custom(ui: &mut Ui, theme: &Theme, key: &str, s: &mut Settings, page: &mut Se
                 })
                 .clone();
             let removed = match key {
-                "theme" => choose(ui, "color_theme", &mut s.theme, &[("dark", "Dark"), ("light", "Light")], &themes, &mut page.confirm, crate::theme_import::remove),
+                "theme" => choose(ui, "color_theme", &mut s.theme, THEMES, &themes, &mut page.confirm, crate::theme_import::remove),
                 _ => choose(ui, "icon_theme", &mut s.icon_theme, &[("builtin", "Halo (default)"), ("none", "None")], &icon_themes, &mut page.confirm, crate::icon_theme::remove),
             };
             if removed {

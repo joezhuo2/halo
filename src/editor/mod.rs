@@ -1619,10 +1619,11 @@ impl Editors {
                     }
                     let tab = &group.tabs[t];
                     let id = Id::new(("editor_tab", g, tab.doc));
-                    let duration = if self.drag.is_some() { ui::ANIM } else { 0.0 };
+                    let duration = if self.drag.is_some() && !crate::a11y::reduced() { ui::ANIM } else { 0.0 };
                     let x = ui.ctx().animate_value_with_time(id.with("left"), left, duration);
                     let r = Rect::from_min_size(row.min + vec2(x, 0.0), vec2(face.width(), TAB_H));
                     let resp = ui.interact(r, id, Sense::click_and_drag());
+                    ui::item(ui, &resp, ui::Role::Tab, &format!("{}{}", face.name.text(), if face.dirty { ", modified" } else { "" }), t == active);
                     if resp.drag_started_by(PointerButton::Primary)
                         && let Some(press) = ui.input(|i| i.pointer.press_origin())
                     {
@@ -1638,6 +1639,7 @@ impl Editors {
                     let p = ui.painter();
                     p.rect_filled(r, CornerRadius::ZERO, ui::mix(ui::mix(theme.panel, theme.hover, h * 0.5), theme.bg, a));
                     p.vline(r.right() - 0.5, r.y_range(), Stroke::new(1.0, theme.border));
+                    ui::focus_ring(ui, theme, r, id);
                     if a > 0.0 {
                         let line = Rect::from_min_max(r.min, pos2(r.right() - 1.0, r.top() + 2.0));
                         let color = if active_group { theme.accent } else { theme.text_dim };
@@ -1890,7 +1892,7 @@ impl Editors {
         let diffed = shown.is_some() || merging.is_some();
 
         ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
-        let minimap_w = if shown.is_some() { diff_view::RULER } else if settings.minimap && !diffed && !buf.large && body.width() > 420.0 { 78.0 } else { 0.0 };
+        let minimap_w = if shown.is_some() { diff_view::RULER } else if settings.minimap && !crate::a11y::optimized() && !diffed && !buf.large && body.width() > 420.0 { 78.0 } else { 0.0 };
         let left_map = settings.minimap_side == "left" && shown.is_none() && !diffed;
         let text_rect = match left_map {
             true => Rect::from_min_max(pos2(body.left() + minimap_w, body.top()), body.max),
@@ -1898,7 +1900,7 @@ impl Editors {
         };
         let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 5.0) * char_w + 6.0;
         let fits = (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20);
-        let wrap_cols = prefs::wrap_columns(&settings.word_wrap, settings.word_wrap_column, fits).filter(|_| !diffed && !buf.large);
+        let wrap_cols = prefs::wrap_columns(if crate::a11y::optimized() { "off" } else { &settings.word_wrap }, settings.word_wrap_column, fits).filter(|_| !diffed && !buf.large);
 
         if self.want_focus && is_active && self.goto.is_none() {
             ui.memory_mut(|m| m.request_focus(id));
@@ -1909,7 +1911,7 @@ impl Editors {
             self.focused = true;
             self.active = g;
             ui.memory_mut(|m| {
-                m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
+                m.set_focus_lock_filter(id, EventFilter { tab: !crate::a11y::tab_moves_focus(), horizontal_arrows: true, vertical_arrows: true, escape: true });
             });
             let keys = command::context();
             for binding in command::bindings().iter().filter(|b| b.scope == Scope::Editor && b.chord.is_none() && b.active(&keys)) {
@@ -1919,6 +1921,7 @@ impl Editors {
             }
             let page = ((text_rect.height() / line_h) as usize).saturating_sub(2).max(1);
             let mut events = ui.input(|i| i.events.clone());
+            events.retain(|e| !crate::a11y::tab_moves_focus() || !matches!(e, Event::Key { key: Key::Tab, .. }));
             let unit = indent_unit(buf, settings).2;
             self.intel.unit = unit.clone();
             self.popup_keys(&mut events, doc_id, buf, tab);
@@ -2002,7 +2005,7 @@ impl Editors {
             _ => 4,
         };
         let stuck = tab.stuck;
-        let mut lens_rows: Vec<(usize, usize)> = match settings.code_lens && lang.attached && !diffed {
+        let mut lens_rows: Vec<(usize, usize)> = match settings.code_lens && !crate::a11y::optimized() && lang.attached && !diffed {
             true => lang.lens.iter().enumerate().filter_map(|(index, lens)| Some((lang.symbols.get(lens.symbol)?.line.min(total - 1), index))).collect(),
             false => vec![],
         };
@@ -2043,8 +2046,8 @@ impl Editors {
         let beyond = if settings.scroll_beyond_last_line { (text_rect.height() * 0.5).max(line_h) } else { line_h };
         let content = vec2(wide, rows as f32 * line_h + beyond);
         let idle = now - self.last_input;
-        let caret_alpha = if has_focus { prefs::caret_alpha(&settings.cursor_blinking, idle) } else { 0.35 };
-        if has_focus && idle <= 30.0 && settings.cursor_blinking != "solid" {
+        let caret_alpha = if has_focus { prefs::caret_alpha(crate::a11y::blinking(&settings.cursor_blinking), idle) } else { 0.35 };
+        if has_focus && idle <= 30.0 && crate::a11y::blinking(&settings.cursor_blinking) != "solid" {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
 
@@ -2090,6 +2093,9 @@ impl Editors {
                     let origin = content_rect.min;
                     let clip = ui.clip_rect();
                     let resp = ui.interact(clip, id, Sense::click_and_drag());
+                    let caret = tab.sels.last().map_or((0, 0), |s| (s.anchor, s.head));
+                    let said = shown.as_ref().map(|d| diff_view::caret_prefix(d, buf_ref.line_of(caret.1))).or_else(|| merging.as_ref().map(|m| merge_view::caret_prefix(m, buf_ref.line_of(caret.1))));
+                    crate::a11y::text_node(ui, id, &buf_ref.title, &buf_ref.rope, caret, said.unwrap_or_default());
                     let text_x = origin.x + gutter_w;
                     let row_at = |y: f32| locate((((y - origin.y) / line_h).floor().max(0.0) as usize).min(rows - 1));
                     let first = row_at(origin.y + viewport.min.y).0;
@@ -2130,7 +2136,7 @@ impl Editors {
                         }
                         let (mut inserts, mut hints) = (vec![], vec![]);
                         let from = lang_ref.hints.partition_point(|h| h.line < line);
-                        for hint in lang_ref.hints[from..].iter().take_while(|h| h.line == line && settings.inlay_hints) {
+                        for hint in lang_ref.hints[from..].iter().take_while(|h| h.line == line && settings.inlay_hints && !crate::a11y::optimized()) {
                             let col = lsp::utf16_to_char(text.chars(), hint.col);
                             inserts.push((text.char_indices().nth(col).map_or(text.len(), |c| c.0), hint.label.as_str()));
                             hints.push((col, hint.label.chars().count()));
@@ -2359,6 +2365,7 @@ impl Editors {
                         if current_line == Some(line) && matches!(settings.render_line_highlight.as_str(), "line" | "all") {
                             let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
                             painter.rect_filled(band, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
+                            ui::contrast_border(&painter, theme, band, theme.border);
                         }
                         if marks.as_ref().is_some_and(|m| m.1 == Some(line)) {
                             let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
@@ -2392,6 +2399,7 @@ impl Editors {
                         for s in tab.sels.iter().filter(|s| !s.is_empty() && s.end() >= start && s.start() <= start + len) {
                             for (x0, x1, y) in spans(s.start().saturating_sub(start), s.end() - start) {
                                 painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), CornerRadius::same(2), theme.selection);
+                                ui::contrast_border(&painter, theme, Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), theme.accent);
                             }
                             if s.end() > start + len {
                                 painter.rect_filled(Rect::from_min_size(at(len), vec2(char_w * 0.6, line_h)), CornerRadius::same(2), theme.selection);
@@ -2905,6 +2913,7 @@ impl Editors {
                     (_, n, Some(i)) => (format!("{} of {n}", i + 1), theme.text_dim),
                     (_, n, None) => (format!("{n} found"), theme.text_dim),
                 };
+                crate::a11y::watch("find", &label);
                 ui.label(RichText::new(label).size(12.0).color(color)).on_hover_text(self.find.error.clone().unwrap_or_default());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui::icon_button(ui, theme, icons::X, 22.0, false, "Close (Escape)").clicked() {
@@ -3037,6 +3046,34 @@ mod tests {
 
     fn key(key: Key, modifiers: egui::Modifiers) -> Event {
         Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    #[test]
+    fn screen_readers_get_selected_tabs_and_the_caret_line() {
+        use crate::ui::Role;
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Paste("first line\n  second".into())]);
+        ctx.enable_accesskit();
+        let mut tree = |events: Vec<Event>| {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 600.0))), events, focused: true, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| editors.ui(ui, &Theme::dark(), &settings, &Git::new(), &mut vec![]));
+            crate::a11y::tree(&mut out)
+        };
+        let nodes = tree(vec![]);
+        assert_eq!(crate::a11y::node(&nodes, Role::Tab, "Untitled-2, modified").is_selected(), Some(true));
+        assert_eq!(crate::a11y::node(&nodes, Role::Tab, "Untitled-1").is_selected(), Some(false));
+        let text = crate::a11y::node(&nodes, Role::MultilineTextInput, "Untitled-2");
+        assert_eq!((text.value(), text.description()), (Some("  second"), Some("Line 2, Column 9")));
+        let nodes = tree(vec![key(Key::ArrowUp, Default::default())]);
+        let text = crate::a11y::node(&nodes, Role::MultilineTextInput, "Untitled-2");
+        assert_eq!((text.value(), text.description()), (Some("first line"), Some("Line 1, Column 9")));
+        assert!(nodes.iter().any(|n| n.role() == Role::TextRun && n.value() == Some("first line")));
     }
 
     fn frame_with(ctx: &egui::Context, editors: &mut Editors, events: Vec<Event>, settings: &Settings) {

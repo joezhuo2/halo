@@ -287,6 +287,30 @@ mod headless {
     }
 
     #[test]
+    fn rows_are_tree_items_with_levels_and_expanded_states() {
+        use crate::ui::Role;
+        let (dir, ctx, mut explorer) = setup("a11y", &["top.txt"]);
+        std::fs::create_dir_all(dir.join("src/deep")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+        explorer.refresh();
+        explorer.expand(&dir.join("src"));
+        wait(&ctx, &mut explorer);
+        ctx.enable_accesskit();
+        frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
+        let input = RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 600.0))), ..Default::default() };
+        let (settings, git) = (Settings { files_exclude: vec![], compact_folders: false, ..Settings::default() }, Git::new());
+        let mut out = ctx.run_ui(input, |ui| explorer.ui(ui, &Theme::dark(), &git, None, &settings, &[], &mut vec![]));
+        let nodes = crate::a11y::tree(&mut out);
+        let src = crate::a11y::node(&nodes, Role::TreeItem, "src");
+        assert_eq!((src.level(), src.is_expanded()), (Some(1), Some(true)));
+        let deep = crate::a11y::node(&nodes, Role::TreeItem, "deep");
+        assert_eq!((deep.level(), deep.is_expanded()), (Some(2), Some(false)));
+        let lib = crate::a11y::node(&nodes, Role::TreeItem, "lib.rs");
+        assert_eq!((lib.level(), lib.is_expanded(), lib.is_selected()), (Some(2), None, Some(false)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn multi_select_then_delete_confirms_once_with_the_count() {
         let (dir, ctx, mut explorer) = setup("select", &["a.txt", "b.txt", "c.txt", "d.txt"]);
         click(&ctx, &mut explorer, &dir.join("a.txt"), Modifiers::NONE);

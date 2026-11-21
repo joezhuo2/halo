@@ -186,7 +186,7 @@ pub fn configure(s: &Settings) {
         size: s.terminal_font_size,
         line_height: s.terminal_line_height,
         cursor: s.terminal_cursor_style.clone(),
-        blink: s.terminal_cursor_blinking,
+        blink: s.terminal_cursor_blinking && !crate::a11y::reduced(),
         scrollback: s.terminal_scrollback,
         copy_on_select: s.terminal_copy_on_selection,
         right_click: s.terminal_right_click.clone(),
@@ -345,6 +345,15 @@ impl Terminal {
     pub fn note(&self, text: &str) {
         let mut processor = alacritty_terminal::vte::ansi::Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::default();
         processor.advance(&mut *self.term.lock(), text.as_bytes());
+    }
+
+    fn caret_line(&self) -> (String, usize, usize, (usize, usize), usize) {
+        let term = self.term.lock();
+        let point = term.grid().cursor.point;
+        let (text, _) = grid_rows(&term, point.line.0, point.line.0).pop().unwrap_or_default();
+        let text: String = text.into_iter().filter(|c| *c != '\0').collect::<String>().trim_end().to_owned();
+        let column = point.column.0.min(text.chars().count());
+        (text, point.line.0.max(0) as usize, column, (column, column), 0)
     }
 
     pub fn title(&self) -> String {
@@ -539,6 +548,7 @@ impl Terminal {
         let rect = ui.available_rect_before_wrap().shrink2(vec2(10.0, 4.0));
         let id = Id::new(("terminal", self.id));
         let resp = ui.interact(rect, id, Sense::click_and_drag());
+        crate::a11y::line_node(ui, id, ui::Role::Terminal, &self.title(), || self.caret_line());
         let look = look();
         let size = if look.size > 0.0 { look.size } else { font_size };
         let font = if look.font { FontId::new(size, egui::FontFamily::Name("terminal".into())) } else { FontId::monospace(size) };
@@ -1441,6 +1451,7 @@ impl BottomPanel {
                         for at in 0..count {
                             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
                             ui::row_bg(ui, theme, r, resp.id, resp.hovered(), index == self.active && at == group.active);
+                            ui::item(ui, &resp, ui::Role::ListItem, &group.panes[at].title(), index == self.active && at == group.active);
                             let (icon, font) = match at {
                                 _ if count == 1 => (icons::TERMINAL_WINDOW, FontId::proportional(14.0)),
                                 0 => ("┌", FontId::monospace(13.0)),
@@ -1578,6 +1589,7 @@ impl BottomPanel {
                     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
                     ui::row_bg(ui, theme, r, resp.id, resp.hovered(), false);
                     let values = [row.port.to_string(), row.address.clone(), row.pid.clone(), row.process.clone()];
+                    ui::item(ui, &resp, ui::Role::ListItem, &format!("Port {} {}", row.port, row.process), false);
                     for ((x, _), value) in columns.iter().zip(values) {
                         let color = if *x == 0.0 { theme.accent } else { theme.text };
                         ui.painter().text(pos2(r.left() + x, r.center().y), Align2::LEFT_CENTER, value, FontId::proportional(12.5), color);
@@ -1608,6 +1620,7 @@ fn problems_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, task_files: &[(PathBuf, Ve
             for problem in items.iter().filter(|d| d.severity <= 3) {
                 let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                 ui::row_bg(ui, theme, r, row.id, row.hovered(), false);
+                ui::tree_item(ui, &row, &format!("{}: {}, line {}", ["Error", "Warning", "Info"][(problem.severity as usize).clamp(1, 3) - 1], problem.message.lines().next().unwrap_or_default(), problem.start.0 + 1), false, 1, None);
                 let (icon, color) = match problem.severity {
                     1 => (icons::X_CIRCLE, theme.error),
                     2 => (icons::WARNING, theme.warning),

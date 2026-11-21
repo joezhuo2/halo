@@ -4,6 +4,7 @@ use crate::theme::Theme;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Id, Rect, Response, Sense, Ui, Vec2};
 
 pub use egui_phosphor::regular as icons;
+pub use eframe::egui::accesskit::Role;
 
 pub const ANIM: f32 = 0.14;
 pub const FIELD: egui::Margin = egui::Margin::symmetric(8, 5);
@@ -54,7 +55,14 @@ pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 pub fn anim(ui: &Ui, id: Id, on: bool) -> f32 {
-    ui.ctx().animate_bool_with_time(id, on, ANIM)
+    animate(ui, id, on, ANIM)
+}
+
+fn animate(ui: &Ui, id: Id, on: bool, time: f32) -> f32 {
+    if crate::a11y::reduced() {
+        return f32::from(u8::from(on));
+    }
+    ui.ctx().animate_bool_with_time(id, on, time)
 }
 
 pub fn modal(ctx: &egui::Context, id: impl egui::AsId) -> egui::Modal {
@@ -119,6 +127,61 @@ pub fn row_bg(ui: &Ui, theme: &Theme, rect: Rect, id: Id, hovered: bool, selecte
     if color.a() > 0 {
         ui.painter().rect_filled(rect, CornerRadius::ZERO, color);
     }
+    state_border(ui.painter(), theme, rect, hovered, selected);
+    focus_ring(ui, theme, rect, id);
+}
+
+pub fn focus_ring(ui: &Ui, theme: &Theme, rect: Rect, id: Id) {
+    crate::a11y::mark(ui, id);
+    if ui.memory(|m| m.has_focus(id)) {
+        ui.painter().rect_stroke(rect.shrink(0.5), CornerRadius::same(2), egui::Stroke::new(1.0, theme.accent), egui::StrokeKind::Inside);
+    }
+}
+
+pub fn access(ui: &Ui, id: Id, role: Role, name: &str, state: impl FnOnce(&mut egui::accesskit::Node)) {
+    ui.ctx().accesskit_node_builder(id, |node| {
+        node.set_role(role);
+        node.set_label(name);
+        state(node);
+    });
+}
+
+pub fn item(ui: &Ui, resp: &Response, role: Role, name: &str, selected: bool) {
+    access(ui, resp.id, role, name, |n| n.set_selected(selected));
+}
+
+pub fn plain(text: &str) -> String {
+    text.chars().filter(|c| !('\u{e000}'..='\u{f8ff}').contains(c)).collect::<String>().trim().to_owned()
+}
+
+pub fn list_item(ui: &Ui, resp: &Response, name: &str, selected: bool, (index, count): (usize, usize)) {
+    access(ui, resp.id, Role::ListItem, name, |n| {
+        n.set_selected(selected);
+        n.set_position_in_set(index + 1);
+        n.set_size_of_set(count);
+    });
+}
+
+pub fn tree_item(ui: &Ui, resp: &Response, name: &str, selected: bool, depth: usize, expanded: Option<bool>) {
+    access(ui, resp.id, Role::TreeItem, name, |n| {
+        n.set_selected(selected);
+        n.set_level(depth + 1);
+        if let Some(open) = expanded {
+            n.set_expanded(open);
+        }
+    });
+}
+
+pub fn state_border(painter: &egui::Painter, theme: &Theme, rect: Rect, hovered: bool, selected: bool) {
+    if hovered || selected {
+        contrast_border(painter, theme, rect, if selected { theme.accent } else { theme.border });
+    }
+}
+
+pub fn contrast_border(painter: &egui::Painter, theme: &Theme, rect: Rect, color: Color32) {
+    if theme.contrast {
+        painter.rect_stroke(rect.shrink(0.5), CornerRadius::ZERO, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+    }
 }
 
 pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: &str, size: f32, active: bool, tip: &str) -> Response {
@@ -131,6 +194,8 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: &str, size: f32, active: bo
             CornerRadius::same(4),
             mix(Color32::TRANSPARENT, theme.hover, h),
         );
+        state_border(ui.painter(), theme, rect.shrink(1.0), resp.hovered() || resp.has_focus(), active);
+        focus_ring(ui, theme, rect.shrink(1.0), resp.id);
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
@@ -139,6 +204,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: &str, size: f32, active: bo
             mix(mix(theme.text_dim, theme.text, h), theme.accent, a),
         );
     }
+    access(ui, resp.id, Role::Button, tip, |_| {});
     if tip.is_empty() { resp } else { resp.on_hover_text(tip) }
 }
 
@@ -155,14 +221,17 @@ pub fn tabs(ui: &mut Ui, theme: &Theme, id: Id, labels: &[&str], active: &mut us
         }
         let a = anim(ui, resp.id.with("active"), *active == index);
         let h = anim(ui, resp.id.with("hover"), resp.hovered());
+        item(ui, &resp, Role::Tab, label, *active == index);
+        focus_ring(ui, theme, r, resp.id);
         ui.painter().galley(r.center() - galley.size() / 2.0, galley, mix(theme.text_dim, theme.text, a.max(h)));
         if *active == index {
             underline = Some(r);
         }
     }
     if let Some(r) = underline {
-        let left = ui.ctx().animate_value_with_time(id.with("left"), r.left() + 10.0, ANIM);
-        let right = ui.ctx().animate_value_with_time(id.with("right"), r.right() - 10.0, ANIM);
+        let time = if crate::a11y::reduced() { 0.0 } else { ANIM };
+        let left = ui.ctx().animate_value_with_time(id.with("left"), r.left() + 10.0, time);
+        let right = ui.ctx().animate_value_with_time(id.with("right"), r.right() - 10.0, time);
         let bar = Rect::from_min_max(egui::pos2(left, r.bottom() - 4.0), egui::pos2(right, r.bottom() - 2.5));
         ui.painter().rect_filled(bar, CornerRadius::ZERO, theme.accent);
     }
@@ -170,6 +239,9 @@ pub fn tabs(ui: &mut Ui, theme: &Theme, id: Id, labels: &[&str], active: &mut us
 }
 
 pub fn fade_in(ui: &Ui, id: Id) -> f32 {
+    if crate::a11y::reduced() {
+        return 1.0;
+    }
     let now = ui.input(|i| i.time);
     let start = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(id, || now));
     let t = ((now - start) as f32 / (ANIM * 1.5)).clamp(0.0, 1.0);
@@ -209,8 +281,12 @@ pub fn spinner(ui: &Ui, center: egui::Pos2, radius: f32, color: Color32) {
     if !ui.is_rect_visible(Rect::from_center_size(center, Vec2::splat(radius * 2.0 + 2.0))) {
         return;
     }
-    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
-    let start = (ui.input(|i| i.time) * 5.0 % std::f64::consts::TAU) as f32;
+    let start = if crate::a11y::reduced() {
+        0.0
+    } else {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+        (ui.input(|i| i.time) * 5.0 % std::f64::consts::TAU) as f32
+    };
     let points = (0..=16).map(|i| center + radius * Vec2::angled(start + i as f32 / 16.0 * 1.5 * std::f32::consts::PI)).collect();
     ui.painter().add(egui::Shape::line(points, egui::Stroke::new(1.5, color)));
 }
@@ -219,8 +295,11 @@ pub fn shimmer(ui: &Ui, theme: &Theme, rect: Rect) {
     if !ui.is_rect_visible(rect) {
         return;
     }
-    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
     ui.painter().rect_filled(rect, CornerRadius::same(3), mix(theme.panel, theme.text_dim, 0.18));
+    if crate::a11y::reduced() {
+        return;
+    }
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
     let phase = (ui.input(|i| i.time) % 1.2 / 1.2) as f32;
     let band = (rect.width() * 0.4).max(24.0);
     let x = rect.left() - band / 2.0 + phase * (rect.width() + band);
@@ -239,6 +318,10 @@ pub fn shimmer(ui: &Ui, theme: &Theme, rect: Rect) {
 pub fn shimmer_text(painter: &egui::Painter, theme: &Theme, pos: egui::Pos2, galley: std::sync::Arc<egui::Galley>) {
     let rect = Rect::from_min_size(pos, galley.size());
     if !painter.clip_rect().intersects(rect) {
+        return;
+    }
+    if crate::a11y::reduced() {
+        painter.galley(pos, galley, theme.text_dim);
         return;
     }
     painter.ctx().request_repaint_after(std::time::Duration::from_millis(33));
@@ -267,10 +350,9 @@ pub fn checkbox(ui: &mut Ui, theme: &Theme, value: &mut bool, text: impl Into<eg
         resp.mark_changed();
     }
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, galley.text()));
-    let ctx = ui.ctx();
-    let border = ctx.animate_bool_with_time(resp.id.with("border"), resp.hovered() || *value, 0.2);
-    let fill = ctx.animate_bool_with_time(resp.id.with("fill"), *value, 0.35);
-    let mark = ctx.animate_bool_with_time(resp.id.with("mark"), *value && fill >= 0.34, if *value { 0.25 } else { 0.15 });
+    let border = animate(ui, resp.id.with("border"), resp.hovered() || *value, 0.2);
+    let fill = animate(ui, resp.id.with("fill"), *value, 0.35);
+    let mark = animate(ui, resp.id.with("mark"), *value && fill >= 0.34, if *value { 0.25 } else { 0.15 });
     let press = anim(ui, resp.id.with("press"), resp.is_pointer_button_down_on());
     if !ui.is_rect_visible(rect) {
         return resp;
@@ -285,6 +367,7 @@ pub fn checkbox(ui: &mut Ui, theme: &Theme, value: &mut bool, text: impl Into<eg
     }
     let edge = mix(mix(theme.border, theme.text_dim, 0.4), theme.accent, border);
     painter.rect_stroke(bx, s / 4.0, egui::Stroke::new(1.5, edge), egui::StrokeKind::Inside);
+    crate::a11y::mark(ui, resp.id);
     if resp.has_focus() {
         painter.rect_stroke(bx.expand(2.0), s / 4.0 + 2.0, egui::Stroke::new(1.0, theme.accent), egui::StrokeKind::Outside);
     }
@@ -315,6 +398,7 @@ pub fn section(ui: &mut Ui, theme: &Theme, title: &str, open: &mut bool) -> Resp
         *open ^= true;
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::CollapsingHeader, ui.is_enabled(), title));
+    access(ui, resp.id, Role::Button, title, |n| n.set_expanded(*open));
     let h = anim(ui, resp.id.with("hover"), ui.rect_contains_pointer(rect));
     let t = anim(ui, resp.id.with("open"), *open);
     let painter = ui.painter().with_clip_rect(rect);
@@ -322,11 +406,12 @@ pub fn section(ui: &mut Ui, theme: &Theme, title: &str, open: &mut bool) -> Resp
     painter.hline(rect.x_range(), rect.top() + 0.5, egui::Stroke::new(1.0, theme.border));
     caret(&painter, egui::pos2(rect.left() + 12.0, rect.center().y), t, theme.text);
     painter.text(egui::pos2(rect.left() + 24.0, rect.center().y), Align2::LEFT_CENTER, title, FontId::proportional(11.5), theme.text);
+    focus_ring(ui, theme, rect, resp.id);
     resp
 }
 
 pub fn reveal(ui: &Ui, id: Id, open: bool) -> f32 {
-    cubic_out(ui.ctx().animate_bool_with_time(id, open, ANIM * 1.4))
+    cubic_out(animate(ui, id, open, ANIM * 1.4))
 }
 
 #[cfg(test)]
@@ -342,6 +427,23 @@ mod tests {
         assert_eq!(at(54, 32), Color32::from_rgb(191, 224, 240));
         assert_eq!(logo_image(64, false).pixels[42 * 64 + 42], Color32::WHITE);
         assert!((0..64 * 64).all(|i| at(i % 64, i / 64) == at(63 - i % 64, i / 64) && at(i % 64, i / 64) == at(i % 64, 63 - i / 64)));
+    }
+
+    fn shapes(theme: &Theme) -> usize {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(100.0, 20.0));
+            row_bg(ui, theme, rect, Id::new("row"), true, true);
+            icon_button(ui, theme, icons::X, 20.0, true, "");
+        });
+        out.textures_delta.clear();
+        out.shapes.len()
+    }
+
+    #[test]
+    fn high_contrast_themes_draw_borders() {
+        assert_eq!(shapes(&Theme::hc_dark()), shapes(&Theme::dark()) + 2);
+        assert_eq!(shapes(&Theme::hc_light()), shapes(&Theme::light()) + 2);
     }
 
     #[test]

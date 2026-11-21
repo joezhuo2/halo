@@ -1269,6 +1269,10 @@ impl Explorer {
                         let selected = self.sel.contains(&row.path) || row.chain.iter().any(|p| self.sel.contains(p));
                         let is_active = active == Some(row.path.as_path());
                         ui::row_bg(ui, theme, rect, id, resp.hovered(), selected || is_active);
+                        ui::tree_item(ui, &resp, &row.name, selected, row.depth, match row.is_dir {
+                            true => Some(self.is_open(&row.path)),
+                            false => (!row.kids.is_empty()).then(|| self.opened(row)),
+                        });
                         let under = interactive && pointer.is_some_and(|p| rect.contains(p));
                         over_row |= under;
                         if under && row.is_dir && dragging {

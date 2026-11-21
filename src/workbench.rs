@@ -406,9 +406,11 @@ fn resize(ui: &mut Ui, theme: &Theme, id: &str, rect: Rect, edge: Edge, size: &m
 
 fn activity_item(ui: &mut Ui, theme: &Theme, icon: &str, active: bool, tip: &str, size: egui::Vec2) -> Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    ui::item(ui, &resp, ui::Role::Tab, tip, active);
     let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
     let a = ui::anim(ui, resp.id.with("active"), active);
     if ui.is_rect_visible(rect) {
+        ui::focus_ring(ui, theme, rect, resp.id);
         let painter = ui.painter();
         if a > 0.0 {
             let bar = match size.x > size.y {
@@ -573,14 +575,23 @@ impl Halo {
                 max: layout.panel_max,
             };
             let r = place(ui.max_rect(), &spec);
+            crate::a11y::region(ui.ctx(), Some(crate::a11y::Region::Editor));
             self.editor_area(ui, r.editor);
+            crate::a11y::region(ui.ctx(), None);
             if let Some(rect) = r.activity {
                 self.icon_strip(ui, rect, Place::Primary, spec.activity == Activity::Side);
             }
             let mut targets: Vec<(Place, Rect)> = r.activity.map(|a| (Place::Primary, a)).into_iter().collect();
             for (place, rect) in [(Place::Primary, r.primary), (Place::Secondary, r.secondary), (Place::Panel, r.panel)] {
                 if let Some(rect) = rect {
+                    let region = match place {
+                        Place::Primary => Some(crate::a11y::Region::Sidebar),
+                        Place::Panel => Some(crate::a11y::Region::Panel),
+                        _ => None,
+                    };
+                    crate::a11y::region(ui.ctx(), region);
                     self.container(ui, place, rect);
+                    crate::a11y::region(ui.ctx(), None);
                     targets.push((place, rect));
                 }
             }
