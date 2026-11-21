@@ -6,7 +6,10 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
-Covered by tests; not yet checked by hand in the running app.
+## [0.1.4] - 2026-11-21
+
+Covered by tests and by starting the release build off screen. Most of it
+has not been used by hand yet, so expect rough edges.
 
 ### Added
 
@@ -265,7 +268,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/joezhuo2/halo/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/joezhuo2/halo/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/joezhuo2/halo/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/joezhuo2/halo/compare/v0.1.0...v0.1.1

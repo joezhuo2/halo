@@ -1,12 +1,15 @@
-# Handoff: milestone 4 written
+# Handoff: 0.1.4
 
-Written 2026-11-20. Read [requirements.md](requirements.md), [decisions.md](decisions.md) and [architecture.md](architecture.md) first; [milestones.md](milestones.md) has the scope of what comes next.
+Written 2026-11-21. Read [requirements.md](requirements.md), [decisions.md](decisions.md) and [architecture.md](architecture.md) first; [milestones.md](milestones.md) has the scope of what comes next.
 
 ## State
 
 - Repository: `C:\Users\Joe\Documents\halo`, remote `origin` = https://github.com/joezhuo2/halo.
 - Branches: `main` was created from `m1-shell` (all of milestone 1) and pushed. Milestone 2 is on `m2-scm` and milestone 3 on `m3-ai` (branched from `m2-scm`); neither is pushed or merged. Milestone 4 is on `m4-packaging` (branched from `m3-ai`), also not pushed.
-- Build: `cargo build` is warning-free. `cargo test` passes 64 tests; `cargo test -- --ignored` adds one that needs `rust-analyzer`.
+- Build: `cargo build` and `cargo clippy --all-targets` are warning-free. `cargo test` passes 270 tests; `cargo test -- --ignored` adds one that needs `rust-analyzer` and one that runs `cargo test` on a temporary crate. `cargo check` passes for the Linux and both macOS targets from Windows.
+- Version 0.1.4 (the IDE features of M8, see [milestones.md](milestones.md)) was built on `m7-ide` by parallel workers in worktrees under `.claude/worktrees`, one branch `m7/<name>` each, and merged there. It is covered by unit and headless tests. The release build was started off screen in test mode with twelve views (Explorer, Source Control, Run and Debug, Testing, Settings, a terminal, Output, the grid layout, the secondary side bar, the command list, `keybindings.json`, notifications): none crashed, and the screenshots showed the expected layout. Nothing else was checked by hand: no mouse input, no debugger adapter, no screen reader, no real merge, and none of the platforms other than Windows was run.
+- The release binary grew from about 9.6 MB (0.1.3) to 16.9 MB with `resvg`, `image`, `pulldown-cmark` and AccessKit.
+- The window is transparent while Halo starts and is shown once its first frames are drawn (`windows::conceal`), because eframe shows the window before the first painted frame. The window keeps the layered style afterwards.
 - Version 0.1.3 (the interface polish of M7) is on `main`, tagged `v0.1.3`. Its animations, loaders and the timeline are covered by tests where they have logic; none of it was checked by hand in the running app.
 - Version 0.1.2 (the editing features of M6 and auto update) is tagged `v0.1.2`. The Release workflow builds it and leaves a draft GitHub release to publish. Auto update only sees published releases. The M6 features are covered by tests; they were not checked by hand in the running app.
 - Run: `cargo run --release`, or `target\release\halo.exe [folder-or-file]`.
