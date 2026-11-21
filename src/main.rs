@@ -18,6 +18,7 @@ mod terminal;
 mod theme;
 mod titlebar;
 mod ui;
+mod update;
 mod wsl;
 
 use eframe::egui;

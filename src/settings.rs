@@ -53,6 +53,7 @@ pub struct Settings {
     pub bracket_colors: bool,
     pub guides: bool,
     pub hot_exit: bool,
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -132,6 +133,7 @@ impl Default for Settings {
             bracket_colors: true,
             guides: true,
             hot_exit: true,
+            auto_update: true,
         }
     }
 }

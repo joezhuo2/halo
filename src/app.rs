@@ -53,6 +53,8 @@ pub struct Halo {
     pub chord: Option<egui::KeyboardShortcut>,
     theme_fade: Option<(f64, egui::Color32)>,
     icon_dark: Option<bool>,
+    update: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    pub updated: Option<String>,
 }
 
 impl Halo {
@@ -92,7 +94,12 @@ impl Halo {
             chord: None,
             theme_fade: None,
             icon_dark: None,
+            update: None,
+            updated: None,
         };
+        if app.settings.auto_update && !cfg!(debug_assertions) && std::env::var_os("HALO_COMMANDS").is_none() {
+            app.update = Some(crate::update::start(ctx));
+        }
 
         let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().or_else(|_| std::path::absolute(&p)).ok()).map(strip_unc);
         let (folder, files) = match arg {
@@ -624,6 +631,13 @@ impl eframe::App for Halo {
         }
         if self.editors.take_saved() {
             self.after_save(&ctx);
+        }
+        if let Some(result) = self.update.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.update = None;
+            match result {
+                Ok(version) => self.updated = Some(version),
+                Err(error) => ui::notify(format!("Halo could not update itself: {error}")),
+            }
         }
         self.handle_window_events(&ctx);
         let dark = ctx.system_theme() == Some(egui::Theme::Dark);

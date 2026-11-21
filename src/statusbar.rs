@@ -61,6 +61,11 @@ impl Halo {
                         }
                     }
 
+                    if let Some(version) = &self.updated {
+                        let tip = "This version is installed and is used the next time Halo opens";
+                        item(ui, &theme, &format!("{} {version}", icons::ARROW_CIRCLE_UP), true, tip);
+                    }
+
                     if let Some(first) = self.chord {
                         let label = format!("({}) was pressed. Waiting for the second key...", ui.ctx().format_shortcut(&first));
                         item(ui, &theme, &label, true, "Key chord");

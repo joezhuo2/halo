@@ -90,6 +90,8 @@ impl Halo {
                             toggle(ui, &theme, "Files", "Auto Save", about, &mut edited.auto_save);
                             let about = "Keep unsaved and untitled files when Halo closes and bring them back the next time it opens.";
                             toggle(ui, &theme, "Files", "Hot Exit", about, &mut edited.hot_exit);
+                            let about = "When Halo opens, look for a newer release, install it in the background and use it the next time Halo opens.";
+                            toggle(ui, &theme, "Application", "Auto Update", about, &mut edited.auto_update);
                             let about = "Remove spaces and tabs at the ends of lines when a file is saved.";
                             toggle(ui, &theme, "Files", "Trim Trailing Whitespace", about, &mut edited.trim_trailing_whitespace);
                             let about = "End the file with a line break when it is saved.";
