@@ -210,6 +210,16 @@ fn nested_files_follow_their_parent_and_fold() {
     assert_eq!(names(&explorer), ["src", "a.ts", "a.js", "b.txt", "package.json"]);
     explorer.refresh();
     assert!(explorer.flipped.contains(&dir.join("a.ts")));
+
+    explorer.filter.open = true;
+    explorer.filter.text = "lock".into();
+    explorer.build();
+    assert_eq!(names(&explorer), ["package.json", "package-lock.json"]);
+    explorer.filter.open = false;
+    explorer.reveal_active(&dir.join("package-lock.json"));
+    explorer.build();
+    assert_eq!(names(&explorer)[4..], ["package.json", "package-lock.json"]);
+    assert_eq!(explorer.sel.paths, [dir.join("package-lock.json")]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
