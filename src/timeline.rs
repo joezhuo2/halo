@@ -2,7 +2,7 @@ use crate::app::note;
 use crate::command::Command;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use eframe::egui::{self, Align2, FontId, Rect, ScrollArea, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
+use eframe::egui::{self, FontId, Rect, ScrollArea, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
@@ -85,9 +85,13 @@ impl Timeline {
                 let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                 ui::row_bg(ui, theme, r, row.id, row.hovered(), false);
                 let painter = ui.painter().with_clip_rect(r);
-                let subject = painter.text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, &entry.subject, FontId::proportional(12.5), theme.text);
-                let meta = format!("{}, {}", entry.author, entry.ago);
-                painter.text(pos2(subject.right() + 8.0, r.center().y), Align2::LEFT_CENTER, meta, FontId::proportional(11.5), theme.text_dim);
+                let meta = painter.layout_no_wrap(format!("{}, {}", entry.author, entry.ago), FontId::proportional(11.5), theme.text_dim);
+                let mut job = egui::text::LayoutJob::simple_singleline(entry.subject.clone(), FontId::proportional(12.5), theme.text);
+                job.wrap = egui::text::TextWrapping::truncate_at_width((r.width() - 32.0 - meta.size().x).max(60.0));
+                let subject = painter.layout_job(job);
+                let after = r.left() + 20.0 + subject.size().x;
+                painter.galley(pos2(r.left() + 12.0, r.center().y - subject.size().y / 2.0), subject, theme.text);
+                painter.galley(pos2(after, r.center().y - meta.size().y / 2.0), meta, theme.text_dim);
                 let tip = format!("{}\n{}, {}\n\n{}", entry.hash, entry.author, entry.date, entry.subject);
                 if row.on_hover_text(tip).clicked() {
                     let short = &entry.hash[..entry.hash.len().min(8)];
