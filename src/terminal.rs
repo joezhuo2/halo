@@ -1598,7 +1598,7 @@ mod tests {
         if cfg!(windows) {
             check_shell("powershell.exe", &["-NoLogo", "-NoProfile"], "cmd /c exit 3", 3);
         } else {
-            check_shell("bash", &["--norc"], "(exit 3)", 3);
+            check_shell("bash", &[], "(exit 3)", 3);
         }
         let git_bash = Path::new(r"C:\Program Files\Git\bin\bash.exe");
         if cfg!(windows) && git_bash.is_file() {
