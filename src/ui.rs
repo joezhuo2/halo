@@ -150,6 +150,10 @@ pub fn item(ui: &Ui, resp: &Response, role: Role, name: &str, selected: bool) {
     access(ui, resp.id, role, name, |n| n.set_selected(selected));
 }
 
+pub fn plain(text: &str) -> String {
+    text.chars().filter(|c| !('\u{e000}'..='\u{f8ff}').contains(c)).collect::<String>().trim().to_owned()
+}
+
 pub fn list_item(ui: &Ui, resp: &Response, name: &str, selected: bool, (index, count): (usize, usize)) {
     access(ui, resp.id, Role::ListItem, name, |n| {
         n.set_selected(selected);

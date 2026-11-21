@@ -1364,6 +1364,7 @@ impl BottomPanel {
                         for at in 0..count {
                             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
                             ui::row_bg(ui, theme, r, resp.id, resp.hovered(), index == self.active && at == group.active);
+                            ui::item(ui, &resp, ui::Role::ListItem, &group.panes[at].title(), index == self.active && at == group.active);
                             let (icon, font) = match at {
                                 _ if count == 1 => (icons::TERMINAL_WINDOW, FontId::proportional(14.0)),
                                 0 => ("┌", FontId::monospace(13.0)),
@@ -1501,6 +1502,7 @@ impl BottomPanel {
                     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
                     ui::row_bg(ui, theme, r, resp.id, resp.hovered(), false);
                     let values = [row.port.to_string(), row.address.clone(), row.pid.clone(), row.process.clone()];
+                    ui::item(ui, &resp, ui::Role::ListItem, &format!("Port {} {}", row.port, row.process), false);
                     for ((x, _), value) in columns.iter().zip(values) {
                         let color = if *x == 0.0 { theme.accent } else { theme.text };
                         ui.painter().text(pos2(r.left() + x, r.center().y), Align2::LEFT_CENTER, value, FontId::proportional(12.5), color);
@@ -1531,6 +1533,7 @@ fn problems_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, task_files: &[(PathBuf, Ve
             for problem in items.iter().filter(|d| d.severity <= 3) {
                 let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                 ui::row_bg(ui, theme, r, row.id, row.hovered(), false);
+                ui::tree_item(ui, &row, &format!("{}: {}, line {}", ["Error", "Warning", "Info"][(problem.severity as usize).clamp(1, 3) - 1], problem.message.lines().next().unwrap_or_default(), problem.start.0 + 1), false, 1, None);
                 let (icon, color) = match problem.severity {
                     1 => (icons::X_CIRCLE, theme.error),
                     2 => (icons::WARNING, theme.warning),

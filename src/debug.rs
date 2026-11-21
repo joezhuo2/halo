@@ -1121,6 +1121,7 @@ impl Tree<'_> {
             }
             let (r, resp) = row(ui, theme, false);
             let x = r.left() + 12.0 + depth as f32 * 12.0;
+            ui::tree_item(ui, &resp, &format!("{} {}", var.name, var.value), false, depth, (var.reference > 0).then_some(open));
             if var.reference > 0 {
                 ui::caret(ui.painter(), pos2(x + 4.0, r.center().y), ui::anim(ui, resp.id.with("open"), open), theme.text_dim);
             }
@@ -1274,6 +1275,7 @@ impl Debug {
             }
             let (r, resp) = row(ui, theme, false);
             let value = self.live.as_ref().and_then(|l| l.watch.get(expression));
+            ui::item(ui, &resp, ui::Role::ListItem, expression, false);
             let (shown, color) = match value {
                 Some(Ok(value)) => (value.clone(), theme.text_dim),
                 Some(Err(error)) => (error.clone(), theme.error),
@@ -1300,6 +1302,7 @@ impl Debug {
         } else {
             let (r, resp) = row(ui, theme, false);
             ui.painter().with_clip_rect(r).text(pos2(r.left() + 26.0, r.center().y), Align2::LEFT_CENTER, format!("{}  Add Expression", icons::PLUS), FontId::proportional(12.5), theme.text_dim);
+            ui::item(ui, &resp, ui::Role::Button, "Add Expression", false);
             if resp.clicked() && !adding {
                 self.editing = Some(Editing::Watch(None, String::new()));
             }
@@ -1327,8 +1330,9 @@ impl Debug {
         }
         let mut pick = None;
         for (id, name) in live.threads.clone() {
-            let (r, _) = row(ui, theme, false);
+            let (r, thread) = row(ui, theme, false);
             let current = live.thread == Some(id) && live.state == State::Stopped;
+            ui::tree_item(ui, &thread, &name, current, 0, Some(current));
             let state = if current { format!("Paused on {}", live.reason) } else { String::from(if live.state == State::Stopped { "Paused" } else { "Running" }) };
             pair(ui, r, r.left() + 12.0, theme, &format!("{} {name}", icons::STACK), &state, theme.text_dim);
             if !current {
@@ -1337,6 +1341,7 @@ impl Debug {
             for (index, frame) in live.frames.iter().enumerate() {
                 let (r, resp) = row(ui, theme, index == live.frame);
                 let place = frame.path.as_deref().map(|p| format!("{}:{}", p.file_name().unwrap_or_default().to_string_lossy(), frame.line)).unwrap_or_else(|| "unknown source".into());
+                ui::tree_item(ui, &resp, &format!("{} {place}", frame.name), index == live.frame, 1, None);
                 pair(ui, r, r.left() + 26.0, theme, &frame.name, &place, theme.text_dim);
                 if resp.clicked() {
                     pick = Some(index);
@@ -1371,6 +1376,7 @@ impl Debug {
             for b in list {
                 let (r, resp) = row(ui, theme, false);
                 let mut on = b.enabled;
+                ui::item(ui, &resp, ui::Role::ListItem, &format!("{name}:{}", b.line + 1), false);
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(r.left() + 12.0, r.top() + 3.0), vec2(16.0, 16.0))));
                 if ui::checkbox(&mut child, theme, &mut on, "").changed() {
                     action = Some((path.clone(), Gutter::Enable(b.line, on)));

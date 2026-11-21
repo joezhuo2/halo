@@ -83,6 +83,7 @@ impl Halo {
         if resp.clicked() {
             self.cmds.push(Command::GoToFile);
         }
+        ui::access(ui, resp.id, ui::Role::Button, "Search files, commands, text and symbols (Ctrl+P)", |_| {});
         let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
         let painter = ui.painter();
         painter.rect(
@@ -229,6 +230,8 @@ impl Halo {
 fn window_button(ui: &mut Ui, theme: &Theme, icon: &str, danger: bool, tip: &str) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(44.0, HEIGHT), Sense::click());
     let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
+    ui::access(ui, resp.id, ui::Role::Button, tip, |_| {});
+    ui::focus_ring(ui, theme, rect, resp.id);
     let (bg, fg) = if danger { (theme.deleted, Color32::WHITE) } else { (theme.hover, theme.text) };
     ui.painter().rect_filled(rect, CornerRadius::ZERO, ui::mix(Color32::TRANSPARENT, bg, h));
     ui.painter().text(

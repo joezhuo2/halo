@@ -1702,6 +1702,7 @@ impl Editors {
                     let x = ui.ctx().animate_value_with_time(id.with("left"), left, duration);
                     let r = Rect::from_min_size(row.min + vec2(x, 0.0), vec2(face.width(), TAB_H));
                     let resp = ui.interact(r, id, Sense::click_and_drag());
+                    ui::item(ui, &resp, ui::Role::Tab, &format!("{}{}", face.name.text(), if face.dirty { ", modified" } else { "" }), t == active);
                     if resp.drag_started_by(PointerButton::Primary)
                         && let Some(press) = ui.input(|i| i.pointer.press_origin())
                     {
@@ -1717,6 +1718,7 @@ impl Editors {
                     let p = ui.painter();
                     p.rect_filled(r, CornerRadius::ZERO, ui::mix(ui::mix(theme.panel, theme.hover, h * 0.5), theme.bg, a));
                     p.vline(r.right() - 0.5, r.y_range(), Stroke::new(1.0, theme.border));
+                    ui::focus_ring(ui, theme, r, id);
                     if a > 0.0 {
                         let line = Rect::from_min_max(r.min, pos2(r.right() - 1.0, r.top() + 2.0));
                         let color = if active_group { theme.accent } else { theme.text_dim };

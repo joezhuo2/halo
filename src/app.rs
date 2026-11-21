@@ -966,6 +966,7 @@ fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>,
         for (index, symbol) in symbols.iter().enumerate() {
             let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
             ui::row_bg(ui, theme, r, row.id, row.hovered(), current == Some(index));
+            ui::tree_item(ui, &row, &symbol.name, current == Some(index), symbol.depth, None);
             let x = r.left() + 12.0 + symbol.depth as f32 * 12.0;
             let painter = ui.painter().with_clip_rect(r);
             painter.text(pos2(x, r.center().y), Align2::LEFT_CENTER, lsp::symbol_icon(symbol.kind), FontId::proportional(13.0), theme.accent);
@@ -979,9 +980,11 @@ fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>,
 
 fn activity_item(ui: &mut Ui, theme: &Theme, icon: &str, active: bool, tip: &str) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(46.0, 44.0), Sense::click());
+    ui::item(ui, &resp, ui::Role::Tab, tip, active);
     let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
     let a = ui::anim(ui, resp.id.with("active"), active);
     if ui.is_rect_visible(rect) {
+        ui::focus_ring(ui, theme, rect, resp.id);
         let painter = ui.painter();
         if a > 0.0 {
             let mut bar = rect;

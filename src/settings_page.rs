@@ -383,9 +383,11 @@ impl Halo {
                         }
                     }
                     let on = ui::anim(ui, resp.id.with("on"), self.page.tab == index && !searching);
+                    ui::item(ui, &resp, ui::Role::Tab, name, self.page.tab == index && !searching);
                     let h = ui::anim(ui, resp.id.with("hover"), resp.hovered());
                     let fill = ui::mix(ui::mix(Color32::TRANSPARENT, theme.hover, h), theme.selection, on);
                     ui.painter().rect_filled(r, CornerRadius::same(5), fill);
+                    ui::focus_ring(ui, &theme, r, resp.id);
                     let color = ui::mix(theme.text_dim, theme.text, on.max(h));
                     ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, *icon, FontId::proportional(15.0), color);
                     ui.painter().text(pos2(r.left() + 38.0, r.center().y), Align2::LEFT_CENTER, *name, FontId::proportional(13.0), color);

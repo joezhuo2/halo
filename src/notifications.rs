@@ -357,6 +357,7 @@ fn toasts_ui(ctx: &egui::Context, theme: &Theme, cmds: &mut Vec<Command>, store:
             let focused = focus && position == notes.len() - 1;
             let out = ui.scope(|ui| {
                 ui.set_opacity(fade);
+                ui::access(ui, ui.unique_id(), ui::Role::Alert, &format!("{}: {}", note.severity.label(), note.text), |_| {});
                 let border = match note.severity {
                     Severity::Info => theme.border,
                     Severity::Warning => theme.warning,
