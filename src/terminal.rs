@@ -171,6 +171,7 @@ pub struct Terminal {
     want_focus: bool,
     wheel: f32,
     last_input: f64,
+    pub pid: Option<u32>,
 }
 
 impl Drop for Terminal {
@@ -181,6 +182,10 @@ impl Drop for Terminal {
 
 impl Terminal {
     pub fn spawn(id: u64, name: &str, program: &str, args: &[String], cwd: Option<&Path>, ctx: egui::Context) -> std::io::Result<Self> {
+        Self::spawn_with(id, name, program, args, cwd, &[], ctx)
+    }
+
+    pub fn spawn_with(id: u64, name: &str, program: &str, args: &[String], cwd: Option<&Path>, env: &[(String, String)], ctx: egui::Context) -> std::io::Result<Self> {
         let mut options = tty::Options::default();
         options.shell = Some(tty::Shell::new(program.to_owned(), args.to_vec()));
         options.working_directory = cwd.map(Path::to_path_buf).or_else(dirs::home_dir);
@@ -188,8 +193,13 @@ impl Terminal {
             ("TERM".to_owned(), "xterm-256color".to_owned()),
             ("COLORTERM".to_owned(), "truecolor".to_owned()),
         ]);
+        options.env.extend(env.iter().cloned());
         let window = WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 16 };
         let pty = tty::new(&options, window, id)?;
+        #[cfg(windows)]
+        let pid = pty.child_watcher().pid().map(|p| p.get());
+        #[cfg(not(windows))]
+        let pid = Some(pty.child().id());
         let shared = Arc::new(Shared { exited: AtomicBool::new(false), title: Mutex::new(None), sender: Mutex::new(None) });
         let proxy = Proxy { ctx, shared: shared.clone() };
         let config = Config { scrolling_history: 5000, ..Default::default() };
@@ -209,6 +219,7 @@ impl Terminal {
             want_focus: true,
             wheel: 0.0,
             last_input: 0.0,
+            pid,
         })
     }
 
@@ -573,6 +584,7 @@ pub struct BottomPanel {
     run_id: Option<u64>,
     run_line: String,
     debug: String,
+    pub console: crate::debug::Console,
 }
 
 impl BottomPanel {
@@ -591,6 +603,7 @@ impl BottomPanel {
             run_id: None,
             run_line: String::new(),
             debug: String::new(),
+            console: Default::default(),
         }
     }
 
@@ -608,6 +621,21 @@ impl BottomPanel {
 
     pub fn showing_problems(&self) -> bool {
         self.tab == PanelTab::Problems
+    }
+
+    pub fn show_debug(&mut self) {
+        self.tab = PanelTab::Debug;
+    }
+
+    pub fn launch(&mut self, name: &str, program: &str, args: &[String], cwd: Option<&Path>, env: &[(String, String)], ctx: &egui::Context) -> Result<Option<u32>, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let terminal = Terminal::spawn_with(id, name, program, args, cwd, env, ctx.clone()).map_err(|e| format!("Could not start {program}: {e}"))?;
+        let pid = terminal.pid;
+        let profile = ShellProfile { name: name.to_owned(), program: program.to_owned(), args: args.to_vec() };
+        self.groups.push(Group { panes: vec![terminal], active: 0, profile });
+        (self.active, self.started, self.tab) = (self.groups.len() - 1, true, PanelTab::Terminal);
+        Ok(pid)
     }
 
     fn spawn(&mut self, profile: &ShellProfile, cwd: Option<&Path>, ctx: &egui::Context) -> Option<Terminal> {
@@ -666,9 +694,13 @@ impl BottomPanel {
         self.groups[index].panes[pane].write(format!("{line}\r"));
         self.groups[index].panes[pane].focus();
         self.run_line = line.to_owned();
+        self.console.shown = false;
     }
 
     fn debug_ui(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, font_size: f32) {
+        if self.console.shown {
+            return self.console.ui(ui, body, theme, font_size);
+        }
         if let Some(pane) = self.groups.iter().flat_map(|g| &g.panes).find(|p| Some(p.id) == self.run_id) {
             self.debug = pane.text();
         }

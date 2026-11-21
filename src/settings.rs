@@ -35,6 +35,7 @@ pub struct Settings {
     pub tasks: Vec<Task>,
     pub lsp: bool,
     pub servers: BTreeMap<String, String>,
+    pub debug_adapters: BTreeMap<String, String>,
     pub diagnostics: bool,
     pub status_problems: bool,
     pub code_lens: bool,
@@ -114,6 +115,17 @@ impl Default for Settings {
                 ("css", "vscode-css-language-server --stdio"),
             ]
             .map(|(ext, command)| (ext.to_owned(), command.to_owned()))
+            .into(),
+            debug_adapters: [
+                ("lldb", "codelldb"),
+                ("codelldb", "codelldb"),
+                ("lldb-dap", "lldb-dap"),
+                ("gdb", "gdb --interpreter=dap"),
+                ("python", "python -m debugpy.adapter"),
+                ("debugpy", "python -m debugpy.adapter"),
+                ("go", "dlv dap --listen=127.0.0.1:{port}"),
+            ]
+            .map(|(kind, command)| (kind.to_owned(), command.to_owned()))
             .into(),
             diagnostics: true,
             status_problems: true,
@@ -261,6 +273,8 @@ pub struct Session {
     pub search: bool,
     pub outline: bool,
     pub timeline: bool,
+    pub debug_view: bool,
+    pub breakpoints: BTreeMap<PathBuf, BTreeMap<PathBuf, Vec<crate::debug::Breakpoint>>>,
 }
 
 impl Default for Session {
@@ -277,6 +291,8 @@ impl Default for Session {
             search: false,
             outline: true,
             timeline: false,
+            debug_view: false,
+            breakpoints: BTreeMap::new(),
         }
     }
 }

@@ -5,6 +5,7 @@ mod ai;
 mod app;
 mod command;
 mod dap;
+mod debug;
 mod editor;
 mod explorer;
 mod find;

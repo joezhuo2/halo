@@ -30,6 +30,7 @@ pub struct SettingsPage {
     new_run: (String, String),
     new_association: (String, String),
     new_server: (String, String),
+    new_adapter: (String, String),
 }
 
 impl Halo {
@@ -376,6 +377,9 @@ fn languages_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut Settin
     let about = "The command that starts the server for each file extension. It must be on PATH and speak LSP over standard input and output.";
     item(ui, theme, "Language Servers", "Commands", about);
     map_editor(ui, theme, "settings_servers", &mut s.servers, &mut page.new_server, "command");
+    let about = "The command that starts the debug adapter for each launch.json type. {port} makes Halo connect to it over TCP.";
+    item(ui, theme, "Debugging", "Debug Adapters", about);
+    map_editor(ui, theme, "settings_adapters", &mut s.debug_adapters, &mut page.new_adapter, "command");
     let languages = crate::editor::languages();
     item(ui, theme, "Languages", "Installed", &format!("{} languages are installed.", languages.len()));
     for (name, extensions) in languages {
