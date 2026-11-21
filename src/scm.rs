@@ -10,6 +10,8 @@ use eframe::egui::{
 use std::path::{Path, PathBuf};
 
 const ROW: f32 = 22.0;
+const HEADER: f32 = 24.0;
+const MIN_BODY: f32 = 60.0;
 const STAGED: [(&str, &str); 2] = [(icons::MINUS, "Unstage"), (icons::FILE, "Open File")];
 const STAGED_ALL: [(&str, &str); 1] = [(icons::MINUS, "Unstage All")];
 const UNSTAGED: [(&str, &str); 3] =
@@ -37,6 +39,8 @@ enum Action {
 }
 
 pub struct Scm {
+    open: [bool; 3],
+    shares: [f32; 3],
     message: String,
     committing: bool,
     discard: Option<Option<String>>,
@@ -48,7 +52,10 @@ pub struct Scm {
 
 impl Scm {
     pub fn new() -> Self {
-        Self { message: String::new(), committing: false, discard: None, new_branch: None, commit: None, review: None, new_pr: None }
+        Self {
+            open: [true; 3], shares: [1.0; 3], message: String::new(), committing: false, discard: None,
+            new_branch: None, commit: None, review: None, new_pr: None,
+        }
     }
 
     pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, git: &mut Git, cmds: &mut Vec<Command>) {
@@ -103,25 +110,80 @@ impl Scm {
             ui.add_space(4.0);
         });
 
-        ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            if git.changes(true).is_empty() && git.changes(false).is_empty() {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(12.0);
-                    ui.label(RichText::new("No changes.").color(theme.text_dim));
-                });
-            }
-            for staged in [true, false] {
-                let changes = git.changes(staged);
-                if !changes.is_empty() {
-                    group(ui, theme, &top, changes, staged, busy, &mut action, cmds);
+        let available = (ui.available_height() - 3.0 * HEADER).max(0.0);
+        let reveal = std::array::from_fn(|i| ui::reveal(ui, ui.id().with(("scm_reveal", i)), self.open[i]));
+        let heights = section_heights(available, self.shares, reveal);
+        let staged = git.changes(true);
+        let unstaged = git.changes(false);
+        let pr_title = match git.prs() {
+            Some(Ok(prs)) => format!("PULL REQUESTS  {}", prs.len()),
+            _ => "PULL REQUESTS".to_owned(),
+        };
+        let titles = [format!("CHANGES  {}", staged.len() + unstaged.len()), pr_title, "COMMITS".to_owned()];
+        for (i, title) in titles.iter().enumerate() {
+            ui.push_id(("scm_section", i), |ui| {
+                let header = ui::section(ui, theme, title, &mut self.open[i]);
+                let rect = header.rect;
+                if i == 0 {
+                    let mut end = rect;
+                    if !unstaged.is_empty() {
+                        match buttons(ui, theme, rect, !busy, &UNSTAGED_ALL) {
+                            Some(0) => action = Some(Action::Stage(None)),
+                            Some(_) => action = Some(Action::Discard(None)),
+                            None => {}
+                        }
+                        end.max.x -= 40.0;
+                    }
+                    if !staged.is_empty() && buttons(ui, theme, end, !busy, &STAGED_ALL).is_some() {
+                        action = Some(Action::Unstage(None));
+                    }
+                } else if i == 1 && buttons(ui, theme, rect, !busy, &[(icons::PLUS, "Create Pull Request")]).is_some() {
+                    action = Some(Action::NewPr);
                 }
-            }
-            pull_requests(ui, theme, git, busy, &mut action);
-            graph(ui, theme, git, self.commit.as_deref(), &mut action, cmds);
-        });
+                if self.open[i] && let Some(prev) = self.open[..i].iter().rposition(|&open| open) {
+                    let strip = Rect::from_center_size(rect.center_top(), vec2(rect.width(), 5.0));
+                    let drag = ui.interact(strip, header.id.with("resize"), Sense::drag());
+                    if drag.hovered() || drag.dragged() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                        ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, theme.accent));
+                    }
+                    if drag.dragged() {
+                        self.resize(available, prev, i, drag.drag_delta().y);
+                    }
+                }
+                if heights[i] <= 0.0 {
+                    return;
+                }
+                let (_, body) = ui.allocate_space(vec2(ui.available_width(), heights[i]));
+                let mut child = ui.new_child(UiBuilder::new().max_rect(body));
+                child.shrink_clip_rect(body);
+                ScrollArea::vertical().id_salt("body").min_scrolled_height(0.0).auto_shrink(false).show(&mut child, |ui| {
+                    match i {
+                        0 => changes(ui, theme, git, &top, &mut action, cmds),
+                        1 => pull_requests(ui, theme, git, busy, &mut action),
+                        _ => graph(ui, theme, git, self.commit.as_deref(), &mut action, cmds),
+                    }
+                });
+            });
+        }
         self.dialogs(ui, git, &top, cmds);
         self.apply(action, git, ui);
+    }
+
+    fn resize(&mut self, available: f32, prev: usize, next: usize, dy: f32) {
+        let mut heights = section_heights(available, self.shares, self.open.map(f32::from));
+        let dy = dy.clamp((MIN_BODY - heights[prev]).min(0.0), (heights[next] - MIN_BODY).max(0.0));
+        if dy == 0.0 {
+            return;
+        }
+        heights[prev] += dy;
+        heights[next] -= dy;
+        let total: f32 = (0..3).filter(|&i| self.open[i]).map(|i| self.shares[i]).sum();
+        for (i, height) in heights.iter().enumerate() {
+            if self.open[i] {
+                self.shares[i] = height / available * total;
+            }
+        }
     }
 
     fn apply(&mut self, action: Option<Action>, git: &mut Git, ui: &Ui) {
@@ -262,25 +324,31 @@ fn prompt(ui: &Ui, heading: &str, note: &str, fields: &mut [(&str, &mut String, 
     choice
 }
 
-fn pull_requests(ui: &mut Ui, theme: &Theme, git: &Git, busy: bool, action: &mut Option<Action>) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0, ui::mix(theme.panel, theme.bar, 0.5));
-    let title = match git.prs() {
-        Some(Ok(prs)) => format!("PULL REQUESTS  {}", prs.len()),
-        _ => "PULL REQUESTS".to_owned(),
-    };
-    ui.painter().text(pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, title, FontId::proportional(11.5), theme.text);
-    if buttons(ui, theme, rect, !busy, &[(icons::PLUS, "Create Pull Request")]).is_some() {
-        *action = Some(Action::NewPr);
+fn section_heights(available: f32, shares: [f32; 3], reveal: [f32; 3]) -> [f32; 3] {
+    let count: f32 = reveal.iter().sum();
+    let min = MIN_BODY.min(available / count.max(1.0));
+    let mut remaining = available * count.min(1.0);
+    let mut order = [0, 1, 2];
+    order.sort_unstable_by(|&a, &b| shares[a].total_cmp(&shares[b]));
+    let mut heights = [0.0; 3];
+    for (index, i) in order.into_iter().enumerate() {
+        if reveal[i] > 0.0 {
+            let weight: f32 = order[index..].iter().map(|&j| shares[j] * reveal[j]).sum();
+            heights[i] = (remaining * (shares[i] * reveal[i] / weight)).max(min * reveal[i]);
+            remaining -= heights[i];
+        }
     }
+    heights
+}
 
+fn pull_requests(ui: &mut Ui, theme: &Theme, git: &Git, busy: bool, action: &mut Option<Action>) {
     let note = |ui: &mut Ui, text: &str| {
         Frame::new().inner_margin(Margin::symmetric(14, 5)).show(ui, |ui| {
             ui.label(RichText::new(text).size(12.0).color(theme.text_dim));
         });
     };
     let prs = match git.prs() {
-        None => return note(ui, "Loading..."),
+        None => return ui::skeleton(ui, theme, 3),
         Some(Err(error)) if error.starts_with("Could not run gh") => {
             return note(ui, "Install the GitHub CLI (gh) to see pull requests.");
         }
@@ -454,10 +522,6 @@ fn graph(
     if log.is_empty() {
         return;
     }
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0, ui::mix(theme.panel, theme.bar, 0.5));
-    ui.painter().text(pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, "COMMITS", FontId::proportional(11.5), theme.text);
-
     let palette = [theme.accent, theme.modified, theme.added, theme.syntax.keyword, theme.syntax.string, theme.deleted];
     let widest = |c: &Commit| c.through.iter().chain(&c.down).copied().fold(c.col, usize::max);
     let lanes = log.iter().map(widest).max().unwrap_or(0).min(7) + 1;
@@ -466,10 +530,12 @@ fn graph(
     let stroke = |lane: usize| Stroke::new(1.5, palette[lane % palette.len()]);
 
     for commit in log {
-        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+        let (_, rect) = ui.allocate_space(vec2(ui.available_width(), ROW));
+        let id = Id::new(("scm_commit", &commit.hash));
+        let resp = ui.interact(rect, id, Sense::click());
         let is_open = open == Some(commit.hash.as_str());
         if ui.is_rect_visible(rect) {
-            ui::row_bg(ui, theme, rect, Id::new(("scm_commit", &commit.hash)), resp.hovered(), is_open);
+            ui::row_bg(ui, theme, rect, id, resp.hovered(), is_open);
             let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
             let dot = pos2(lane_x(rect, commit.col), rect.center().y);
             for lane in &commit.through {
@@ -497,11 +563,13 @@ fn graph(
             continue;
         }
 
-        let files = git.files(&commit.hash);
-        let loading = [Change { path: "Loading...".into(), state: FileState::Ignored }];
-        for change in files.unwrap_or(&loading) {
+        let Some(files) = git.files(&commit.hash) else {
+            ui::skeleton(ui, theme, 1);
+            continue;
+        };
+        for change in files {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
-            ui::row_bg(ui, theme, rect, Id::new(("scm_commit_file", &change.path)), resp.hovered() && files.is_some(), false);
+            ui::row_bg(ui, theme, rect, Id::new(("scm_commit_file", &change.path)), resp.hovered(), false);
             let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
             for lane in commit.through.iter().chain(&commit.down) {
                 painter.vline(lane_x(rect, *lane), rect.y_range(), stroke(*lane));
@@ -513,7 +581,7 @@ fn graph(
             painter.text(pos2(drawn.right() + 8.0, y), Align2::LEFT_CENTER, dir, FontId::proportional(11.5), theme.text_dim);
             let badge = if change.state == FileState::Added { "A" } else { state_badge(Some(change.state)) };
             painter.text(pos2(rect.right() - 14.0, y), Align2::CENTER_CENTER, badge, FontId::proportional(11.5), color);
-            if resp.clicked() && files.is_some() {
+            if resp.clicked() {
                 let args = ["show", "--format=", "--diff-merges=first-parent", &commit.hash, "--", &change.path];
                 cmds.push(Command::OpenDiff(format!("{name} ({short})"), args.map(str::to_owned).to_vec()));
             }
@@ -536,6 +604,26 @@ fn buttons(ui: &mut Ui, theme: &Theme, rect: Rect, enabled: bool, items: &[(&str
     .inner
 }
 
+fn changes(ui: &mut Ui, theme: &Theme, git: &Git, top: &Path, action: &mut Option<Action>, cmds: &mut Vec<Command>) {
+    if git.changes(true).is_empty() && git.changes(false).is_empty() {
+        ui.vertical_centered(|ui| {
+            ui.add_space(12.0);
+            ui.label(RichText::new("No changes.").color(theme.text_dim));
+        });
+    }
+    for staged in [true, false] {
+        let changes = git.changes(staged);
+        if changes.is_empty() {
+            continue;
+        }
+        if !git.changes(true).is_empty() {
+            let name = if staged { "STAGED CHANGES" } else { "CHANGES" };
+            ui::section_header(ui, theme, &format!("{name}  {}", changes.len()));
+        }
+        group(ui, theme, top, changes, staged, git.busy(), action, cmds);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn group(
     ui: &mut Ui,
@@ -547,30 +635,17 @@ fn group(
     action: &mut Option<Action>,
     cmds: &mut Vec<Command>,
 ) {
-    let (title, row_items, all_items): (_, &[_], &[_]) = if staged {
-        ("STAGED CHANGES", &STAGED, &STAGED_ALL)
-    } else {
-        ("CHANGES", &UNSTAGED, &UNSTAGED_ALL)
-    };
+    let row_items: &[_] = if staged { &STAGED } else { &UNSTAGED };
     let act = |index: usize, path: Option<String>| match (staged, index) {
         (true, _) => Action::Unstage(path),
         (false, 0) => Action::Stage(path),
         (false, _) => Action::Discard(path),
     };
 
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-    let painter = ui.painter().with_clip_rect(rect);
-    painter.rect_filled(rect, 0, ui::mix(theme.panel, theme.bar, 0.5));
-    let y = rect.center().y;
-    let text = format!("{title}  {}", changes.len());
-    painter.text(pos2(rect.left() + 12.0, y), Align2::LEFT_CENTER, text, FontId::proportional(11.5), theme.text);
-    if let Some(index) = buttons(ui, theme, rect, !busy, all_items) {
-        *action = Some(act(index, None));
-    }
-
     for change in changes {
-        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+        let (_, rect) = ui.allocate_space(vec2(ui.available_width(), ROW));
         let id = Id::new(("scm_row", staged, &change.path));
+        let resp = ui.interact(rect, id, Sense::click());
         let hovered = ui.rect_contains_pointer(rect);
         ui::row_bg(ui, theme, rect, id, hovered, false);
 
@@ -625,12 +700,27 @@ mod tests {
         cmds
     }
 
+    fn button(pos: egui::Pos2, pressed: bool) -> Event {
+        Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() }
+    }
+
     fn click(ctx: &egui::Context, scm: &mut Scm, git: &mut Git, x: f32, y: f32) -> Vec<Command> {
         let pos = pos2(x, y);
-        let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
         frame(ctx, scm, git, vec![Event::PointerMoved(pos)]);
-        frame(ctx, scm, git, vec![button(true)]);
-        frame(ctx, scm, git, vec![button(false)])
+        frame(ctx, scm, git, vec![button(pos, true)]);
+        frame(ctx, scm, git, vec![button(pos, false)])
+    }
+
+    #[test]
+    fn section_sizes_share_space_and_clamp_dragging() {
+        let mut scm = Scm::new();
+        scm.resize(360.0, 0, 1, 200.0);
+        assert_eq!(section_heights(360.0, scm.shares, [1.0; 3]), [180.0, 60.0, 120.0]);
+        assert_eq!(section_heights(120.0, scm.shares, [1.0; 3]), [40.0; 3]);
+        scm.open[1] = false;
+        scm.resize(300.0, 0, 2, -200.0);
+        assert_eq!(section_heights(300.0, scm.shares, [1.0, 0.0, 1.0]), [60.0, 0.0, 240.0]);
+        assert_eq!(section_heights(300.0, scm.shares, [0.0, 0.5, 0.0]), [0.0, 150.0, 0.0]);
     }
 
     #[test]
@@ -652,11 +742,8 @@ mod tests {
         git.set_root(Some(dir.clone()), &ctx);
         git.wait(|g| g.changes(false).len() == 1);
 
-        let row = (0..150)
-            .map(|i| i as f32 * 4.0)
-            .find(|y| !click(&ctx, &mut scm, &mut git, 100.0, *y).is_empty())
-            .expect("a row that opens its file")
-            + 10.0;
+        frame(&ctx, &mut scm, &mut git, vec![]);
+        let row = ctx.read_response(Id::new(("scm_row", false, "a.txt"))).unwrap().rect.center().y;
         let diff = Command::OpenDiff("a.txt (changes)".into(), ["diff", "--", "a.txt"].map(str::to_owned).to_vec());
         assert_eq!(click(&ctx, &mut scm, &mut git, 100.0, row), [diff]);
         assert_eq!(click(&ctx, &mut scm, &mut git, 222.0, row), [Command::OpenPath(git.top().unwrap().join("a.txt"))]);
@@ -690,15 +777,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "two");
 
         let head = run(&["rev-parse", "HEAD"]).trim().to_owned();
-        let found = (0..150).map(|i| i as f32 * 4.0).any(|y| {
-            click(&ctx, &mut scm, &mut git, 150.0, y);
-            scm.commit.is_some()
-        });
-        assert!(found, "a commit row");
+        frame(&ctx, &mut scm, &mut git, vec![]);
+        let row = ctx.read_response(Id::new(("scm_commit", &head))).unwrap().rect.center();
+        click(&ctx, &mut scm, &mut git, row.x, row.y);
         assert_eq!(scm.commit.as_deref(), Some(head.as_str()));
         git.wait(|g| g.files(&head).is_some());
         assert_eq!(git.files(&head).unwrap(), [Change { path: "a.txt".into(), state: FileState::Modified }]);
         frame(&ctx, &mut scm, &mut git, vec![]);
+        let split = row - vec2(0.0, ROW * 0.5 + HEADER);
+        let moved = split + vec2(0.0, 18.0);
+        frame(&ctx, &mut scm, &mut git, vec![Event::PointerMoved(split)]);
+        frame(&ctx, &mut scm, &mut git, vec![button(split, true)]);
+        frame(&ctx, &mut scm, &mut git, vec![Event::PointerMoved(moved)]);
+        frame(&ctx, &mut scm, &mut git, vec![button(moved, false)]);
+        assert!(scm.shares[1] > scm.shares[2]);
+        click(&ctx, &mut scm, &mut git, moved.x, moved.y + HEADER * 0.5);
+        assert_eq!(scm.open, [true, true, false]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
