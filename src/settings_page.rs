@@ -201,6 +201,7 @@ fn editor_tab(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsP
     toggle(ui, theme, "Editor", "Sticky Scroll", "Keep the lines that open the current scopes at the top while scrolling.", &mut s.sticky_scroll);
     toggle(ui, theme, "Editor", "Bracket Pair Colors", "Color brackets by how deeply they are nested.", &mut s.bracket_colors);
     toggle(ui, theme, "Editor", "Guides", "Draw indentation guides and highlight the guide of the bracket pair around the cursor.", &mut s.guides);
+    toggle(ui, theme, "Editor", "Side by Side Diff", "Open changes in two columns. Off shows one column with the removed lines above the added ones.", &mut s.diff_side_by_side);
     item(ui, theme, "Editor", "Rulers", "Columns that get a vertical line, separated by commas.");
     let parse = |text: &str| text.split(',').filter_map(|part| part.trim().parse().ok()).collect::<Vec<usize>>();
     let id = Id::new("settings_rulers");

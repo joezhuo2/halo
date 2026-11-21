@@ -52,6 +52,7 @@ pub struct Settings {
     pub sticky_scroll: bool,
     pub bracket_colors: bool,
     pub guides: bool,
+    pub diff_side_by_side: bool,
     pub hot_exit: bool,
     pub auto_update: bool,
 }
@@ -132,6 +133,7 @@ impl Default for Settings {
             sticky_scroll: true,
             bracket_colors: true,
             guides: true,
+            diff_side_by_side: true,
             hot_exit: true,
             auto_update: true,
         }
