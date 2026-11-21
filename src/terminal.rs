@@ -606,6 +606,10 @@ impl BottomPanel {
         self.tab = PanelTab::Problems;
     }
 
+    pub fn showing_problems(&self) -> bool {
+        self.tab == PanelTab::Problems
+    }
+
     fn spawn(&mut self, profile: &ShellProfile, cwd: Option<&Path>, ctx: &egui::Context) -> Option<Terminal> {
         let id = self.next_id;
         self.next_id += 1;

@@ -278,7 +278,7 @@ impl Halo {
             GoToWorkspaceSymbol => self.search.open("#"),
             RestartLanguageServers => self.editors.lsp.restart(),
             ShowProblems => {
-                self.session.panel = true;
+                self.session.panel = !(self.session.panel && self.bottom.showing_problems());
                 self.bottom.show_problems();
             }
             GitSync => self.git.sync(),
