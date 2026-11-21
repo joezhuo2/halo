@@ -1,3 +1,5 @@
+use crate::command::Command;
+pub use crate::notifications::Severity;
 use crate::theme::Theme;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Id, Rect, Response, Sense, Ui, Vec2};
 
@@ -5,8 +7,6 @@ pub use egui_phosphor::regular as icons;
 
 pub const ANIM: f32 = 0.14;
 pub const FIELD: egui::Margin = egui::Margin::symmetric(8, 5);
-
-static NOTICES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 pub fn open_url(url: &str) {
     if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -24,11 +24,29 @@ pub fn open_url(url: &str) {
 }
 
 pub fn notify(text: impl Into<String>) {
-    NOTICES.lock().unwrap().push(text.into());
+    notify_warning(text);
 }
 
-pub fn take_notices() -> Vec<String> {
-    std::mem::take(&mut *NOTICES.lock().unwrap())
+#[allow(dead_code)]
+pub fn notify_info(text: impl Into<String>) {
+    notify_with(Severity::Info, text, vec![]);
+}
+
+pub fn notify_warning(text: impl Into<String>) {
+    notify_with(Severity::Warning, text, vec![]);
+}
+
+#[allow(dead_code)]
+pub fn notify_error(text: impl Into<String>) {
+    notify_with(Severity::Error, text, vec![]);
+}
+
+pub fn notify_with(severity: Severity, text: impl Into<String>, actions: Vec<(String, Command)>) {
+    crate::notifications::push(severity, text.into(), actions);
+}
+
+pub fn progress(title: impl Into<String>) -> crate::notifications::Progress {
+    crate::notifications::progress(title.into())
 }
 
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {

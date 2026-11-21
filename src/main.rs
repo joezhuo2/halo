@@ -14,6 +14,8 @@ mod git;
 mod history;
 mod icon_theme;
 mod lsp;
+mod notifications;
+mod output;
 mod scm;
 mod search;
 mod settings;
