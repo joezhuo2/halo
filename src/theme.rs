@@ -334,7 +334,10 @@ impl Theme {
 
         ctx.set_visuals(v);
         ctx.all_styles_mut(|s| {
-            s.animation_time = 0.14;
+            s.animation_time = if crate::a11y::reduced() { 0.0 } else { 0.14 };
+            if crate::a11y::reduced() {
+                s.scroll_animation = egui::style::ScrollAnimation::none();
+            }
             s.interaction.tooltip_delay = 0.35;
             s.interaction.selectable_labels = false;
             s.spacing.item_spacing = egui::vec2(6.0, 4.0);

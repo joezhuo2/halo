@@ -1698,7 +1698,7 @@ impl Editors {
                     }
                     let tab = &group.tabs[t];
                     let id = Id::new(("editor_tab", g, tab.doc));
-                    let duration = if self.drag.is_some() { ui::ANIM } else { 0.0 };
+                    let duration = if self.drag.is_some() && !crate::a11y::reduced() { ui::ANIM } else { 0.0 };
                     let x = ui.ctx().animate_value_with_time(id.with("left"), left, duration);
                     let r = Rect::from_min_size(row.min + vec2(x, 0.0), vec2(face.width(), TAB_H));
                     let resp = ui.interact(r, id, Sense::click_and_drag());
@@ -2107,8 +2107,8 @@ impl Editors {
         let beyond = if settings.scroll_beyond_last_line { (text_rect.height() * 0.5).max(line_h) } else { line_h };
         let content = vec2(wide, rows as f32 * line_h + beyond);
         let idle = now - self.last_input;
-        let caret_alpha = if has_focus { prefs::caret_alpha(&settings.cursor_blinking, idle) } else { 0.35 };
-        if has_focus && idle <= 30.0 && settings.cursor_blinking != "solid" {
+        let caret_alpha = if has_focus { prefs::caret_alpha(crate::a11y::blinking(&settings.cursor_blinking), idle) } else { 0.35 };
+        if has_focus && idle <= 30.0 && crate::a11y::blinking(&settings.cursor_blinking) != "solid" {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
 

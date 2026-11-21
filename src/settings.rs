@@ -106,6 +106,7 @@ pub struct Settings {
     pub auto_detect_high_contrast: bool,
     pub preferred_high_contrast_theme: String,
     pub preferred_high_contrast_light_theme: String,
+    pub reduce_motion: String,
     #[serde(skip)]
     pub langs: BTreeMap<String, Settings>,
 }
@@ -248,6 +249,7 @@ impl Default for Settings {
             auto_detect_high_contrast: true,
             preferred_high_contrast_theme: "hc-dark".into(),
             preferred_high_contrast_light_theme: "hc-light".into(),
+            reduce_motion: "auto".into(),
             langs: BTreeMap::new(),
         }
     }

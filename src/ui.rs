@@ -54,7 +54,14 @@ pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 pub fn anim(ui: &Ui, id: Id, on: bool) -> f32 {
-    ui.ctx().animate_bool_with_time(id, on, ANIM)
+    animate(ui, id, on, ANIM)
+}
+
+fn animate(ui: &Ui, id: Id, on: bool, time: f32) -> f32 {
+    if crate::a11y::reduced() {
+        return f32::from(u8::from(on));
+    }
+    ui.ctx().animate_bool_with_time(id, on, time)
 }
 
 pub fn modal(ctx: &egui::Context, id: impl egui::AsId) -> egui::Modal {
@@ -172,14 +179,18 @@ pub fn tabs(ui: &mut Ui, theme: &Theme, id: Id, labels: &[&str], active: &mut us
         }
     }
     if let Some(r) = underline {
-        let left = ui.ctx().animate_value_with_time(id.with("left"), r.left() + 10.0, ANIM);
-        let right = ui.ctx().animate_value_with_time(id.with("right"), r.right() - 10.0, ANIM);
+        let time = if crate::a11y::reduced() { 0.0 } else { ANIM };
+        let left = ui.ctx().animate_value_with_time(id.with("left"), r.left() + 10.0, time);
+        let right = ui.ctx().animate_value_with_time(id.with("right"), r.right() - 10.0, time);
         let bar = Rect::from_min_max(egui::pos2(left, r.bottom() - 4.0), egui::pos2(right, r.bottom() - 2.5));
         ui.painter().rect_filled(bar, CornerRadius::ZERO, theme.accent);
     }
 }
 
 pub fn fade_in(ui: &Ui, id: Id) -> f32 {
+    if crate::a11y::reduced() {
+        return 1.0;
+    }
     let now = ui.input(|i| i.time);
     let start = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(id, || now));
     let t = ((now - start) as f32 / (ANIM * 1.5)).clamp(0.0, 1.0);
@@ -219,8 +230,12 @@ pub fn spinner(ui: &Ui, center: egui::Pos2, radius: f32, color: Color32) {
     if !ui.is_rect_visible(Rect::from_center_size(center, Vec2::splat(radius * 2.0 + 2.0))) {
         return;
     }
-    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
-    let start = (ui.input(|i| i.time) * 5.0 % std::f64::consts::TAU) as f32;
+    let start = if crate::a11y::reduced() {
+        0.0
+    } else {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+        (ui.input(|i| i.time) * 5.0 % std::f64::consts::TAU) as f32
+    };
     let points = (0..=16).map(|i| center + radius * Vec2::angled(start + i as f32 / 16.0 * 1.5 * std::f32::consts::PI)).collect();
     ui.painter().add(egui::Shape::line(points, egui::Stroke::new(1.5, color)));
 }
@@ -229,8 +244,11 @@ pub fn shimmer(ui: &Ui, theme: &Theme, rect: Rect) {
     if !ui.is_rect_visible(rect) {
         return;
     }
-    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
     ui.painter().rect_filled(rect, CornerRadius::same(3), mix(theme.panel, theme.text_dim, 0.18));
+    if crate::a11y::reduced() {
+        return;
+    }
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
     let phase = (ui.input(|i| i.time) % 1.2 / 1.2) as f32;
     let band = (rect.width() * 0.4).max(24.0);
     let x = rect.left() - band / 2.0 + phase * (rect.width() + band);
@@ -249,6 +267,10 @@ pub fn shimmer(ui: &Ui, theme: &Theme, rect: Rect) {
 pub fn shimmer_text(painter: &egui::Painter, theme: &Theme, pos: egui::Pos2, galley: std::sync::Arc<egui::Galley>) {
     let rect = Rect::from_min_size(pos, galley.size());
     if !painter.clip_rect().intersects(rect) {
+        return;
+    }
+    if crate::a11y::reduced() {
+        painter.galley(pos, galley, theme.text_dim);
         return;
     }
     painter.ctx().request_repaint_after(std::time::Duration::from_millis(33));
@@ -277,10 +299,9 @@ pub fn checkbox(ui: &mut Ui, theme: &Theme, value: &mut bool, text: impl Into<eg
         resp.mark_changed();
     }
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, galley.text()));
-    let ctx = ui.ctx();
-    let border = ctx.animate_bool_with_time(resp.id.with("border"), resp.hovered() || *value, 0.2);
-    let fill = ctx.animate_bool_with_time(resp.id.with("fill"), *value, 0.35);
-    let mark = ctx.animate_bool_with_time(resp.id.with("mark"), *value && fill >= 0.34, if *value { 0.25 } else { 0.15 });
+    let border = animate(ui, resp.id.with("border"), resp.hovered() || *value, 0.2);
+    let fill = animate(ui, resp.id.with("fill"), *value, 0.35);
+    let mark = animate(ui, resp.id.with("mark"), *value && fill >= 0.34, if *value { 0.25 } else { 0.15 });
     let press = anim(ui, resp.id.with("press"), resp.is_pointer_button_down_on());
     if !ui.is_rect_visible(rect) {
         return resp;
@@ -336,7 +357,7 @@ pub fn section(ui: &mut Ui, theme: &Theme, title: &str, open: &mut bool) -> Resp
 }
 
 pub fn reveal(ui: &Ui, id: Id, open: bool) -> f32 {
-    cubic_out(ui.ctx().animate_bool_with_time(id, open, ANIM * 1.4))
+    cubic_out(animate(ui, id, open, ANIM * 1.4))
 }
 
 #[cfg(test)]

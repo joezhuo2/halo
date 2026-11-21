@@ -1,4 +1,25 @@
 use crate::settings::Settings;
+use std::cell::Cell;
+
+thread_local! {
+    static REDUCED: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn reduced() -> bool {
+    REDUCED.get()
+}
+
+pub fn blinking(style: &str) -> &str {
+    if reduced() { "solid" } else { style }
+}
+
+pub fn configure(settings: &Settings) {
+    REDUCED.set(match settings.reduce_motion.as_str() {
+        "on" => true,
+        "off" => false,
+        _ => os::reduce_motion(),
+    });
+}
 
 pub fn theme_name(settings: &Settings) -> &str {
     match high_contrast() {
@@ -34,12 +55,22 @@ mod os {
         let luma = [0, 8, 16].map(|shift| window >> shift & 0xff);
         Some(luma[0] * 3 + luma[1] * 6 + luma[2] < 128 * 10)
     }
+
+    pub fn reduce_motion() -> bool {
+        let mut animate = 1i32;
+        let ok = unsafe { SystemParametersInfoW(0x1042, 0, (&raw mut animate).cast(), 0) } != 0;
+        ok && animate == 0
+    }
 }
 
 #[cfg(not(windows))]
 mod os {
     pub fn high_contrast() -> Option<bool> {
         None
+    }
+
+    pub fn reduce_motion() -> bool {
+        false
     }
 }
 
@@ -60,5 +91,26 @@ mod tests {
             None => "light",
         };
         assert_eq!(theme_name(&settings), expected);
+    }
+
+    #[test]
+    fn reduced_motion_jumps_animations_to_their_end() {
+        let ctx = eframe::egui::Context::default();
+        let frame = |on: bool| {
+            let mut value = 0.0;
+            let mut out = ctx.run_ui(Default::default(), |ui| value = crate::ui::anim(ui, eframe::egui::Id::new("a"), on));
+            out.textures_delta.clear();
+            value
+        };
+        configure(&Settings { reduce_motion: "off".into(), ..Settings::default() });
+        frame(false);
+        assert!(frame(true) < 1.0);
+        frame(false);
+        configure(&Settings { reduce_motion: "on".into(), ..Settings::default() });
+        assert_eq!(frame(true), 1.0);
+        assert_eq!(frame(false), 0.0);
+        assert_eq!(blinking("smooth"), "solid");
+        configure(&Settings::default());
+        assert_eq!(reduced(), os::reduce_motion());
     }
 }

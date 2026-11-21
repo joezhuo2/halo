@@ -69,6 +69,7 @@ impl Halo {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = &cc.egui_ctx;
         let settings = Settings::load();
+        crate::a11y::configure(&settings);
         ctx.set_fonts(crate::theme::fonts(&settings.font_family, &settings.terminal_font_family));
         crate::terminal::configure(&settings);
         crate::editor::configure(&settings);
@@ -188,6 +189,7 @@ impl Halo {
     }
 
     pub(crate) fn apply_settings(&mut self, ctx: &egui::Context) {
+        crate::a11y::configure(&self.settings);
         if self.zoom_level != Some(self.settings.zoom_level) {
             self.zoom_level = Some(self.settings.zoom_level);
             ctx.set_zoom_factor(1.2f32.powf(self.settings.zoom_level).clamp(0.5, 3.0));

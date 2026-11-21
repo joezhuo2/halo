@@ -185,7 +185,7 @@ pub fn configure(s: &Settings) {
         size: s.terminal_font_size,
         line_height: s.terminal_line_height,
         cursor: s.terminal_cursor_style.clone(),
-        blink: s.terminal_cursor_blinking,
+        blink: s.terminal_cursor_blinking && !crate::a11y::reduced(),
         scrollback: s.terminal_scrollback,
         copy_on_select: s.terminal_copy_on_selection,
         right_click: s.terminal_right_click.clone(),
