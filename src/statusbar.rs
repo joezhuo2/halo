@@ -52,8 +52,9 @@ impl Halo {
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(6.0);
-                        if item(ui, &theme, icons::ROBOT, self.session.ai, "Toggle AI panel (Ctrl+Alt+B)").clicked() {
-                            self.cmds.push(Command::ToggleAi);
+                        let icon = if theme.dark { icons::SUN } else { icons::MOON };
+                        if item(ui, &theme, icon, false, "Switch theme").clicked() {
+                            self.cmds.push(Command::ToggleTheme);
                         }
                         if let Some(status) = self.editors.status() {
                             item(ui, &theme, &status.language, false, "Language");

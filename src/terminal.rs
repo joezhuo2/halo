@@ -369,9 +369,11 @@ impl Terminal {
             }
             run.clear();
         };
-        let flush_bg = |bg: &mut Option<(i32, usize, usize, Color32)>| {
+        let under_text = painter.add(egui::Shape::Noop);
+        let mut backgrounds = vec![];
+        let mut flush_bg = |bg: &mut Option<(i32, usize, usize, Color32)>| {
             if let Some((row, from, to, color)) = bg.take() {
-                painter.rect_filled(Rect::from_min_max(cell_pos(row, from), cell_pos(row + 1, to)), CornerRadius::ZERO, color);
+                backgrounds.push(egui::Shape::rect_filled(Rect::from_min_max(cell_pos(row, from), cell_pos(row + 1, to)), CornerRadius::ZERO, color));
             }
         };
         for indexed in content.display_iter {
@@ -428,6 +430,7 @@ impl Terminal {
         }
         flush(&mut run, run_at);
         flush_bg(&mut bg_run);
+        painter.set(under_text, egui::Shape::Vec(backgrounds));
 
         if content.mode.contains(TermMode::SHOW_CURSOR) && content.cursor.shape != CursorShape::Hidden {
             let point = content.cursor.point;
@@ -739,6 +742,7 @@ impl BottomPanel {
                 ui::tabs(ui, theme, Id::new("panel_tab"), &TABS.map(|t| t.1), &mut index);
                 self.tab = TABS[index].0;
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let behind = ui.painter().add(egui::Shape::Noop);
                     if ui::icon_button(ui, theme, icons::X, 24.0, false, "Close Panel (Ctrl+J)").clicked() {
                         cmds.push(Command::TogglePanel);
                     }
@@ -749,8 +753,10 @@ impl BottomPanel {
                         if ui::icon_button(ui, theme, icons::SQUARE_SPLIT_HORIZONTAL, 24.0, false, "Split Terminal").clicked() {
                             self.split(settings, cwd, &ctx);
                         }
+                        ui.spacing_mut().button_padding = vec2(5.0, 5.0);
                         ui.menu_button(RichText::new(icons::CARET_DOWN).size(12.0).color(theme.text_dim), |ui| {
                             ui.set_min_width(200.0);
+                            ui::menu_pad(ui);
                             for profile in &settings.terminals {
                                 if ui.button(&profile.name).on_hover_text(format!("{} {}", profile.program, profile.args.join(" "))).clicked() {
                                     cmds.push(Command::NewTerminalWith(profile.name.clone()));
@@ -768,6 +774,8 @@ impl BottomPanel {
                     {
                         self.ports_loaded = false;
                     }
+                    let used = ui.min_rect().expand2(vec2(8.0, 0.0));
+                    ui.painter().set(behind, egui::Shape::rect_filled(used, CornerRadius::ZERO, theme.panel));
                 });
             });
         });
@@ -816,7 +824,7 @@ impl BottomPanel {
             return;
         }
 
-        if self.groups.len() > 1 {
+        if self.groups.iter().map(|g| g.panes.len()).sum::<usize>() > 1 {
             let list = Rect::from_min_max(pos2(area.right() - 190.0, area.top()), area.max);
             area.max.x = list.left();
             ui.painter().vline(list.left(), list.y_range(), Stroke::new(1.0, theme.border));
@@ -824,37 +832,45 @@ impl BottomPanel {
             ui.scope_builder(UiBuilder::new().max_rect(list), |ui| {
                 ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                     for (index, group) in self.groups.iter_mut().enumerate() {
-                        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
-                        ui::row_bg(ui, theme, r, resp.id, resp.hovered(), index == self.active);
-                        let title = group.panes.iter().map(Terminal::title).collect::<Vec<_>>().join(" | ");
-                        let p = ui.painter().with_clip_rect(r.shrink2(vec2(26.0, 0.0)).translate(vec2(-16.0, 0.0)));
-                        ui.painter().text(pos2(r.left() + 10.0, r.center().y), Align2::LEFT_CENTER, icons::TERMINAL_WINDOW, FontId::proportional(14.0), theme.text_dim);
-                        p.text(pos2(r.left() + 30.0, r.center().y), Align2::LEFT_CENTER, title, FontId::proportional(12.5), theme.text);
-                        let trash = Rect::from_center_size(pos2(r.right() - 14.0, r.center().y), vec2(20.0, 20.0));
-                        if resp.hovered() {
-                            let over = ui.rect_contains_pointer(trash);
-                            ui.painter().text(trash.center(), Align2::CENTER_CENTER, icons::TRASH, FontId::proportional(13.0), if over { theme.text } else { theme.text_dim });
-                            if resp.clicked() && over {
-                                kill = Some(index);
+                        let count = group.panes.len();
+                        for at in 0..count {
+                            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
+                            ui::row_bg(ui, theme, r, resp.id, resp.hovered(), index == self.active && at == group.active);
+                            let (icon, font) = match at {
+                                _ if count == 1 => (icons::TERMINAL_WINDOW, FontId::proportional(14.0)),
+                                0 => ("┌", FontId::monospace(13.0)),
+                                _ if at + 1 == count => ("└", FontId::monospace(13.0)),
+                                _ => ("├", FontId::monospace(13.0)),
+                            };
+                            let p = ui.painter().with_clip_rect(r.shrink2(vec2(26.0, 0.0)).translate(vec2(-16.0, 0.0)));
+                            ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, icon, font, theme.text_dim);
+                            p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, group.panes[at].title(), FontId::proportional(12.5), theme.text);
+                            let trash = Rect::from_center_size(pos2(r.right() - 16.0, r.center().y), vec2(20.0, 20.0));
+                            if resp.hovered() {
+                                let over = ui.rect_contains_pointer(trash);
+                                ui.painter().text(trash.center(), Align2::CENTER_CENTER, icons::TRASH, FontId::proportional(13.0), if over { theme.text } else { theme.text_dim });
+                                if resp.clicked() && over {
+                                    kill = Some((index, at));
+                                }
                             }
-                        }
-                        if resp.clicked() && kill.is_none() {
-                            self.active = index;
-                            if let Some(pane) = group.panes.get_mut(group.active) {
-                                pane.focus();
+                            if resp.clicked() && kill.is_none() {
+                                self.active = index;
+                                group.active = at;
+                                group.panes[at].focus();
                             }
                         }
                     }
                 });
             });
-            if let Some(index) = kill {
-                self.groups.remove(index);
-                self.active = self.active.min(self.groups.len().saturating_sub(1));
+            if let Some((index, at)) = kill {
+                self.groups[index].panes.remove(at);
+                self.prune();
             }
         }
 
         let Some(group) = self.groups.get_mut(self.active) else { return };
-        let width = area.width() / group.panes.len() as f32;
+        let count = group.panes.len();
+        let width = area.width() / count as f32;
         for (index, pane) in group.panes.iter_mut().enumerate() {
             let rect = Rect::from_min_size(pos2(area.left() + index as f32 * width, area.top()), vec2(width, area.height()));
             ui.scope_builder(UiBuilder::new().max_rect(rect).id_salt(("terminal_pane", pane.id)), |ui| {
@@ -867,6 +883,11 @@ impl BottomPanel {
                 group.active = index;
                 self.focused = true;
             }
+        }
+        if count > 1 {
+            let left = area.left() + group.active as f32 * width;
+            let color = if self.focused { theme.accent } else { theme.text_dim };
+            ui.painter().hline(left..=left + width, area.top() + 1.0, Stroke::new(2.0, color));
         }
     }
 

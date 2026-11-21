@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use syntect::highlighting::{
     Color, HighlightState, Highlighter as SynHighlighter, RangedHighlightIterator, ScopeSelectors, StyleModifier,
@@ -24,7 +24,24 @@ pub struct Highlighter {
     pub language: String,
     checkpoints: Vec<(ParseState, HighlightState)>,
     cache: HashMap<usize, Spans>,
-    dark: Option<bool>,
+    key: Option<Key>,
+}
+
+type Key = [Color32; 11];
+
+fn key(theme: &Theme) -> Key {
+    let s = &theme.syntax;
+    [theme.text, s.comment, s.string, s.number, s.constant, s.keyword, s.function, s.type_name, s.punctuation, theme.added, theme.deleted]
+}
+
+pub fn languages() -> &'static [(String, String)] {
+    static LIST: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        let mut list: Vec<(String, String)> =
+            syntaxes().syntaxes().iter().filter(|s| !s.hidden).map(|s| (s.name.clone(), s.file_extensions.join(", "))).collect();
+        list.sort();
+        list
+    })
 }
 
 static CONFIG: OnceLock<(String, BTreeMap<String, String>)> = OnceLock::new();
@@ -81,10 +98,17 @@ fn build_theme(theme: &Theme) -> SynTheme {
     }
 }
 
-fn syn_theme(theme: &Theme) -> &'static SynTheme {
-    static DARK: OnceLock<SynTheme> = OnceLock::new();
-    static LIGHT: OnceLock<SynTheme> = OnceLock::new();
-    if theme.dark { DARK.get_or_init(|| build_theme(theme)) } else { LIGHT.get_or_init(|| build_theme(theme)) }
+fn syn_theme(theme: &Theme) -> Arc<SynTheme> {
+    static BUILT: Mutex<Option<(Key, Arc<SynTheme>)>> = Mutex::new(None);
+    let mut built = BUILT.lock().unwrap();
+    match &*built {
+        Some((made_for, ready)) if *made_for == key(theme) => ready.clone(),
+        _ => {
+            let ready = Arc::new(build_theme(theme));
+            *built = Some((key(theme), ready.clone()));
+            ready
+        }
+    }
 }
 
 fn find_syntax(path: Option<&Path>, first_line: &str) -> Option<&'static SyntaxReference> {
@@ -142,7 +166,7 @@ impl Highlighter {
             language: syntax.map_or("Plain Text", |s| s.name.as_str()).to_owned(),
             checkpoints: vec![],
             cache: HashMap::new(),
-            dark: None,
+            key: None,
         }
     }
 
@@ -157,15 +181,16 @@ impl Highlighter {
 
     pub fn ensure(&mut self, rope: &Rope, lines: Range<usize>, theme: &Theme, budget: Duration) -> bool {
         let Some(syntax) = self.syntax else { return true };
-        if self.dark != Some(theme.dark) {
+        if self.key != Some(key(theme)) {
             self.checkpoints.clear();
             self.cache.clear();
-            self.dark = Some(theme.dark);
+            self.key = Some(key(theme));
         }
         let end = lines.end.min(rope.len_lines());
         let Some(first) = (lines.start..end).find(|l| !self.cache.contains_key(l)) else { return true };
         let set = syntaxes();
-        let highlighter = SynHighlighter::new(syn_theme(theme));
+        let colors = syn_theme(theme);
+        let highlighter = SynHighlighter::new(&colors);
         if self.checkpoints.is_empty() {
             self.checkpoints.push((ParseState::new(syntax), HighlightState::new(&highlighter, ScopeStack::new())));
         }

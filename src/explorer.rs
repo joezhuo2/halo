@@ -358,6 +358,7 @@ impl Explorer {
 
     fn menu(&self, ui: &mut Ui, path: Option<&Path>, action: &mut Option<Action>) {
         ui.set_min_width(190.0);
+        ui::menu_pad(ui);
         let dir = self.dir_for_new(path);
         if ui.button("New File...").clicked() {
             *action = Some(Action::New(EditKind::NewFile, dir.clone()));
@@ -554,7 +555,7 @@ impl Explorer {
                         Some((dir, t)) if row.path.parent() == Some(dir.as_path()) => *t,
                         _ => 1.0,
                     };
-                    let painter = ui.painter().with_clip_rect(rect);
+                    let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
                     for level in 0..row.depth {
                         let x = rect.left() + 13.0 + level as f32 * INDENT;
                         painter.vline(x, rect.y_range(), Stroke::new(1.0, ui::with_alpha(theme.border, 0.7)));
@@ -639,7 +640,8 @@ impl Explorer {
         if let Some(path) = self.confirm_delete.clone() {
             let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned();
             let mut choice = None;
-            let modal = egui::Modal::new(Id::new("explorer_delete")).show(ui.ctx(), |ui| {
+            let modal = ui::modal(ui.ctx(), "explorer_delete").show(ui.ctx(), |ui| {
+                ui::outline(ui);
                 ui.set_width(340.0);
                 ui.heading("Delete");
                 ui.label(format!("Move \"{name}\" to the recycle bin?"));

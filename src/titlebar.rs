@@ -4,7 +4,7 @@ use crate::theme::Theme;
 use crate::ui::{self, icons};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Layout, Panel, PointerButton, Rect, Response,
-    RichText, Sense, Stroke, StrokeKind, Ui, ViewportCommand, vec2,
+    Sense, Stroke, StrokeKind, Ui, ViewportCommand, vec2,
 };
 
 const HEIGHT: f32 = 36.0;
@@ -30,11 +30,17 @@ impl Halo {
                 let mut menus_right = bar.left();
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.add_space(12.0);
-                    ui.label(RichText::new(icons::CIRCLE_NOTCH).size(18.0).color(theme.accent));
-                    ui.add_space(8.0);
+                    ui.add_space(14.0);
+                    ui::logo(ui, 20.0, theme.dark);
+                    ui.add_space(10.0);
                     menus_right = egui::MenuBar::new()
                         .ui(ui, |ui| {
+                            ui.spacing_mut().button_padding = vec2(9.0, 5.0);
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            let widgets = &mut ui.visuals_mut().widgets;
+                            for state in [&mut widgets.hovered, &mut widgets.open, &mut widgets.active] {
+                                state.corner_radius = CornerRadius::same(5);
+                            }
                             self.menus(ui);
                             ui.cursor().left()
                         })
@@ -127,6 +133,7 @@ impl Halo {
         ]);
         ui.menu_button("Run", |ui| {
             ui.set_min_width(230.0);
+            ui::menu_pad(ui);
             self.menu_item(ui, RunFile);
             ui.separator();
             let tasks: Vec<String> = self.settings.tasks.iter().map(|t| t.name.clone()).collect();
@@ -143,6 +150,7 @@ impl Halo {
         });
         ui.menu_button("Terminal", |ui| {
             ui.set_min_width(230.0);
+            ui::menu_pad(ui);
             self.menu_item(ui, NewTerminal);
             self.menu_item(ui, SplitTerminal);
             self.menu_item(ui, KillTerminal);
@@ -161,6 +169,7 @@ impl Halo {
     fn menu(&mut self, ui: &mut Ui, title: &str, items: &[Option<Command>]) {
         ui.menu_button(title, |ui| {
             ui.set_min_width(230.0);
+            ui::menu_pad(ui);
             for item in items {
                 match item {
                     Some(cmd) => self.menu_item(ui, cmd.clone()),

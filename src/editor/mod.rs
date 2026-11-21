@@ -22,6 +22,8 @@ pub fn configure(settings: &Settings) {
     highlight::configure(&settings.grammars, &settings.associations);
 }
 
+pub use highlight::languages;
+
 const TAB_H: f32 = 34.0;
 const MAX_COLS: usize = 5000;
 
@@ -47,6 +49,7 @@ struct Tab {
     reveal: Option<usize>,
     set_scroll: Option<f32>,
     drag_anchor: Option<usize>,
+    pinned: bool,
 }
 
 #[derive(Default)]
@@ -74,6 +77,13 @@ enum TabAction {
     CloseOthers(usize),
     CloseAll,
     CopyPath(usize),
+    Pin(usize),
+}
+
+#[derive(Clone, Copy)]
+enum DropAt {
+    Tab(usize, usize),
+    Split(usize, bool),
 }
 
 pub struct Editors {
@@ -90,6 +100,9 @@ pub struct Editors {
     closing: Option<(usize, usize)>,
     banner: Option<String>,
     last_input: f64,
+    drag: Option<(usize, usize)>,
+    drop: Option<DropAt>,
+    pub ai_open: bool,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -205,6 +218,9 @@ impl Editors {
             closing: None,
             banner: None,
             last_input: 0.0,
+            drag: None,
+            drop: None,
+            ai_open: false,
         }
     }
 
@@ -303,6 +319,37 @@ impl Editors {
         self.want_focus = true;
     }
 
+    fn place_tab(&mut self, (sg, st): (usize, usize), tg: usize, at: usize) {
+        let tab = self.groups[sg].tabs.remove(st);
+        let source = &mut self.groups[sg];
+        if source.active >= st && source.active > 0 {
+            source.active -= 1;
+        }
+        let at = if sg == tg && at > st { at - 1 } else { at };
+        let group = &mut self.groups[tg];
+        group.tabs.retain(|t| t.doc != tab.doc);
+        let pinned = group.tabs.iter().filter(|t| t.pinned).count();
+        let at = if tab.pinned { at.min(pinned) } else { at.clamp(pinned, group.tabs.len()) };
+        group.tabs.insert(at, tab);
+        group.active = at;
+        self.active = tg;
+        self.want_focus = true;
+    }
+
+    fn drop_tab(&mut self, (sg, st): (usize, usize), at: DropAt) {
+        if self.groups.get(sg).is_none_or(|group| st >= group.tabs.len()) {
+            return;
+        }
+        match at {
+            DropAt::Tab(g, index) => self.place_tab((sg, st), g, index),
+            DropAt::Split(g, right) => {
+                let at = g + right as usize;
+                self.groups.insert(at, Group::default());
+                self.place_tab((sg + (at <= sg) as usize, st), at, 0);
+            }
+        }
+    }
+
     fn request_close(&mut self, g: usize, t: usize) {
         let Some(doc) = self.groups.get(g).and_then(|group| group.tabs.get(t)).map(|tab| tab.doc) else { return };
         let dirty = self.docs.get(&doc).is_some_and(|d| d.buf.is_dirty());
@@ -379,6 +426,7 @@ impl Editors {
             SaveAs => {
                 self.save_doc(doc_id, true);
             }
+            CloseEditor if self.groups[g].tabs[t].pinned => {}
             CloseEditor => self.request_close(g, t),
             SplitEditor => {
                 let sels = self.groups[g].tabs[t].sels.clone();
@@ -507,6 +555,14 @@ impl Editors {
         doc.map(|d| highlight::symbols(d.buf.path.as_deref(), &d.buf.rope)).unwrap_or_default()
     }
 
+    pub fn auto_save_due(&mut self, now: f64) -> bool {
+        let due = now - self.last_input > 1.0 && self.docs.values().any(|d| d.buf.is_dirty() && d.buf.path.is_some());
+        if due {
+            self.last_input = now;
+        }
+        due
+    }
+
     pub fn any_dirty(&self) -> bool {
         self.docs.values().any(|d| d.buf.is_dirty())
     }
@@ -563,8 +619,9 @@ impl Editors {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, settings: &Settings, git: &Git, _cmds: &mut Vec<Command>) {
+    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, settings: &Settings, git: &Git, cmds: &mut Vec<Command>) {
         self.focused = false;
+        self.drop = None;
         self.active = self.active.min(self.groups.len().saturating_sub(1));
         let rect = ui.available_rect_before_wrap();
         let count = self.groups.len();
@@ -586,7 +643,29 @@ impl Editors {
         }
         ui.allocate_rect(rect, Sense::hover());
         for cmd in pending {
-            self.exec(&cmd, settings, ui.ctx());
+            if cmd == Command::ToggleAi {
+                cmds.push(cmd);
+            } else {
+                self.exec(&cmd, settings, ui.ctx());
+            }
+        }
+        if let Some((g, t)) = self.drag {
+            let ctx = ui.ctx();
+            ctx.set_cursor_icon(CursorIcon::Grabbing);
+            let doc = self.groups.get(g).and_then(|group| group.tabs.get(t)).and_then(|tab| self.docs.get(&tab.doc));
+            if let (Some(pos), Some(doc)) = (ctx.pointer_latest_pos(), doc) {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("editor_tab_drag")));
+                let galley = painter.layout_no_wrap(doc.buf.title.clone(), FontId::proportional(13.0), theme.text);
+                let ghost = Rect::from_min_size(pos + vec2(12.0, 12.0), galley.size() + vec2(20.0, 10.0));
+                painter.rect(ghost, CornerRadius::same(4), theme.raised, Stroke::new(1.0, theme.accent), StrokeKind::Inside);
+                painter.galley(ghost.min + vec2(10.0, 5.0), galley, theme.text);
+            }
+            if !ctx.input(|i| i.pointer.any_down()) {
+                self.drag = None;
+                if let Some(at) = self.drop.take() {
+                    self.drop_tab((g, t), at);
+                }
+            }
         }
         self.dialogs(ui.ctx());
         if self.groups.len() > 1 && self.closing.is_none() {
@@ -617,43 +696,68 @@ impl Editors {
         let body = Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max);
         if self.groups[g].tabs.is_empty() {
             ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
-            return;
+        } else {
+            let t = self.groups[g].active.min(self.groups[g].tabs.len() - 1);
+            self.groups[g].active = t;
+            let mut tab = std::mem::take(&mut self.groups[g].tabs[t]);
+            let doc_id = tab.doc;
+            if let Some(mut doc) = self.docs.remove(&doc_id) {
+                self.view(ui, g, body, theme, settings, git, pending, &mut doc, &mut tab);
+                self.docs.insert(doc_id, doc);
+            }
+            self.groups[g].tabs[t] = tab;
         }
-        let t = self.groups[g].active.min(self.groups[g].tabs.len() - 1);
-        self.groups[g].active = t;
-        let mut tab = std::mem::take(&mut self.groups[g].tabs[t]);
-        let doc_id = tab.doc;
-        if let Some(mut doc) = self.docs.remove(&doc_id) {
-            self.view(ui, g, body, theme, settings, git, pending, &mut doc, &mut tab);
-            self.docs.insert(doc_id, doc);
+        if let Some(pos) = self.drag.and_then(|_| ui.ctx().pointer_latest_pos()).filter(|pos| body.contains(*pos)) {
+            let x = (pos.x - body.left()) / body.width();
+            let middle = body.center().x;
+            let (at, zone) = match x {
+                x if x < 0.3 => (DropAt::Split(g, false), body.with_max_x(middle)),
+                x if x > 0.7 => (DropAt::Split(g, true), body.with_min_x(middle)),
+                _ => (DropAt::Tab(g, self.groups[g].tabs.len()), body),
+            };
+            self.drop = Some(at);
+            ui.painter().rect_filled(zone, CornerRadius::ZERO, ui::with_alpha(theme.accent, 0.12));
         }
-        self.groups[g].tabs[t] = tab;
     }
 
     fn tab_strip(&mut self, ui: &mut Ui, g: usize, strip: Rect, theme: &Theme, pending: &mut Vec<Command>) {
         ui.painter().rect_filled(strip, CornerRadius::ZERO, theme.panel);
         ui.painter().hline(strip.x_range(), strip.bottom() - 0.5, Stroke::new(1.0, theme.border));
-        let infos: Vec<(String, bool, Option<PathBuf>)> = self.groups[g]
+        let infos: Vec<(String, bool, Option<PathBuf>, bool)> = self.groups[g]
             .tabs
             .iter()
-            .filter_map(|t| self.docs.get(&t.doc))
-            .map(|d| (d.buf.title.clone(), d.buf.is_dirty(), d.buf.path.clone()))
+            .filter_map(|t| self.docs.get(&t.doc).map(|d| (d.buf.title.clone(), d.buf.is_dirty(), d.buf.path.clone(), t.pinned)))
             .collect();
         let active = self.groups[g].active;
         let active_group = g == self.active;
         let mut action = None;
-        let tabs_rect = Rect::from_min_max(strip.min, pos2(strip.right() - 34.0, strip.bottom()));
+        let last = g + 1 == self.groups.len();
+        let tabs_rect = Rect::from_min_max(strip.min, pos2(strip.right() - if last { 60.0 } else { 34.0 }, strip.bottom()));
+        let drag_pos = self.drag.and_then(|_| ui.ctx().pointer_latest_pos()).filter(|pos| strip.contains(*pos));
+        if drag_pos.is_some() {
+            self.drop = Some(DropAt::Tab(g, infos.len()));
+        }
         ui.scope_builder(UiBuilder::new().max_rect(tabs_rect), |ui| {
             ScrollArea::horizontal().id_salt(("editor_tabs", g)).scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    for (t, (title, dirty, path)) in infos.iter().enumerate() {
+                    for (t, (title, dirty, path, pinned)) in infos.iter().enumerate() {
+                        let pinned = *pinned;
                         let galley = ui.painter().layout_no_wrap(title.clone(), FontId::proportional(13.0), Color32::PLACEHOLDER);
-                        let (r, resp) = ui.allocate_exact_size(vec2(galley.size().x + 62.0, TAB_H), Sense::click());
+                        let (r, resp) = ui.allocate_exact_size(vec2(galley.size().x + 66.0, TAB_H), Sense::click_and_drag());
+                        if resp.drag_started_by(PointerButton::Primary) {
+                            self.drag = Some((g, t));
+                        }
+                        if let Some(pos) = drag_pos.filter(|pos| r.contains(*pos)) {
+                            let after = pos.x > r.center().x;
+                            self.drop = Some(DropAt::Tab(g, t + after as usize));
+                            let x = if after { r.right() - 1.0 } else { r.left() + 1.0 };
+                            ui.painter().vline(x, r.y_range(), Stroke::new(2.0, theme.accent));
+                        }
                         let id = Id::new(("editor_tab", g, t));
                         let a = ui::anim(ui, id.with("active"), t == active);
                         let h = ui::anim(ui, id.with("hover"), resp.hovered());
-                        let close = Rect::from_center_size(pos2(r.right() - 16.0, r.center().y), vec2(20.0, 20.0));
+                        let close = Rect::from_center_size(pos2(r.right() - 18.0, r.center().y), vec2(20.0, 20.0));
                         let over_close = resp.hovered() && ui.rect_contains_pointer(close);
                         let ch = ui::anim(ui, id.with("close"), over_close);
                         let p = ui.painter();
@@ -665,31 +769,39 @@ impl Editors {
                             p.rect_filled(line, CornerRadius::ZERO, ui::with_alpha(color, a));
                         }
                         p.text(
-                            pos2(r.left() + 12.0, r.center().y),
+                            pos2(r.left() + 14.0, r.center().y),
                             Align2::LEFT_CENTER,
                             icons::FILE_CODE,
                             FontId::proportional(14.0),
                             ui::mix(theme.text_dim, theme.accent, a * 0.8),
                         );
-                        let text_pos = pos2(r.left() + 32.0, r.center().y - galley.size().y / 2.0);
+                        let text_pos = pos2(r.left() + 34.0, r.center().y - galley.size().y / 2.0);
                         p.galley(text_pos, galley, ui::mix(theme.text_dim, theme.text, a.max(h)));
                         if *dirty && !over_close {
                             p.circle_filled(close.center(), 4.0, ui::mix(theme.text_dim, theme.text, a));
-                        } else if h > 0.0 || t == active {
+                        } else if pinned || h > 0.0 || t == active {
                             p.rect_filled(close, CornerRadius::same(4), ui::mix(Color32::TRANSPARENT, theme.hover, ch));
-                            let color = ui::with_alpha(ui::mix(theme.text_dim, theme.text, ch), h.max(a));
-                            p.text(close.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(12.0), color);
+                            let shown = if pinned { 1.0 } else { h.max(a) };
+                            let color = ui::with_alpha(ui::mix(theme.text_dim, theme.text, ch), shown);
+                            let icon = if pinned { icons::PUSH_PIN } else { icons::X };
+                            p.text(close.center(), Align2::CENTER_CENTER, icon, FontId::proportional(12.0), color);
                         }
                         if resp.clicked() {
-                            action = Some(if over_close { TabAction::Close(t) } else { TabAction::Activate(t) });
+                            action = Some(match (over_close, pinned) {
+                                (true, true) => TabAction::Pin(t),
+                                (true, false) => TabAction::Close(t),
+                                _ => TabAction::Activate(t),
+                            });
                         }
-                        if resp.middle_clicked() {
+                        if resp.middle_clicked() && !pinned {
                             action = Some(TabAction::Close(t));
                         }
                         let tip = path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| title.clone());
                         resp.on_hover_text(tip).context_menu(|ui| {
                             ui.set_min_width(160.0);
+                            ui::menu_pad(ui);
                             for (label, choice) in [
+                                (if pinned { "Unpin" } else { "Pin" }, TabAction::Pin(t)),
                                 ("Close", TabAction::Close(t)),
                                 ("Close Others", TabAction::CloseOthers(t)),
                                 ("Close All", TabAction::CloseAll),
@@ -705,6 +817,14 @@ impl Editors {
                 });
             });
         });
+        if last {
+            let ai = Rect::from_center_size(pos2(strip.right() - 43.0, strip.center().y), vec2(24.0, 24.0));
+            ui.scope_builder(UiBuilder::new().max_rect(ai), |ui| {
+                if ui::icon_button(ui, theme, icons::ROBOT, 24.0, self.ai_open, "Toggle AI Panel (Ctrl+Alt+B)").clicked() {
+                    pending.push(Command::ToggleAi);
+                }
+            });
+        }
         let split = Rect::from_center_size(pos2(strip.right() - 17.0, strip.center().y), vec2(24.0, 24.0));
         ui.scope_builder(UiBuilder::new().max_rect(split), |ui| {
             if ui::icon_button(ui, theme, icons::SQUARE_SPLIT_HORIZONTAL, 24.0, false, "Split Editor Right (Ctrl+\\)").clicked() {
@@ -721,6 +841,9 @@ impl Editors {
             Some(TabAction::Close(t)) => self.request_close(g, t),
             Some(TabAction::CloseOthers(keep)) => {
                 for t in (0..self.groups[g].tabs.len()).rev().filter(|t| *t != keep) {
+                    if self.groups[g].tabs[t].pinned {
+                        continue;
+                    }
                     let doc = self.groups[g].tabs[t].doc;
                     if !self.docs.get(&doc).is_some_and(|d| d.buf.is_dirty()) || self.references(doc) > 1 {
                         self.close_tab(g, t);
@@ -729,11 +852,20 @@ impl Editors {
             }
             Some(TabAction::CloseAll) => {
                 for t in (0..self.groups[g].tabs.len()).rev() {
+                    if self.groups[g].tabs[t].pinned {
+                        continue;
+                    }
                     let doc = self.groups[g].tabs[t].doc;
                     if !self.docs.get(&doc).is_some_and(|d| d.buf.is_dirty()) || self.references(doc) > 1 {
                         self.close_tab(g, t);
                     }
                 }
+            }
+            Some(TabAction::Pin(t)) => {
+                let tab = &mut self.groups[g].tabs[t];
+                tab.pinned ^= true;
+                let at = if tab.pinned { usize::MAX } else { 0 };
+                self.place_tab((g, t), g, at);
             }
             Some(TabAction::CopyPath(t)) => {
                 if let Some(path) = infos.get(t).and_then(|i| i.2.as_ref()) {
@@ -1136,7 +1268,7 @@ impl Editors {
 
     fn find_ui(&mut self, ui: &mut Ui, area: Rect, t: f32, theme: &Theme, buf: &mut Document, tab: &mut Tab) {
         let rows = if self.find.replace { 2.0 } else { 1.0 };
-        let size = vec2(430.0f32.min(area.width() - 30.0), 10.0 + rows * 28.0);
+        let size = vec2(430.0f32.min(area.width() - 30.0), 10.0 + rows * 31.0);
         let rect = Rect::from_min_size(pos2(area.right() - size.x - 22.0, area.top() - (1.0 - t) * size.y), size);
         let corners = CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 };
         ui.painter().with_clip_rect(area).rect(rect, corners, theme.raised, Stroke::new(1.0, theme.border), StrokeKind::Inside);
@@ -1154,7 +1286,7 @@ impl Editors {
                 if ui::icon_button(ui, theme, caret, 22.0, false, "Toggle Replace").clicked() {
                     self.find.replace ^= true;
                 }
-                let field = ui.add(TextEdit::singleline(&mut self.find.query).desired_width(170.0).hint_text("Find"));
+                let field = ui.add(TextEdit::singleline(&mut self.find.query).margin(ui::FIELD).desired_width(170.0).hint_text("Find"));
                 if self.find.focus {
                     field.request_focus();
                     self.find.focus = false;
@@ -1199,7 +1331,7 @@ impl Editors {
             if self.find.replace {
                 ui.horizontal(|ui| {
                     ui.add_space(24.0);
-                    let field = ui.add(TextEdit::singleline(&mut self.find.with).desired_width(170.0).hint_text("Replace"));
+                    let field = ui.add(TextEdit::singleline(&mut self.find.with).margin(ui::FIELD).desired_width(170.0).hint_text("Replace"));
                     if field.has_focus() {
                         self.focused = true;
                     }
@@ -1248,7 +1380,8 @@ impl Editors {
         };
         let title = self.docs.get(&doc_id).map(|d| d.buf.title.clone()).unwrap_or_default();
         let mut choice = None;
-        let modal = egui::Modal::new(Id::new("editor_close")).show(ctx, |ui| {
+        let modal = ui::modal(ctx, "editor_close").show(ctx, |ui| {
+            ui::outline(ui);
             ui.set_width(340.0);
             ui.heading("Unsaved changes");
             ui.label(format!("Save changes to {title} before closing?"));
@@ -1330,6 +1463,35 @@ mod tests {
         frame(&ctx, &mut editors, vec![]);
         assert_eq!(editors.groups.len(), 1);
         assert_eq!(editors.docs.len(), 1);
+    }
+
+    #[test]
+    fn moves_pins_and_splits_tabs() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        for _ in 0..3 {
+            editors.exec(&Command::NewFile, &settings, &ctx);
+        }
+        let docs = |e: &Editors, g: usize| e.groups[g].tabs.iter().map(|t| t.doc).collect::<Vec<_>>();
+        editors.drop_tab((0, 0), DropAt::Tab(0, 3));
+        assert_eq!((docs(&editors, 0), editors.groups[0].active), (vec![2, 3, 1], 2));
+
+        editors.groups[0].tabs[2].pinned = true;
+        editors.place_tab((0, 2), 0, usize::MAX);
+        assert_eq!(docs(&editors, 0), vec![1, 2, 3]);
+        editors.drop_tab((0, 0), DropAt::Tab(0, 3));
+        editors.drop_tab((0, 2), DropAt::Tab(0, 0));
+        assert_eq!(docs(&editors, 0), vec![1, 3, 2]);
+        editors.groups[0].active = 0;
+        editors.exec(&Command::CloseEditor, &settings, &ctx);
+        assert_eq!(docs(&editors, 0).len(), 3);
+
+        editors.drop_tab((0, 2), DropAt::Split(0, false));
+        assert_eq!((docs(&editors, 0), docs(&editors, 1), editors.active), (vec![2], vec![1, 3], 0));
+        editors.drop_tab((0, 0), DropAt::Tab(1, 1));
+        frame(&ctx, &mut editors, vec![]);
+        assert_eq!((editors.groups.len(), docs(&editors, 0)), (1, vec![1, 2, 3]));
     }
 
     #[test]

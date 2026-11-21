@@ -39,7 +39,8 @@ pub struct Halo {
     pub search: Search,
     pub wsl: Wsl,
     notices: Vec<String>,
-    settings_page: bool,
+    pub page: crate::settings_page::SettingsPage,
+    font: String,
     pub zone: Zone,
     pub cmds: Vec<Command>,
     about: bool,
@@ -47,21 +48,21 @@ pub struct Halo {
     exiting: bool,
     focused: bool,
     pub chord: Option<egui::KeyboardShortcut>,
+    theme_fade: Option<(f64, egui::Color32)>,
+    icon_dark: Option<bool>,
 }
 
 impl Halo {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = &cc.egui_ctx;
-        let mut fonts = egui::FontDefinitions::default();
-        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-        ctx.set_fonts(fonts);
-
         let settings = Settings::load();
+        ctx.set_fonts(crate::theme::fonts(&settings.font_family));
         crate::editor::configure(&settings);
-        let theme = Theme::named(&settings.theme);
+        let theme = Theme::of(&settings);
         theme.apply(ctx);
 
         let session = Session::load();
+        let font = settings.font_family.clone();
         let mut app = Self {
             theme,
             settings,
@@ -76,7 +77,8 @@ impl Halo {
             search: Search::default(),
             wsl: Wsl::default(),
             notices: vec![],
-            settings_page: false,
+            page: Default::default(),
+            font,
             zone: Zone::Editor,
             cmds: vec![],
             about: false,
@@ -84,6 +86,8 @@ impl Halo {
             exiting: false,
             focused: true,
             chord: None,
+            theme_fade: None,
+            icon_dark: None,
         };
 
         let arg = std::env::args().nth(1).map(PathBuf::from).and_then(|p| p.canonicalize().or_else(|_| std::path::absolute(&p)).ok()).map(strip_unc);
@@ -129,8 +133,16 @@ impl Halo {
 
     fn reload_settings(&mut self, ctx: &egui::Context) {
         self.settings = Settings::load();
-        self.theme = Theme::named(&self.settings.theme);
+        self.apply_settings(ctx);
+    }
+
+    pub(crate) fn apply_settings(&mut self, ctx: &egui::Context) {
+        self.theme = Theme::of(&self.settings);
         self.theme.apply(ctx);
+        if self.font != self.settings.font_family {
+            self.font = self.settings.font_family.clone();
+            ctx.set_fonts(crate::theme::fonts(&self.font));
+        }
     }
 
     fn dispatch(&mut self, cmd: Command, ctx: &egui::Context) {
@@ -161,7 +173,7 @@ impl Halo {
             }
             OpenDiff(title, args) => self.git.diff(title, args),
             CloseFolder => self.set_folder(None, ctx),
-            OpenSettings => self.settings_page = true,
+            OpenSettings => self.page.open = true,
             OpenKeybindings => {
                 if !command::path().exists() {
                     command::write_defaults();
@@ -221,10 +233,10 @@ impl Halo {
                 self.settings.save();
             }
             ToggleTheme => {
+                self.theme_fade = Some((ctx.input(|i| i.time), self.theme.bg));
                 self.settings.theme = if self.theme.dark { "light" } else { "dark" }.into();
                 self.settings.save();
-                self.theme = Theme::named(&self.settings.theme);
-                self.theme.apply(ctx);
+                self.apply_settings(ctx);
             }
             ZoomIn => ctx.set_zoom_factor((ctx.zoom_factor() + 0.1).min(3.0)),
             ZoomOut => ctx.set_zoom_factor((ctx.zoom_factor() - 0.1).max(0.5)),
@@ -407,6 +419,7 @@ impl Halo {
                 if self.editors.is_empty() {
                     self.welcome(ui);
                 } else {
+                    self.editors.ai_open = self.session.ai;
                     self.editors.ui(ui, &self.theme, &self.settings, &self.git, &mut self.cmds);
                 }
             });
@@ -418,7 +431,7 @@ impl Halo {
         ui.set_opacity(t);
         ui.vertical_centered(|ui| {
             ui.add_space((ui.available_height() * 0.22).max(20.0));
-            ui.label(RichText::new(icons::CIRCLE_NOTCH).size(54.0).color(theme.accent));
+            ui::logo(ui, 64.0, theme.dark);
             ui.add_space(6.0);
             ui.label(RichText::new("Halo").size(30.0).color(theme.text));
             ui.label(RichText::new("ultra-lightweight editor").color(theme.text_dim));
@@ -450,76 +463,6 @@ impl Halo {
         });
     }
 
-    fn settings_dialog(&mut self, ctx: &egui::Context) {
-        let mut edited = self.settings.clone();
-        let mut close = false;
-        let modal = egui::Modal::new(Id::new("settings_page")).show(ctx, |ui| {
-            ui.set_width(460.0);
-            ui.heading("Settings");
-            ui.add_space(8.0);
-            egui::Grid::new("settings_grid").num_columns(2).spacing(vec2(18.0, 8.0)).show(ui, |ui| {
-                ui.label("Theme");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut edited.theme, "dark".to_owned(), "Dark");
-                    ui.selectable_value(&mut edited.theme, "light".to_owned(), "Light");
-                });
-                ui.end_row();
-                ui.label("Font size");
-                ui.add(egui::DragValue::new(&mut edited.font_size).range(8.0..=32.0).speed(0.25));
-                ui.end_row();
-                ui.label("Tab size");
-                ui.add(egui::DragValue::new(&mut edited.tab_size).range(1..=8).speed(0.1));
-                ui.end_row();
-                ui.label("Indent with spaces");
-                ui.checkbox(&mut edited.insert_spaces, "");
-                ui.end_row();
-                ui.label("Minimap");
-                ui.checkbox(&mut edited.minimap, "");
-                ui.end_row();
-                ui.label("Default terminal");
-                egui::ComboBox::from_id_salt("default_terminal").selected_text(edited.default_terminal.clone()).show_ui(ui, |ui| {
-                    for name in self.settings.terminals.iter().map(|p| &p.name) {
-                        ui.selectable_value(&mut edited.default_terminal, name.clone(), name);
-                    }
-                });
-                ui.end_row();
-                ui.label("Grammars folder");
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut edited.grammars).desired_width(250.0));
-                    if ui.button("Browse...").clicked()
-                        && let Some(folder) = rfd::FileDialog::new().pick_folder()
-                    {
-                        edited.grammars = folder.to_string_lossy().into_owned();
-                    }
-                });
-                ui.end_row();
-            });
-            ui.add_space(6.0);
-            let note = "Grammars (.sublime-syntax files) and file associations load when Halo starts. Run commands, tasks, \
-                        terminal profiles and associations are edited in settings.json.";
-            ui.label(RichText::new(note).size(11.5).color(self.theme.text_dim));
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                for cmd in [Command::OpenSettingsJson, Command::OpenKeybindings] {
-                    if ui.button(cmd.label()).clicked() {
-                        self.cmds.push(cmd);
-                        close = true;
-                    }
-                }
-                close |= ui.button("Close").clicked();
-            });
-        });
-        if edited != self.settings {
-            self.settings = edited;
-            self.settings.save();
-            self.theme = Theme::named(&self.settings.theme);
-            self.theme.apply(ctx);
-        }
-        if close || modal.should_close() {
-            self.settings_page = false;
-        }
-    }
-
     fn notices(&mut self, ctx: &egui::Context) {
         self.notices.extend(ui::take_notices());
         if self.notices.is_empty() {
@@ -530,7 +473,7 @@ impl Halo {
             ui.set_opacity(ui::fade_in(ui, Id::new(("notice_fade", self.notices.len()))));
             let mut dismiss = None;
             for (index, text) in self.notices.iter().enumerate() {
-                Frame::new().fill(theme.raised).stroke(Stroke::new(1.0, theme.error)).corner_radius(CornerRadius::same(6)).inner_margin(8.0).show(ui, |ui| {
+                Frame::new().fill(theme.raised).stroke(Stroke::new(1.0, theme.error)).corner_radius(CornerRadius::same(6)).inner_margin(12.0).show(ui, |ui| {
                     ui.set_max_width(440.0);
                     ui.horizontal(|ui| {
                         if ui::icon_button(ui, &theme, icons::X, 20.0, false, "Dismiss").clicked() {
@@ -549,14 +492,15 @@ impl Halo {
 
     fn dialogs(&mut self, ctx: &egui::Context) {
         self.notices(ctx);
-        if self.settings_page {
+        if self.page.open {
             self.settings_dialog(ctx);
         }
         if self.about {
-            let modal = egui::Modal::new(Id::new("about")).show(ctx, |ui| {
+            let modal = ui::modal(ctx, "about").show(ctx, |ui| {
+                ui::outline(ui);
                 ui.set_width(280.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new(icons::CIRCLE_NOTCH).size(40.0).color(self.theme.accent));
+                    ui::logo(ui, 48.0, self.theme.dark);
                     ui.heading("Halo");
                     ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
                     ui.colored_label(self.theme.text_dim, "An ultra-lightweight native code editor.");
@@ -571,7 +515,8 @@ impl Halo {
         }
         if self.confirm_exit {
             let mut choice = None;
-            let modal = egui::Modal::new(Id::new("confirm_exit")).show(ctx, |ui| {
+            let modal = ui::modal(ctx, "confirm_exit").show(ctx, |ui| {
+                ui::outline(ui);
                 ui.set_width(340.0);
                 ui.heading("Unsaved changes");
                 ui.label("Some files have unsaved changes. Save them before closing?");
@@ -623,7 +568,23 @@ impl eframe::App for Halo {
             self.editors.open_text(&title, &text);
         }
         self.handle_window_events(&ctx);
-        self.global_shortcuts(&ctx);
+        let dark = ctx.system_theme() == Some(egui::Theme::Dark);
+        if self.icon_dark != Some(dark) {
+            self.icon_dark = Some(dark);
+            let rgba = ui::logo_image(128, dark).pixels.iter().flat_map(|p| p.to_srgba_unmultiplied()).collect();
+            ctx.send_viewport_cmd(ViewportCommand::Icon(Some(std::sync::Arc::new(egui::IconData { rgba, width: 128, height: 128 }))));
+        }
+        if self.page.recording.is_none() {
+            self.global_shortcuts(&ctx);
+        }
+        if self.settings.auto_save {
+            if self.editors.auto_save_due(ctx.input(|i| i.time)) {
+                self.editors.exec(&Command::SaveAll, &self.settings, &ctx);
+                self.git.refresh(&ctx);
+            } else if self.editors.any_dirty() {
+                ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            }
+        }
 
         self.titlebar(ui);
         self.statusbar(ui);
@@ -643,6 +604,17 @@ impl eframe::App for Halo {
                 StrokeKind::Inside,
             );
             resize_edges(&ctx, window);
+        }
+
+        if let Some((start, color)) = self.theme_fade {
+            let t = ((ctx.input(|i| i.time) - start) / 0.3) as f32;
+            if t < 1.0 {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("theme_fade")));
+                painter.rect_filled(window, CornerRadius::ZERO, ui::with_alpha(color, (1.0 - t).powi(2)));
+                ctx.request_repaint();
+            } else {
+                self.theme_fade = None;
+            }
         }
 
         if self.ai.has_focus() {

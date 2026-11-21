@@ -1,3 +1,4 @@
+use crate::settings::Settings;
 use eframe::egui::{self, Color32, CornerRadius, FontId, Shadow, Stroke, TextStyle};
 
 #[derive(Clone)]
@@ -38,9 +39,62 @@ const fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
+pub fn fonts(file: &str) -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    if file.is_empty() {
+        return fonts;
+    }
+    match std::fs::read(file) {
+        Ok(bytes) if skrifa::FontRef::from_index(&bytes, 0).is_ok() => {
+            fonts.font_data.insert("editor".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+            fonts.families.entry(egui::FontFamily::Monospace).or_default().insert(0, "editor".into());
+        }
+        Ok(_) => crate::ui::notify(format!("{file} is not a font Halo can load, the default font is in use.")),
+        Err(error) => crate::ui::notify(format!("Could not read the font {file}: {error}")),
+    }
+    fonts
+}
+
 impl Theme {
     pub fn named(name: &str) -> Self {
         if name == "light" { Self::light() } else { Self::dark() }
+    }
+
+    pub fn of(settings: &Settings) -> Self {
+        let mut theme = Self::named(&settings.theme);
+        if let Some(custom) = settings.colors.get(&settings.theme) {
+            for (name, color) in theme.colors() {
+                if let Some(chosen) = custom.get(name).and_then(|hex| Color32::from_hex(hex).ok()) {
+                    *color = chosen;
+                }
+            }
+        }
+        theme
+    }
+
+    pub fn colors(&mut self) -> Vec<(&'static str, &mut Color32)> {
+        let s = &mut self.syntax;
+        vec![
+            ("background", &mut self.bg),
+            ("panel", &mut self.panel),
+            ("bar", &mut self.bar),
+            ("raised", &mut self.raised),
+            ("hover", &mut self.hover),
+            ("border", &mut self.border),
+            ("text", &mut self.text),
+            ("dimText", &mut self.text_dim),
+            ("accent", &mut self.accent),
+            ("selection", &mut self.selection),
+            ("comment", &mut s.comment),
+            ("string", &mut s.string),
+            ("keyword", &mut s.keyword),
+            ("number", &mut s.number),
+            ("function", &mut s.function),
+            ("type", &mut s.type_name),
+            ("constant", &mut s.constant),
+            ("punctuation", &mut s.punctuation),
+        ]
     }
 
     pub fn dark() -> Self {
@@ -180,8 +234,9 @@ impl Theme {
             s.interaction.tooltip_delay = 0.35;
             s.interaction.selectable_labels = false;
             s.spacing.item_spacing = egui::vec2(6.0, 4.0);
-            s.spacing.button_padding = egui::vec2(8.0, 3.0);
-            s.spacing.menu_margin = egui::Margin::same(6);
+            s.spacing.button_padding = egui::vec2(10.0, 5.0);
+            s.spacing.menu_margin = egui::Margin::same(8);
+            s.spacing.scroll.bar_width = 6.0;
             s.text_styles = [
                 (TextStyle::Small, FontId::proportional(11.0)),
                 (TextStyle::Body, FontId::proportional(13.0)),
@@ -191,5 +246,23 @@ impl Theme {
             ]
             .into();
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn applies_custom_colors_to_their_own_theme() {
+        let mut settings = Settings::default();
+        settings.colors.entry("dark".into()).or_default().insert("accent".into(), "#ff0000ff".into());
+        settings.colors.entry("dark".into()).or_default().insert("keyword".into(), "not a color".into());
+        let theme = Theme::of(&settings);
+        assert_eq!(theme.accent, Color32::RED);
+        assert_eq!(theme.syntax.keyword, Theme::dark().syntax.keyword);
+        settings.theme = "light".into();
+        assert_eq!(Theme::of(&settings).accent, Theme::light().accent);
+        assert!(fonts("").font_data.len() == fonts("no-such-font.ttf").font_data.len());
     }
 }

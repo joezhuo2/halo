@@ -20,10 +20,13 @@ pub struct Task {
 #[serde(default)]
 pub struct Settings {
     pub theme: String,
+    pub font_family: String,
     pub font_size: f32,
     pub tab_size: usize,
     pub insert_spaces: bool,
     pub minimap: bool,
+    pub auto_save: bool,
+    pub colors: BTreeMap<String, BTreeMap<String, String>>,
     pub default_terminal: String,
     pub terminals: Vec<ShellProfile>,
     pub grammars: String,
@@ -37,10 +40,13 @@ impl Default for Settings {
         let terminals = default_terminals();
         Self {
             theme: "dark".into(),
+            font_family: String::new(),
             font_size: 13.0,
             tab_size: 4,
             insert_spaces: true,
             minimap: true,
+            auto_save: false,
+            colors: BTreeMap::new(),
             default_terminal: terminals.first().map(|p| p.name.clone()).unwrap_or_default(),
             terminals,
             grammars: dir().join("grammars").to_string_lossy().into_owned(),

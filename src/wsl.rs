@@ -64,6 +64,7 @@ pub struct Wsl {
 
 impl Wsl {
     pub fn menu(&mut self, ui: &mut Ui, folder: Option<&Path>, cmds: &mut Vec<Command>) {
+        crate::ui::menu_pad(ui);
         if let Some(list) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.distros = Some(list);
             self.rx = None;

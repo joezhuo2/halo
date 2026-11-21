@@ -1057,6 +1057,7 @@ dependencies = [
  "ropey",
  "serde",
  "serde_json",
+ "skrifa",
  "syntect",
  "trash",
 ]

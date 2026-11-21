@@ -68,6 +68,7 @@ impl Accounts {
             self.load(None, ui.ctx());
         }
         ui.set_min_width(220.0);
+        crate::ui::menu_pad(ui);
         ui.label(RichText::new("GITHUB ACCOUNTS").size(11.0).weak());
         let mut switch = None;
         match &self.list {

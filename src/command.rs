@@ -173,7 +173,7 @@ fn parse_key(text: &str) -> Option<KeyboardShortcut> {
     Some(KeyboardShortcut::new(modifiers, key?))
 }
 
-fn key_text(shortcut: &KeyboardShortcut) -> String {
+pub fn key_text(shortcut: &KeyboardShortcut) -> String {
     let m = shortcut.modifiers;
     let mut text = String::new();
     for (on, name) in [(m.command || m.ctrl, "ctrl+"), (m.shift, "shift+"), (m.alt, "alt+")] {
@@ -244,6 +244,23 @@ pub fn bindings() -> Arc<Vec<Binding>> {
 
 pub fn reload() {
     *BINDINGS.lock().unwrap() = None;
+}
+
+pub fn rebind(command: &Command, key: Option<String>) {
+    let mut entries: Vec<Entry> = match std::fs::read_to_string(path()) {
+        Ok(text) => match serde_json::from_str(text.trim_start_matches('\u{feff}')) {
+            Ok(entries) => entries,
+            Err(error) => return crate::ui::notify(format!("keybindings.json could not be read, so it was not changed: {error}")),
+        },
+        Err(_) => vec![],
+    };
+    entries.retain(|e| e.command != command.id());
+    entries.extend(key.map(|key| Entry { key, command: command.id() }));
+    if let Ok(text) = serde_json::to_string_pretty(&entries) {
+        let _ = std::fs::create_dir_all(crate::settings::dir());
+        let _ = std::fs::write(path(), text);
+    }
+    reload();
 }
 
 pub fn shortcut_text(ctx: &egui::Context, command: &Command) -> Option<String> {

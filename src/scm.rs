@@ -85,6 +85,7 @@ impl Scm {
                     .id(id)
                     .hint_text(hint)
                     .desired_rows(2)
+                    .margin(ui::FIELD)
                     .desired_width(f32::INFINITY),
             );
             ui.add_space(6.0);
@@ -164,7 +165,8 @@ impl Scm {
     fn dialogs(&mut self, ui: &mut Ui, git: &mut Git, top: &Path, cmds: &mut Vec<Command>) {
         if let Some(target) = self.discard.clone() {
             let mut choice = None;
-            let modal = egui::Modal::new(Id::new("scm_discard")).show(ui.ctx(), |ui| {
+            let modal = ui::modal(ui.ctx(), "scm_discard").show(ui.ctx(), |ui| {
+                ui::outline(ui);
                 ui.set_width(360.0);
                 ui.heading("Discard changes");
                 ui.label(match &target {
@@ -224,7 +226,8 @@ impl Scm {
 
 fn prompt(ui: &Ui, heading: &str, note: &str, fields: &mut [(&str, &mut String, usize)], ok: &str) -> Option<bool> {
     let mut choice = None;
-    let modal = egui::Modal::new(Id::new(("scm_prompt", heading))).show(ui.ctx(), |ui| {
+    let modal = ui::modal(ui.ctx(), ("scm_prompt", heading)).show(ui.ctx(), |ui| {
+        ui::outline(ui);
         ui.set_width(360.0);
         ui.heading(heading);
         ui.label(note);
@@ -236,7 +239,7 @@ fn prompt(ui: &Ui, heading: &str, note: &str, fields: &mut [(&str, &mut String, 
             } else {
                 egui::TextEdit::multiline(&mut **text).desired_rows(*rows)
             };
-            let resp = ui.add(edit.hint_text(*hint).desired_width(f32::INFINITY));
+            let resp = ui.add(edit.hint_text(*hint).margin(ui::FIELD).desired_width(f32::INFINITY));
             enter |= *rows == 1 && resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             if i == 0 && !enter && ui.memory(|m| m.focused().is_none()) {
                 resp.request_focus();
@@ -311,6 +314,7 @@ fn pull_requests(ui: &mut Ui, theme: &Theme, git: &Git, busy: bool, action: &mut
         let resp = resp.on_hover_text(format!("{}: {merge}, {review}{draft}", pr.head_ref_name));
         let number = pr.number.to_string();
         egui::Popup::menu(&resp).show(|ui| {
+            ui::menu_pad(ui);
             let run = |args: &[&str]| Some(Action::Pr(args.iter().map(|a| a.to_string()).collect()));
             if ui.add_enabled(!busy, egui::Button::new("Check Out")).clicked() {
                 *action = run(&["checkout", &number]);
@@ -362,7 +366,9 @@ fn toolbar(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>) {
             let branch = git.branch().unwrap_or_default();
             let label = RichText::new(format!("{} {branch} {}", icons::GIT_BRANCH, icons::CARET_DOWN)).color(theme.text);
             ui.add_enabled_ui(!busy, |ui| {
-                ui.menu_button(label, |ui| {
+                ui.set_max_width((ui.available_width() - 126.0).max(48.0));
+                egui::containers::menu::MenuButton::from_button(egui::Button::new(label).truncate()).ui(ui, |ui| {
+                    ui::menu_pad(ui);
                     ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                         for name in git.branches() {
                             if ui.selectable_label(name == branch, name).clicked() && name != branch {
@@ -375,7 +381,7 @@ fn toolbar(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>) {
                         *action = Some(Action::NewBranch);
                     }
                 })
-                .response
+                .0
                 .on_hover_text("Switch branch");
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -384,6 +390,7 @@ fn toolbar(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>) {
                     return;
                 }
                 ui.menu_button(RichText::new(icons::DOTS_THREE).color(theme.text_dim), |ui| {
+                    ui::menu_pad(ui);
                     if ui.button("Stash Changes").clicked() {
                         *action = Some(Action::Stash(false));
                     }
@@ -422,7 +429,7 @@ fn repositories(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Actio
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
         let selected = git.root() == Some(repo.as_path());
         ui::row_bg(ui, theme, rect, Id::new(("scm_repo", repo)), resp.hovered(), selected);
-        let painter = ui.painter().with_clip_rect(rect);
+        let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
         let (x, y) = (rect.left() + 14.0, rect.center().y);
         let name = repo.file_name().unwrap_or(repo.as_os_str()).to_string_lossy();
         let color = if selected { theme.text } else { theme.text_dim };
@@ -463,7 +470,7 @@ fn graph(
         let is_open = open == Some(commit.hash.as_str());
         if ui.is_rect_visible(rect) {
             ui::row_bg(ui, theme, rect, Id::new(("scm_commit", &commit.hash)), resp.hovered(), is_open);
-            let painter = ui.painter().with_clip_rect(rect);
+            let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
             let dot = pos2(lane_x(rect, commit.col), rect.center().y);
             for lane in &commit.through {
                 painter.vline(lane_x(rect, *lane), rect.y_range(), stroke(*lane));
@@ -495,7 +502,7 @@ fn graph(
         for change in files.unwrap_or(&loading) {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
             ui::row_bg(ui, theme, rect, Id::new(("scm_commit_file", &change.path)), resp.hovered() && files.is_some(), false);
-            let painter = ui.painter().with_clip_rect(rect);
+            let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
             for lane in commit.through.iter().chain(&commit.down) {
                 painter.vline(lane_x(rect, *lane), rect.y_range(), stroke(*lane));
             }

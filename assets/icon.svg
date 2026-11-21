@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <style>
+    .star { fill: #fff }
+    @media (prefers-color-scheme: dark) { .star { fill: #000 } }
+  </style>
+  <path d="M453.08 256 354.54 426.68H157.46L58.92 256 157.46 85.32H354.54Z" fill="#bfe0f0" stroke="#bfe0f0" stroke-width="66.56" stroke-linejoin="round"/>
+  <g class="star">
+    <path id="petal" d="M256 256A120.32 120.32 0 0 1 376.32 376.32A120.32 120.32 0 0 1 256 256Z"/>
+    <use href="#petal" transform="rotate(90 256 256)"/>
+    <use href="#petal" transform="rotate(180 256 256)"/>
+    <use href="#petal" transform="rotate(270 256 256)"/>
+  </g>
+</svg>

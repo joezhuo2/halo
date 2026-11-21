@@ -10,6 +10,7 @@ mod git;
 mod scm;
 mod search;
 mod settings;
+mod settings_page;
 mod statusbar;
 mod terminal;
 mod theme;
