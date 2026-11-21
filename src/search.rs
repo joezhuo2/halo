@@ -11,6 +11,8 @@ use std::sync::mpsc::{Receiver, channel};
 const ROW: f32 = 26.0;
 const SHOWN: usize = 60;
 
+pub type Choice = (String, String, Command);
+
 #[derive(Clone, Debug, PartialEq)]
 enum Item {
     File(String, usize),
@@ -19,6 +21,7 @@ enum Item {
     Symbol(usize, String),
     Workspace(lsp::Symbol),
     Line(usize, usize),
+    Pick(String, String, Command),
     Searching,
     Note(&'static str),
 }
@@ -42,6 +45,7 @@ pub struct Search {
     items: (String, Vec<Item>),
     stale: bool,
     opened: u32,
+    pick: Option<(String, Vec<Choice>)>,
 }
 
 pub(crate) fn score(query: &str, text: &str) -> Option<i32> {
@@ -127,7 +131,13 @@ impl Search {
         self.open
     }
 
+    pub fn pick(&mut self, hint: &str, items: Vec<Choice>) {
+        self.open("");
+        self.pick = Some((hint.to_owned(), items));
+    }
+
     pub fn open(&mut self, prefix: &str) {
+        self.pick = None;
         self.open = true;
         self.focus = true;
         self.query = prefix.to_owned();
@@ -179,7 +189,7 @@ impl Search {
         let Some(folder) = folder else { return };
         let mode = self.query.chars().next();
         let listed = self.files.as_ref().is_some_and(|(f, _)| f == folder);
-        if !listed && self.files_rx.is_none() && !matches!(mode, Some('>' | '%' | '@' | '#' | ':')) {
+        if !listed && self.files_rx.is_none() && self.pick.is_none() && !matches!(mode, Some('>' | '%' | '@' | '#' | ':')) {
             let (tx, rx) = channel();
             let (folder, ctx) = (folder.to_path_buf(), ctx.clone());
             std::thread::spawn(move || {
@@ -207,6 +217,14 @@ impl Search {
 
     fn compute(&self, folder: Option<&Path>) -> Vec<Item> {
         let query = self.query.as_str();
+        if let Some((_, items)) = &self.pick {
+            let items = items.iter().map(|(label, detail, command)| Item::Pick(label.clone(), detail.clone(), command.clone()));
+            let ranked = rank(query, items, |i| match i {
+                Item::Pick(label, ..) => score(query, label),
+                _ => None,
+            });
+            return if ranked.is_empty() { vec![Item::Note("No matching items")] } else { ranked };
+        }
         let none = |items: Vec<Item>, note| if items.is_empty() { vec![Item::Note(note)] } else { items };
         if let Some(q) = query.strip_prefix('>') {
             return none(rank(q, command::all().into_iter().map(Item::Command), |i| match i {
@@ -271,7 +289,7 @@ impl Search {
                 cmds.extend(full(rel).map(Command::OpenPath));
                 cmds.push(Command::GoTo(*line, 1));
             }
-            Item::Command(command) => cmds.push(command.clone()),
+            Item::Command(command) | Item::Pick(_, _, command) => cmds.push(command.clone()),
             Item::Symbol(line, _) => cmds.push(Command::GoTo(line + 1, 1)),
             Item::Workspace(symbol) => {
                 cmds.extend(symbol.path.clone().map(Command::OpenPath));
@@ -306,7 +324,7 @@ impl Search {
         }
 
         ui.painter().rect(rect, CornerRadius::same(6), theme.raised, Stroke::new(1.0, theme.accent), StrokeKind::Inside);
-        let hint = "Search files (> commands, % text, @ symbols, # workspace symbols, : line)";
+        let hint = self.pick.as_ref().map_or("Search files (> commands, % text, @ symbols, # workspace symbols, : line)", |p| p.0.as_str());
         let edit = TextEdit::singleline(&mut self.query).hint_text(hint).frame(Frame::NONE).desired_width(f32::INFINITY);
         let resp = ui.put(rect.shrink2(vec2(8.0, 3.0)), edit);
         if std::mem::take(&mut self.focus) {
@@ -341,6 +359,7 @@ impl Search {
                             }
                             Item::Line(line, column) => (icons::ARROW_RIGHT, format!("Go to line {line}, column {column}"), String::new()),
                             Item::Note(text) => (icons::INFO, (*text).to_owned(), String::new()),
+                            Item::Pick(label, detail, _) => (icons::PLAY, label.clone(), detail.clone()),
                         };
                         let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
                         let note = matches!(item, Item::Note(_));
