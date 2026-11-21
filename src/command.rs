@@ -148,6 +148,14 @@ pub enum Command {
     Git(GitCommand),
     GitAt(GitCommand, String),
     RefreshExplorer,
+    CutFiles,
+    CopyFiles,
+    PasteFiles,
+    FilterExplorer,
+    FocusOpenEditors,
+    CloseAllEditors,
+    ShowTab(usize, usize),
+    CloseTab(usize, usize),
     PathChanged(PathBuf, Option<PathBuf>),
     About,
 }
@@ -317,6 +325,7 @@ fn defaults() -> Vec<Binding> {
         g(cs, Key::S, SaveAs),
         g(cs, Key::P, ShowCommands),
         g(cs, Key::F, FindInFiles),
+        g(ca, Key::F, FilterExplorer),
         g(cs, Key::O, GoToSymbol),
         g(cs, Key::E, ShowExplorer),
         g(cs, Key::G, ShowSourceControl),
@@ -367,13 +376,13 @@ pub fn all() -> Vec<Command> {
     use Command::*;
     let mut commands = vec![
         NewFile, OpenFile, OpenFolder, Save, SaveAs, SaveAll, CloseEditor, CloseFolder, OpenSettings, OpenSettingsJson,
-        OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, Exit,
+        OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
         SelectAll, AddCursorAbove, AddCursorBelow, SelectNextOccurrence, SelectAllOccurrences, ExpandSelection, ShrinkSelection, CursorUndo,
         ShowExplorer, ShowSourceControl, ShowRunAndDebug, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
-        ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer,
+        ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, FilterExplorer, FocusOpenEditors,
         GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, NextEditor, PrevEditor, GoBack, GoForward, ReopenClosed,
         KeepEditor, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
@@ -514,14 +523,14 @@ impl Command {
         use Command::*;
         match self {
             NewFile | OpenFile | OpenFolder | OpenFolderIn(_) | OpenPath(_) | Save | SaveAs | SaveAll | CloseEditor
-            | CloseFolder | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit => "File",
+            | CloseFolder | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit | CutFiles | CopyFiles | PasteFiles | CloseAllEditors | ShowTab(..) | CloseTab(..) => "File",
             Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
             | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection => "Edit",
             SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence | SelectAllOccurrences | ExpandSelection
             | ShrinkSelection | CursorUndo => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
-            | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer => "View",
+            | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | FilterExplorer | FocusOpenEditors => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | ReopenClosed | KeepEditor | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
@@ -671,6 +680,14 @@ impl Command {
             AddConfiguration => "Debug: Add Configuration...",
             GitSync => "Synchronize Changes",
             RefreshExplorer => "Refresh Explorer",
+            CutFiles => "File: Cut",
+            CopyFiles => "File: Copy",
+            PasteFiles => "File: Paste",
+            CloseAllEditors => "File: Close All Editors",
+            ShowTab(..) => "Show Editor",
+            CloseTab(..) => "Close Editor",
+            FilterExplorer => "Explorer: Filter",
+            FocusOpenEditors => "Explorer: Focus on Open Editors View",
             PathChanged(..) => "Path Changed",
             About => "About Halo",
         }

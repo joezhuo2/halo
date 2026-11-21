@@ -2,6 +2,8 @@ mod buffer;
 mod emmet;
 mod highlight;
 mod intel;
+mod open_tabs;
+pub use open_tabs::OpenTab;
 mod snippet;
 
 use crate::command::{self, Command, Scope};
