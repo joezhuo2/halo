@@ -131,7 +131,7 @@ impl Halo {
         let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
         app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
         app.set_folder(folder, ctx);
-        if arg_is_none && restore {
+        if arg_is_none && restore && !app.session.grid.as_ref().is_some_and(|grid| app.editors.restore_grid(grid)) {
             let pins: Vec<_> = app.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
             app.editors.restore_pins(&pins);
         }
@@ -174,6 +174,7 @@ impl Halo {
         let backups = crate::settings::dir().join("backups");
         self.session.files = self.editors.open_paths();
         self.session.pinned = self.editors.pinned_paths();
+        self.session.grid = Some(self.editors.grid_state());
         self.session.backups = if self.settings.hot_exit { self.editors.backup(&backups) } else { vec![] };
         if !self.settings.hot_exit {
             let _ = std::fs::remove_dir_all(backups);
