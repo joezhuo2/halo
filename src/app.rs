@@ -201,7 +201,12 @@ impl Halo {
                     self.editors.open(&path);
                 }
             }
-            OpenDiff(title, args) => self.git.diff(title, args),
+            OpenDiff(title, args) => {
+                let inline = !self.settings.diff_side_by_side;
+                if !self.git.top().is_some_and(|top| self.editors.compare(&title, &args, top, inline, ctx)) {
+                    self.git.diff(title, args);
+                }
+            }
             CloseFolder => self.set_folder(None, ctx),
             OpenSettings => self.page.open = true,
             OpenSnippets => {

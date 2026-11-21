@@ -1,4 +1,6 @@
 mod buffer;
+pub mod diff;
+mod diff_view;
 mod emmet;
 mod highlight;
 mod intel;
@@ -84,6 +86,7 @@ struct Tab {
     grown: Vec<(Vec<Sel>, Vec<Sel>)>,
     trail: Vec<Vec<Sel>>,
     seen: (u64, Vec<Sel>),
+    diff: Option<Box<diff_view::DiffTab>>,
 }
 
 #[derive(Default)]
@@ -223,6 +226,7 @@ pub struct Editors {
     tidy: (bool, bool),
     pub history: crate::history::Recorder,
     disk_jobs: Vec<(u64, bool)>,
+    diffs: diff_view::Diffs,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -302,10 +306,13 @@ fn visible_text(buf: &Document, line: usize) -> String {
     text.chars().take(MAX_COLS).collect()
 }
 
-fn build_rows(buf: &Document, wrap: Option<usize>, folds: &[(usize, usize)], lens: &[(usize, usize)]) -> Vec<u32> {
+fn build_rows(buf: &Document, wrap: Option<usize>, folds: &[(usize, usize)], lens: &[(usize, usize)], pads: &[(usize, u32)]) -> Vec<u32> {
     let mut starts = Vec::with_capacity(buf.lines() + 1);
     let (mut at, mut f, mut l, mut hide_to) = (0u32, 0, 0, 0);
     for (line, slice) in buf.rope.lines().enumerate() {
+        if let Ok(found) = pads.binary_search_by_key(&line, |p| p.0) {
+            at += pads[found].1;
+        }
         starts.push(at);
         while f < folds.len() && folds[f].0 < line {
             hide_to = hide_to.max(folds[f].1);
@@ -322,7 +329,7 @@ fn build_rows(buf: &Document, wrap: Option<usize>, folds: &[(usize, usize)], len
             buffer::wrap(slice.chars().filter(|c| *c != '\n').take(MAX_COLS), cols, |_| at += 1);
         }
     }
-    starts.push(at);
+    starts.push(at + pads.iter().filter(|p| p.0 >= buf.lines()).map(|p| p.1).sum::<u32>());
     starts
 }
 
@@ -535,6 +542,7 @@ impl Editors {
             tidy: (false, false),
             history: Default::default(),
             disk_jobs: vec![],
+            diffs: Default::default(),
         }
     }
 
@@ -636,7 +644,7 @@ impl Editors {
 
     fn show_doc(&mut self, id: u64) {
         let group = &mut self.groups[self.active];
-        match group.tabs.iter().position(|t| t.doc == id) {
+        match group.tabs.iter().position(|t| t.doc == id && t.diff.is_none()) {
             Some(t) => {
                 group.active = t;
                 self.want_focus = true;
@@ -712,7 +720,7 @@ impl Editors {
             source.active -= 1;
         }
         let group = &mut self.groups[tg];
-        group.tabs.retain(|t| t.doc != tab.doc);
+        group.tabs.retain(|t| t.doc != tab.doc || t.diff.is_some() != tab.diff.is_some());
         let pinned = group.tabs.iter().filter(|t| t.pinned).count();
         let at = tab_slot(at, tab.pinned, pinned, group.tabs.len());
         group.tabs.insert(at, tab);
@@ -826,6 +834,10 @@ impl Editors {
                 return true;
             }
             _ => {}
+        }
+        if self.diff_exec(cmd, ctx) {
+            self.last_input = ctx.input(|i| i.time);
+            return true;
         }
         if self.intel_exec(cmd, settings, ctx) {
             self.last_input = ctx.input(|i| i.time);
@@ -1276,6 +1288,7 @@ impl Editors {
         self.active = self.active.min(self.groups.len().saturating_sub(1));
         self.tidy = (settings.trim_trailing_whitespace, settings.insert_final_newline);
         self.history.context = settings.local_history.then(|| ui.ctx().clone());
+        self.poll_diffs(ui.ctx());
         self.process(settings, ui.ctx());
         let rect = ui.available_rect_before_wrap();
         let count = self.groups.len();
@@ -1306,6 +1319,9 @@ impl Editors {
             }
         }
         self.after_views();
+        if self.take_git_refresh() {
+            cmds.push(Command::RefreshExplorer);
+        }
         for (id, compare) in std::mem::take(&mut self.disk_jobs) {
             match compare {
                 true => self.disk_diff(id),
@@ -1410,7 +1426,9 @@ impl Editors {
                 recent.insert(0, doc_id);
             }
             if let Some(mut doc) = self.docs.remove(&doc_id) {
-                self.view(ui, g, body, theme, settings, git, pending, &mut doc, &mut tab);
+                let area = self.diff_frame(ui, body, theme, &doc, &mut tab, pending);
+                self.view(ui, g, area, theme, settings, git, pending, &mut doc, &mut tab);
+                self.diff_after(ui, body, theme, settings, &mut tab, pending);
                 self.docs.insert(doc_id, doc);
             }
             self.groups[g].tabs[t] = tab;
@@ -1442,7 +1460,8 @@ impl Editors {
                 let faces: Vec<_> = group.tabs.iter().map(|tab| {
                     let buf = &self.docs[&tab.doc].buf;
                     let dirty = buf.is_dirty();
-                    let mut name = LayoutJob::simple_singleline(buf.title.clone(), FontId::proportional(13.0), Color32::PLACEHOLDER);
+                    let title = tab.diff.as_ref().map_or(&buf.title, |d| &d.title).clone();
+                    let mut name = LayoutJob::simple_singleline(title, FontId::proportional(13.0), Color32::PLACEHOLDER);
                     name.sections[0].format.italics = tab.preview && !dirty;
                     TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned }
                 }).collect();
@@ -1653,12 +1672,14 @@ impl Editors {
             self.marks.shift(path, line, delta);
         }
         buf.clamp(&mut tab.sels);
+        let mut shown = tab.diff.take();
+        let diffed = shown.is_some();
 
         ui.painter().rect_filled(body, CornerRadius::ZERO, theme.bg);
-        let minimap_w = if settings.minimap && body.width() > 420.0 { 78.0 } else { 0.0 };
+        let minimap_w = if diffed { diff_view::RULER } else if settings.minimap && body.width() > 420.0 { 78.0 } else { 0.0 };
         let text_rect = Rect::from_min_max(body.min, pos2(body.right() - minimap_w, body.bottom()));
         let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 5.0) * char_w + 6.0;
-        let wrap_cols = settings.word_wrap.then(|| (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20));
+        let wrap_cols = (settings.word_wrap && !diffed).then(|| (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20));
 
         if self.want_focus && is_active && self.goto.is_none() {
             ui.memory_mut(|m| m.request_focus(id));
@@ -1681,6 +1702,7 @@ impl Editors {
             let unit = indent_unit(buf, settings).2;
             self.intel.unit = unit.clone();
             self.popup_keys(&mut events, doc_id, buf, tab);
+            self.peek_escape(&mut events, doc_id);
             let (mut typed, mut pasted) = (None, None);
             for event in &events {
                 let from = tab.sels.first().map_or(0, |s| s.start());
@@ -1691,7 +1713,7 @@ impl Editors {
                     Event::Key { key: Key::Escape, pressed: true, .. } => tab.snippet.take().is_some() && false,
                     _ => false,
                 };
-                if stepped || handle_event(buf, tab, event, settings, page, &ctx, wrap_cols, folds) {
+                if stepped || handle_event(buf, tab, event, settings, page, &ctx, wrap_cols, if diffed { &[] } else { &folds[..] }) {
                     snippet::track(&mut tab.snippet, buf.len(), &tab.sels);
                     self.last_input = now;
                     tab.reveal = tab.sels.last().map(|s| s.head);
@@ -1759,16 +1781,19 @@ impl Editors {
             _ => 4,
         };
         let stuck = tab.stuck;
-        let mut lens_rows: Vec<(usize, usize)> = match settings.code_lens && lang.attached {
+        let mut lens_rows: Vec<(usize, usize)> = match settings.code_lens && lang.attached && !diffed {
             true => lang.lens.iter().enumerate().filter_map(|(index, lens)| Some((lang.symbols.get(lens.symbol)?.line.min(total - 1), index))).collect(),
             false => vec![],
         };
         lens_rows.sort_unstable();
         lens_rows.dedup_by_key(|row| row.0);
+        let pads = shown.as_ref().map_or(vec![], |d| d.pads());
+        let change_anchor = if diffed { None } else { self.change_anchor(doc_id, buf) };
+        let row_folds: &[(usize, usize)] = if diffed { &[] } else { folds };
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (buf.version, wrap_cols, &*folds, &lens_rows).hash(&mut hasher);
+        (buf.version, wrap_cols, row_folds, &lens_rows, &pads).hash(&mut hasher);
         if tab.rows.0 != hasher.finish() || tab.rows.1.len() != total + 1 {
-            tab.rows = (hasher.finish(), build_rows(buf, wrap_cols, folds, &lens_rows));
+            tab.rows = (hasher.finish(), build_rows(buf, wrap_cols, row_folds, &lens_rows, &pads));
         }
         let starts = std::mem::take(&mut tab.rows.1);
         let rows = starts[total] as usize;
@@ -1822,7 +1847,9 @@ impl Editors {
         let (mut activated, mut touched, mut pressed_text) = (false, false, false);
         let (mut caret_at, mut hover_at, mut peek_y, mut over_word, mut lens_open) = (None, None, None, None, None);
         let mut toggle_fold = None;
-        let folded: &[(usize, usize)] = folds;
+        let folded: &[(usize, usize)] = if diffed { &[] } else { folds };
+        let changes = path.as_deref().and_then(|p| git.line_changes(p)).filter(|_| !diffed);
+        let (mut change_y, mut change_click) = (None, None);
         let mut visible = (0, 0);
         let mut area = ScrollArea::both().id_salt(id.with("scroll")).auto_shrink(false);
         if let Some(y) = tab.set_scroll.take() {
@@ -1934,6 +1961,11 @@ impl Editors {
                                 tab.drag_anchor = None;
                             } else if marks.is_some() && pos.x < clip.left() + bp_w {
                                 bp_action = Some(crate::debug::Gutter::Toggle(row_at(pos.y).0));
+                                tab.drag_anchor = None;
+                            } else if (clip.left() + gutter_w - 11.0..clip.left() + gutter_w - 2.0).contains(&pos.x)
+                                && changes.as_ref().is_some_and(|c| c.iter().any(|change| change.0 == buf_ref.line_of(p)))
+                            {
+                                change_click = Some(buf_ref.line_of(p));
                                 tab.drag_anchor = None;
                             } else if pos.x >= fold_x && pos.x < clip.left() + gutter_w && can_fold(buf_ref.line_of(p)) {
                                 toggle_fold = Some(buf_ref.line_of(p));
@@ -2099,6 +2131,9 @@ impl Editors {
                             let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
                             painter.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(theme.warning, 0.14));
                         }
+                        if let Some(d) = &shown {
+                            diff_view::tint(&painter, theme, d, line, Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom)), &|column| at(column).x);
+                        }
                         if settings.guides {
                             let blank = |l: &usize| buf_ref.indent_of(*l) >= buf_ref.line_len(*l);
                             let model = if blank(&line) { (line + 1..(line + 40).min(total)).find(|l| !blank(l)) } else { Some(line) };
@@ -2202,6 +2237,9 @@ impl Editors {
                         if peek_pos.is_some_and(within) {
                             peek_y = Some(bottom);
                         }
+                        if change_anchor == Some(line) {
+                            change_y = Some(bottom);
+                        }
                     }
 
                     let gutter = Rect::from_min_max(clip.min, pos2(clip.left() + gutter_w - 4.0, clip.bottom()));
@@ -2222,7 +2260,15 @@ impl Editors {
                             painter.text(pos2(fold_x + char_w / 2.0, y), Align2::CENTER_CENTER, icon, FontId::proportional(settings.font_size - 2.0), theme.text_dim);
                         }
                     }
-                    if let Some(changes) = path.as_deref().and_then(|p| git.line_changes(p)) {
+                    if let Some(d) = shown.as_mut() {
+                        let pad_top = |line: usize| {
+                            let size = pads.iter().find(|p| p.0 == line).map_or(0, |p| p.1);
+                            origin.y + (starts[line.min(total)] as f32 - size as f32) * line_h
+                        };
+                        let numbers = (text_x, gutter.right() - 10.0 - char_w);
+                        diff_view::paint_pads(&painter, theme, d, &pads, &pad_top, (first, last), clip, numbers, &font, line_h);
+                    }
+                    if let Some(changes) = &changes {
                         let from = changes.partition_point(|c| c.0 < first);
                         for (line, kind) in changes[from..].iter().take_while(|c| c.0 <= last) {
                             let (top, end) = if *line < total { (top_of(*line), starts[line + 1] as usize) } else { (rows, rows) };
@@ -2255,9 +2301,12 @@ impl Editors {
             })
             .inner;
         let scroll_y = out.state.offset.y;
+        if let Some(d) = shown.as_mut() {
+            (d.scroll, d.text_top, d.line_h) = (scroll_y, text_rect.top(), line_h);
+        }
         // shortcut: sticky scopes follow indentation, upgrade to document symbols if a language indents oddly
         tab.stuck = 0;
-        if settings.sticky_scroll && scroll_y > 0.0 {
+        if settings.sticky_scroll && scroll_y > 0.0 && !diffed {
             let blank = |l: usize| buf.indent_of(l) >= buf.line_len(l);
             let scopes = |from: usize| {
                 let mut indent = (from..total.min(from + 40)).find(|l| !blank(*l)).map_or(0, |l| buf.indent_of(l));
@@ -2309,7 +2358,7 @@ impl Editors {
             self.last_input = now;
         }
 
-        if minimap_w > 0.0 {
+        if minimap_w > 0.0 && !diffed {
             let mm = Rect::from_min_max(pos2(text_rect.right(), body.top()), body.max);
             let resp = ui.interact(mm, id.with("minimap"), Sense::click_and_drag());
             let p = ui.painter().with_clip_rect(mm);
@@ -2375,6 +2424,9 @@ impl Editors {
         if pressed_text {
             self.intel.dismiss();
         }
+        if let Some(line) = change_click {
+            self.open_change_peek(doc_id, buf, tab, line, &ctx);
+        }
         if let Some((index, impls)) = lens_open
             && let Some(lens) = lang.lens.get(index)
             && let Some(symbol) = lang.symbols.get(lens.symbol)
@@ -2389,6 +2441,7 @@ impl Editors {
         if is_active {
             self.popups(ui, theme, doc_id, buf, tab, caret_at, line_h, &font);
             self.peek_ui(ui, theme, &font, text_rect, peek_y, doc_id);
+            self.change_peek_ui(ui, theme, &font, text_rect, change_y, doc_id, buf, pending);
         }
 
         let find_t = ui::anim(ui, Id::new(("editor_find", g)), find_open);
@@ -2512,6 +2565,7 @@ impl Editors {
                 });
             });
         }
+        tab.diff = shown;
     }
 
     fn find_ui(&mut self, ui: &mut Ui, area: Rect, t: f32, theme: &Theme, buf: &mut Document, tab: &mut Tab) {

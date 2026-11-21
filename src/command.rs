@@ -90,6 +90,17 @@ pub enum Command {
     GoForward,
     ReopenClosed,
     KeepEditor,
+    NextChange,
+    PrevChange,
+    ShowNextChange,
+    ShowPrevChange,
+    ToggleInlineDiff,
+    StageHunk,
+    RevertHunk,
+    UnstageHunk,
+    StageSelectedRanges,
+    RevertSelectedRanges,
+    UnstageSelectedRanges,
 
     GoToDefinition,
     PeekDefinition,
@@ -288,6 +299,12 @@ fn defaults() -> Vec<Binding> {
         e(Modifiers::ALT, Key::ArrowLeft, GoBack),
         e(Modifiers::ALT, Key::ArrowRight, GoForward),
         g(cs, Key::T, ReopenClosed),
+        g(sa, Key::F5, PrevChange),
+        g(Modifiers::ALT, Key::F5, NextChange),
+        e(Modifiers::SHIFT, Key::F7, PrevChange),
+        e(NONE, Key::F7, NextChange),
+        e(sa, Key::F3, ShowPrevChange),
+        e(Modifiers::ALT, Key::F3, ShowNextChange),
         k(NONE, Key::Enter, KeepEditor),
         e(C, Key::Space, TriggerSuggest),
         e(C, Key::Period, QuickFix),
@@ -373,15 +390,16 @@ pub fn all() -> Vec<Command> {
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
         SelectAll, AddCursorAbove, AddCursorBelow, SelectNextOccurrence, SelectAllOccurrences, ExpandSelection, ShrinkSelection, CursorUndo,
         ShowExplorer, ShowSourceControl, ShowRunAndDebug, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
-        ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer,
+        ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff,
         GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, NextEditor, PrevEditor, GoBack, GoForward, ReopenClosed,
-        KeepEditor, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
+        KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
         ShowHover, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut,
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
         OpenTasksJson, NewTerminal, SplitTerminal, KillTerminal, GitSync, ToggleInlineBlame, OpenLineChanges,
+        StageHunk, RevertHunk, UnstageHunk, StageSelectedRanges, RevertSelectedRanges, UnstageSelectedRanges,
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.push(About);
@@ -521,9 +539,9 @@ impl Command {
             SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence | SelectAllOccurrences | ExpandSelection
             | ShrinkSelection | CursorUndo => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
-            | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer => "View",
+            | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoTo(..) | NextEditor | PrevEditor | GoBack
-            | GoForward | ReopenClosed | KeepEditor | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
+            | GoForward | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
             ShowHover | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
@@ -532,7 +550,8 @@ impl Command {
             | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration => "Run",
             NewTerminal | NewTerminalWith(_) | SplitTerminal | KillTerminal => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
-            OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) => "Source Control",
+            OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) | StageHunk | RevertHunk
+            | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges => "Source Control",
             About => "Help",
         }
     }
@@ -618,6 +637,17 @@ impl Command {
             GoForward => "Go Forward",
             ReopenClosed => "Reopen Closed Editor",
             KeepEditor => "Keep Editor Open",
+            NextChange => "Go to Next Change",
+            PrevChange => "Go to Previous Change",
+            ShowNextChange => "Show Next Change",
+            ShowPrevChange => "Show Previous Change",
+            ToggleInlineDiff => "Toggle Inline Diff View",
+            StageHunk => "Stage Hunk",
+            RevertHunk => "Revert Hunk",
+            UnstageHunk => "Unstage Hunk",
+            StageSelectedRanges => "Stage Selected Ranges",
+            RevertSelectedRanges => "Revert Selected Ranges",
+            UnstageSelectedRanges => "Unstage Selected Ranges",
             GoToDefinition => "Go to Definition",
             PeekDefinition => "Peek Definition",
             GoToDeclaration => "Go to Declaration",
