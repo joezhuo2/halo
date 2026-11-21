@@ -46,7 +46,6 @@ pub struct Halo {
     pub find: FindPanel,
     pub wsl: Wsl,
     pub jobs: crate::theme_import::Jobs,
-    notices: Vec<String>,
     pub page: crate::settings_page::SettingsPage,
     font: String,
     pub zone: Zone,
@@ -94,7 +93,6 @@ impl Halo {
             find: FindPanel::default(),
             wsl: Wsl::default(),
             jobs: Default::default(),
-            notices: vec![],
             page: Default::default(),
             font,
             zone: Zone::Editor,
@@ -334,6 +332,17 @@ impl Halo {
                 self.session.panel = !(self.session.panel && self.bottom.showing_problems());
                 self.bottom.show_problems();
             }
+            ShowOutput | SelectOutputChannel(_) => {
+                if let SelectOutputChannel(name) = cmd {
+                    crate::output::select(name);
+                }
+                self.session.panel = true;
+                self.bottom.show_output();
+            }
+            ShowOutputChannels => self.search.pick("Select an Output Channel", crate::output::picks()),
+            ClearOutput => crate::output::clear_current(),
+            OpenOutputInEditor => self.editors.open_untitled(&crate::output::current_text()),
+            ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => crate::notifications::exec(&cmd),
             Git(op) | GitAt(op, _) => {
                 let target = if let GitAt(_, value) = cmd { Some(value) } else { None };
                 (self.session.sidebar, self.session.source_control, self.session.search) = (true, true, false);
@@ -605,35 +614,7 @@ impl Halo {
         });
     }
 
-    fn notices(&mut self, ctx: &egui::Context) {
-        self.notices.extend(ui::take_notices());
-        if self.notices.is_empty() {
-            return;
-        }
-        let theme = self.theme.clone();
-        egui::Area::new(Id::new("notices")).order(egui::Order::Foreground).anchor(Align2::RIGHT_BOTTOM, vec2(-12.0, -34.0)).show(ctx, |ui| {
-            ui.set_opacity(ui::fade_in(ui, Id::new(("notice_fade", self.notices.len()))));
-            let mut dismiss = None;
-            for (index, text) in self.notices.iter().enumerate() {
-                Frame::new().fill(theme.raised).stroke(Stroke::new(1.0, theme.error)).corner_radius(CornerRadius::same(6)).inner_margin(12.0).show(ui, |ui| {
-                    ui.set_max_width(440.0);
-                    ui.horizontal(|ui| {
-                        if ui::icon_button(ui, &theme, icons::X, 20.0, false, "Dismiss").clicked() {
-                            dismiss = Some(index);
-                        }
-                        ui.add(egui::Label::new(RichText::new(text).color(theme.text)).wrap());
-                    });
-                });
-                ui.add_space(4.0);
-            }
-            if let Some(index) = dismiss {
-                self.notices.remove(index);
-            }
-        });
-    }
-
     fn dialogs(&mut self, ctx: &egui::Context) {
-        self.notices(ctx);
         if self.page.open {
             self.settings_dialog(ctx);
         }
@@ -746,6 +727,7 @@ impl eframe::App for Halo {
             }
         }
 
+        crate::notifications::show(&ctx, &self.theme, &mut self.cmds);
         self.titlebar(ui);
         self.statusbar(ui);
         self.activity_bar(ui);

@@ -104,6 +104,14 @@ impl Halo {
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(6.0);
+                        let (unread, dnd) = crate::notifications::summary();
+                        let bell = format!("{}{}", if dnd { icons::BELL_SLASH } else { icons::BELL }, if unread > 0 { format!(" {unread}") } else { String::new() });
+                        let tip = if dnd { "Notifications (Do Not Disturb is on)" } else { "Notifications" };
+                        let resp = item(ui, &theme, &bell, unread > 0, tip);
+                        crate::notifications::set_bell(resp.rect);
+                        if resp.clicked() {
+                            self.cmds.push(Command::ShowNotifications);
+                        }
                         let icon = if theme.dark { icons::SUN } else { icons::MOON };
                         if item(ui, &theme, icon, false, "Color theme").clicked() {
                             self.cmds.push(Command::SelectTheme);
