@@ -67,6 +67,7 @@ pub const SETTINGS: &[Meta] = &[
     m("scroll_beyond_last_line", 0, ED, "Scroll Beyond Last Line", "Let the editor scroll half a page past the last line.", Kind::Toggle),
     m("smooth_scrolling", 0, ED, "Smooth Scrolling", "Animate scrolling to the cursor and to search results.", Kind::Toggle),
     m("cursor_surrounding_lines", 0, ED, "Cursor Surrounding Lines", "The number of lines kept visible above and below the cursor when it moves.", Kind::Int(0, 50)),
+    m("peek_context_lines", 0, ED, "Peek Context Lines", "The number of lines shown above the target in the peek definition and references preview. The preview scrolls with the mouse wheel.", Kind::Int(1, 40)),
     m("mouse_wheel_zoom", 0, ED, "Mouse Wheel Zoom", "Zoom with Ctrl and the mouse wheel over the editor.", Kind::Toggle),
     m("multi_cursor_modifier", 0, ED, "Multi Cursor Modifier", "The key held while clicking to add a cursor. The other one follows links.", Kind::Choice(&[("alt", "Alt"), ("ctrlCmd", "Ctrl")])),
     m("word_separators", 0, ED, "Word Separators", "Characters that end a word for word motions, double click and word deletion. ASCII only.", Kind::Custom),

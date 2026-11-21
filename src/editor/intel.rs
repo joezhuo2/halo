@@ -373,6 +373,7 @@ pub(super) struct Peek {
     files: HashMap<String, Vec<String>>,
     hierarchy: Option<(bool, bool)>,
     reveal: bool,
+    scroll: isize,
 }
 
 struct Rename {
@@ -704,7 +705,7 @@ impl Editors {
             let text = lines.get(item.start.0).map(|line| line.trim()).unwrap_or_default();
             item.label = if item.label.is_empty() { text.to_owned() } else { format!("{}   {text}", item.label) };
         }
-        self.intel.peek = Some(Peek { doc, pos, title: title.to_owned(), items, selected: 0, files, hierarchy, reveal: true });
+        self.intel.peek = Some(Peek { doc, pos, title: title.to_owned(), items, selected: 0, files, hierarchy, reveal: true, scroll: 0 });
     }
 
     pub(super) fn find_doc(&self, path: &Path) -> Option<u64> {
@@ -1020,7 +1021,7 @@ impl Editors {
                     Key::Enter => intel.queued.extend(peek.items.get(peek.selected).map(|item| Queued::Jump(item.path.clone(), item.start))),
                     _ => {
                         moved(&mut peek.selected, peek.items.len().max(1));
-                        peek.reveal = true;
+                        (peek.reveal, peek.scroll) = (true, 0);
                         return false;
                     }
                 }
@@ -1240,8 +1241,10 @@ impl Editors {
     }
 
     pub(super) fn peek_ui(&mut self, ui: &mut Ui, theme: &Theme, font: &FontId, area: Rect, below: Option<f32>, id: u64) {
+        let context = self.config.peek_context_lines.max(1);
         let Some(peek) = self.intel.peek.as_mut().filter(|p| p.doc == id) else { return };
-        let height = (area.height() - 30.0).clamp(80.0, 240.0);
+        let row_h = (font.size * 1.35).round();
+        let height = (26.0 + row_h * (context * 2 + 1) as f32 + 2.0).min(area.height() - 30.0).max(80.0);
         let top = below.filter(|y| *y > area.top()).unwrap_or(area.top()).min(area.bottom() - height).max(area.top());
         let rect = Rect::from_min_size(pos2(area.left() + 6.0, top), vec2(area.width() - 14.0, height));
         ui.interact(rect, Id::new(("peek", id)), Sense::click());
@@ -1271,9 +1274,17 @@ impl Editors {
         painter.vline(split, body.y_range(), Stroke::new(1.0, theme.border));
         if let Some(item) = &current {
             let lines = peek.files.get(&lsp::key(&item.path));
-            let row_h = (font.size * 1.35).round();
-            let shown = (preview.height() / row_h) as usize;
-            let first = item.start.0.saturating_sub(shown / 3);
+            let shown = (preview.height() / row_h).ceil() as usize;
+            let opened = ui.interact(preview, Id::new(("peek_preview", id)), Sense::click()).on_hover_text("Double-click to open");
+            if opened.hovered() {
+                let wheel = ui.input(|i| i.smooth_scroll_delta.y);
+                ui.input_mut(|i| i.smooth_scroll_delta.y = 0.0);
+                peek.scroll -= (wheel / row_h).round() as isize;
+            }
+            let total = lines.map_or(0, Vec::len);
+            let natural = item.start.0 as isize - context.min(shown / 2) as isize;
+            peek.scroll = peek.scroll.clamp(-natural.max(0), (total as isize - natural - 1).max(0));
+            let first = (natural + peek.scroll).max(0) as usize;
             let clip = painter.with_clip_rect(preview);
             for (index, line) in (first..first + shown).enumerate() {
                 let Some(text) = lines.and_then(|lines| lines.get(line)) else { break };
@@ -1286,7 +1297,6 @@ impl Editors {
                 clip.text(pos2(preview.left() + 44.0, y + row_h / 2.0), Align2::RIGHT_CENTER, line + 1, font.clone(), theme.text_dim);
                 clip.text(pos2(preview.left() + 56.0, y + row_h / 2.0), Align2::LEFT_CENTER, shown_text, font.clone(), theme.text);
             }
-            let opened = ui.interact(preview, Id::new(("peek_preview", id)), Sense::click()).on_hover_text("Double-click to open");
             if opened.double_clicked() {
                 jump = Some(peek.selected);
             }
@@ -1321,6 +1331,7 @@ impl Editors {
         });
         if let Some(index) = select {
             peek.selected = index;
+            peek.scroll = 0;
         }
         let (pos, hierarchy) = (peek.pos, peek.hierarchy);
         let target = jump.and_then(|index| peek.items.get(index)).map(|item| (item.path.clone(), item.start));
