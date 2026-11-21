@@ -137,7 +137,7 @@ pub struct Editors {
     goto: Option<String>,
     goto_focus: bool,
     closing: Option<(usize, usize)>,
-    banner: Option<(String, Instant)>,
+    banner: Option<(String, Option<Instant>)>,
     last_input: f64,
     drag: Option<(usize, usize)>,
     drop: Option<DropAt>,
@@ -216,8 +216,8 @@ fn links(text: &str) -> Vec<(usize, usize)> {
     out
 }
 
-fn notice(text: String) -> Option<(String, Instant)> {
-    Some((text, Instant::now()))
+fn notice(text: String) -> Option<(String, Option<Instant>)> {
+    Some((text, Some(Instant::now())))
 }
 
 fn visible_text(buf: &Document, line: usize) -> String {
@@ -481,7 +481,7 @@ impl Editors {
         let id = self.next_id;
         self.next_id += 1;
         if let Some(note) = &buf.note {
-            self.banner = notice(note.clone());
+            self.banner = Some((note.clone(), None));
         }
         let hl = Highlighter::new(buf.path.as_deref(), &buf.rope);
         self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0, stale: false });
@@ -517,7 +517,7 @@ impl Editors {
                 let id = self.insert_doc(buf);
                 self.place(id, preview);
             }
-            Err(error) => self.banner = notice(error),
+            Err(error) => self.banner = Some((error, None)),
         }
     }
 
@@ -696,7 +696,7 @@ impl Editors {
                 true
             }
             Err(error) => {
-                self.banner = notice(error);
+                self.banner = Some((error, None));
                 false
             }
         }
@@ -983,7 +983,7 @@ impl Editors {
                 Err(error) => Some(error),
             },
         };
-        self.banner = banner.and_then(notice).or(self.banner.take());
+        self.banner = banner.map(|text| (text, None)).or(self.banner.take());
     }
 
     pub fn has_focus(&self) -> bool {
@@ -2310,7 +2310,7 @@ impl Editors {
                         tab.sels = vec![Sel::caret(0)];
                         *stale = false;
                     }
-                    Err(error) => self.banner = notice(error),
+                    Err(error) => self.banner = Some((error, None)),
                 },
                 (Some(2), Some(path)) => {
                     buf.disk = buffer::disk_time(&path);
@@ -2322,11 +2322,11 @@ impl Editors {
         }
 
         if is_active && let Some((message, since)) = self.banner.clone() {
-            let left = 4.0 - since.elapsed().as_secs_f32();
+            let left = since.map_or(f32::INFINITY, |since| 4.0 - since.elapsed().as_secs_f32());
             let t = ui::anim(ui, Id::new("editor_banner"), left > 0.0);
-            if left > 0.0 {
+            if left.is_finite() && left > 0.0 {
                 ctx.request_repaint_after(Duration::from_secs_f32(left));
-            } else if t == 0.0 {
+            } else if left <= 0.0 && t == 0.0 {
                 self.banner = None;
             }
             let rect = Rect::from_min_max(pos2(body.left(), body.bottom() - 30.0), pos2(text_rect.right(), body.bottom()));
@@ -2565,9 +2565,12 @@ end", "word ".repeat(100)))], &settings);
         editors.banner = notice("fresh".into());
         (0..3).for_each(|_| frame(&ctx, &mut editors, vec![]));
         assert!(editors.banner.is_some());
-        editors.banner = Some(("old".into(), Instant::now().checked_sub(Duration::from_secs(5)).unwrap()));
+        editors.banner = Some(("old".into(), Instant::now().checked_sub(Duration::from_secs(5))));
         (0..30).for_each(|_| frame(&ctx, &mut editors, vec![]));
         assert!(editors.banner.is_none());
+        editors.banner = Some(("error".into(), None));
+        (0..30).for_each(|_| frame(&ctx, &mut editors, vec![]));
+        assert!(editors.banner.is_some());
     }
 
     #[test]
