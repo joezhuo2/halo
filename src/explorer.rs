@@ -14,6 +14,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
+mod nesting;
 mod panels;
 #[cfg(test)]
 mod tests;
