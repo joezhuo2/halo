@@ -1548,4 +1548,90 @@ mod tests {
         let old: Settings = serde_json::from_str(r#"{"theme":"light"}"#).unwrap();
         assert_eq!(old.suggest_rows, 5);
     }
+
+    fn accept_with_tab(extra: Vec<lsp::Edit>) -> (f32, f32, String, String, bool) {
+        let (ctx, settings) = (egui::Context::default(), Settings { lsp: false, ..Settings::default() });
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        run(&ctx, &mut editors, &settings, vec![], 1.0);
+        run(&ctx, &mut editors, &settings, vec![], 1.0);
+        let body: String = (0..300).map(|i| format!("int unused_variable_{i} = 1;\n")).collect();
+        run(&ctx, &mut editors, &settings, vec![Event::Paste(body)], 1.0);
+        let mut t = 1.0;
+        let mut frames = |editors: &mut Editors, events: Vec<Event>, count: usize| {
+            for frame in 0..count {
+                t += 0.016;
+                run(&ctx, editors, &settings, if frame == 0 { events.clone() } else { vec![] }, t);
+            }
+        };
+        frames(&mut editors, vec![], 60);
+        editors.groups[0].tabs[0].set_scroll = Some(2000.0);
+        frames(&mut editors, vec![], 3);
+        let id = editors.groups[0].tabs[0].doc;
+        let top = editors.docs[&id].top;
+        let line = top + 10;
+        let end = editors.docs[&id].buf.line_start(line + 1) - 1;
+        editors.groups[0].tabs[0].sels = vec![Sel::caret(end)];
+        frames(&mut editors, "bloc".chars().map(|c| Event::Text(c.into())).collect(), 30);
+        let item = Completion { label: "block_size_".into(), detail: String::new(), kind: 5, filter: "block_size_".into(), sort: "a".into(), text: "block_size_".into(), range: None, extra, snippet: false };
+        editors.intel.suggest = Some(Suggest { doc: id, start: end, items: vec![item], shown: vec![], selected: 0, prefix: None, incomplete: false, dot: false, reveal: true });
+        frames(&mut editors, vec![], 3);
+        let before = editors.groups[0].tabs[0].anchor.3;
+        let doc = &editors.docs[&id];
+        let first = doc.buf.text_of(doc.buf.line_start(doc.top), doc.buf.line_start(doc.top + 1));
+        let tab = Event::Key { key: Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        frames(&mut editors, vec![tab], 60);
+        let doc = &editors.docs[&id];
+        assert!(doc.buf.text_of(doc.buf.line_start(line), doc.buf.line_start(line + 2)).contains("= 1;block_size_\n"));
+        let after = editors.groups[0].tabs[0].anchor.3;
+        let shown = doc.buf.text_of(doc.buf.line_start(doc.top), doc.buf.line_start(doc.top + 1));
+        let focused = ctx.memory(|m| m.has_focus(Id::new(("editor_view", 0usize, id))));
+        (before, after, first, shown, focused)
+    }
+
+    #[test]
+    fn accepting_a_completion_with_tab_keeps_the_view_and_focus() {
+        let (before, after, first, shown, focused) = accept_with_tab(vec![]);
+        assert!(before > 1000.0);
+        assert_eq!((before, first.as_str(), focused), (after, shown.as_str(), true));
+    }
+
+    #[test]
+    fn wheel_scrolling_settles_where_the_input_asked() {
+        for (unit, step) in [(egui::MouseWheelUnit::Line, -1.0), (egui::MouseWheelUnit::Line, -0.3), (egui::MouseWheelUnit::Point, -30.0), (egui::MouseWheelUnit::Point, -4.0)] {
+            for smooth in [true, false] {
+                let (ctx, settings) = (egui::Context::default(), Settings { lsp: false, smooth_scrolling: smooth, ..Settings::default() });
+                let mut editors = editor_with_lines(&ctx, &settings);
+                let mut t = 1.0;
+                for _ in 0..60 {
+                    t += 0.016;
+                    run(&ctx, &mut editors, &settings, vec![], t);
+                }
+                editors.groups[0].tabs[0].set_scroll = Some(0.0);
+                run(&ctx, &mut editors, &settings, vec![Event::PointerMoved(pos2(400.0, 300.0))], t);
+                let start = editors.groups[0].tabs[0].anchor.3;
+                let per = if unit == egui::MouseWheelUnit::Line { ctx.options(|o| o.input_options.line_scroll_speed) } else { 1.0 };
+                let mut wheel = vec![Event::MouseWheel { unit, delta: vec2(0.0, step), phase: egui::TouchPhase::Move, modifiers: Default::default() }];
+                ui::direct_wheel(&mut wheel, per, smooth);
+                let mut seen = vec![start];
+                for frame in 0..90 {
+                    t += 0.016;
+                    run(&ctx, &mut editors, &settings, if frame < 6 { wheel.clone() } else { vec![] }, t);
+                    seen.push(editors.groups[0].tabs[0].anchor.3);
+                }
+                let direct = !smooth || if unit == egui::MouseWheelUnit::Line { step.fract() != 0.0 } else { step.abs() < 8.0 };
+                assert!(seen.windows(2).all(|w| w[1] >= w[0]), "{unit:?} {smooth} {seen:?}");
+                assert!((*seen.last().unwrap() - start + 6.0 * step * per).abs() < 0.01, "{unit:?} {smooth} {seen:?}");
+                assert!(seen[if direct { 6 } else { 60 }..].windows(2).all(|w| w[1] == w[0]), "{unit:?} {smooth} {seen:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_inserted_above_the_view_keeps_the_same_text_on_top() {
+        let include = lsp::Edit { start: (0, 0), end: (0, 0), text: "#include <cstddef>\n".into() };
+        let (before, after, first, shown, focused) = accept_with_tab(vec![include]);
+        assert!(after > before && focused, "{before} {after}");
+        assert_eq!(first, shown);
+    }
 }

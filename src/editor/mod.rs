@@ -89,6 +89,7 @@ struct Tab {
     sels: Vec<Sel>,
     reveal: Option<usize>,
     set_scroll: Option<f32>,
+    anchor: (u64, usize, u32, f32),
     drag_anchor: Option<usize>,
     pinned: bool,
     rows: (u64, Vec<u32>),
@@ -2113,6 +2114,12 @@ impl Editors {
         let (mut change_y, mut change_click) = (None, None);
         let mut visible = (0, 0);
         let mut area = ScrollArea::both().id_salt(id.with("scroll")).auto_shrink(false);
+        let (version, anchor, row, offset) = tab.anchor;
+        if let Some(pos) = buf.mapped(version, anchor).filter(|_| version != buf.version && offset > 0.0 && tab.set_scroll.is_none())
+            && starts[buf.line_of(pos)] != row
+        {
+            tab.set_scroll = Some(offset + (starts[buf.line_of(pos)] as f32 - row as f32) * line_h);
+        }
         if let Some(y) = tab.set_scroll.take() {
             area = area.vertical_scroll_offset(y.max(0.0));
         }
@@ -2624,6 +2631,7 @@ impl Editors {
             .inner;
         let scroll_y = out.state.offset.y;
         doc.top = visible.0;
+        tab.anchor = (buf.version, buf.line_start(visible.0), starts[visible.0], scroll_y);
         if let Some(d) = shown.as_mut() {
             (d.scroll, d.text_top, d.line_h) = (scroll_y, text_rect.top(), line_h);
         }

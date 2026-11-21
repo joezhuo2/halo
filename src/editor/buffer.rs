@@ -121,6 +121,7 @@ pub struct Document {
     saved: u64,
     undo: Vec<Transaction>,
     redo: Vec<Transaction>,
+    moves: Vec<(u64, u64, EditList)>,
     pub dirty_from: Option<usize>,
     pub note: Option<String>,
     pub read_only: bool,
@@ -345,6 +346,7 @@ impl Document {
             saved: version,
             undo: vec![],
             redo: vec![],
+            moves: vec![],
             dirty_from: None,
             note: None,
             read_only: false,
@@ -576,8 +578,25 @@ impl Document {
         };
         merge_sels(sels);
         self.touch(first_line);
+        let from = self.version;
         self.record(changes, before, sels.clone(), kind);
+        if self.moves.len() >= 8 {
+            self.moves.remove(0);
+        }
+        self.moves.push((from, self.version, merged));
         true
+    }
+
+    pub fn mapped(&self, mut version: u64, mut pos: usize) -> Option<usize> {
+        for (from, to, edits) in &self.moves {
+            if *from == version {
+                if edits.iter().any(|e| e.0 < pos && pos < e.1) {
+                    return None;
+                }
+                (pos, version) = (map_pos(edits, pos), *to);
+            }
+        }
+        (version == self.version).then_some(pos)
     }
 
     fn record(&mut self, changes: Vec<Change>, before: Vec<Sel>, after: Vec<Sel>, kind: Kind) {
@@ -1406,6 +1425,21 @@ mod tests {
 
     fn doc(text: &str) -> Document {
         Document::from_text(text, "t".into())
+    }
+
+    #[test]
+    fn maps_a_position_across_later_edits() {
+        let mut d = doc("ab\ncd\nef\n");
+        let start = d.version;
+        d.apply(&mut vec![], vec![(0, 0, "x\n".into()), (7, 7, "!".into())], Kind::Other, After::Map);
+        d.apply(&mut vec![], vec![(2, 4, "".into())], Kind::Other, After::Map);
+        assert_eq!(d.mapped(start, 3), Some(3));
+        assert_eq!(d.mapped(start, 1), None);
+        let mid = d.version;
+        d.apply(&mut vec![], vec![(0, d.len(), "new".into())], Kind::Other, After::Map);
+        assert_eq!(d.mapped(mid, 3), None);
+        d.undo(&mut vec![]);
+        assert_eq!(d.mapped(mid, 3), None);
     }
 
     #[test]
