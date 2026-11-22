@@ -31,7 +31,7 @@ impl Content {
 }
 
 pub enum Loaded {
-    Doc(Document),
+    Doc(Box<Document>),
     Binary,
     Huge(u64),
     Failed(String),
@@ -55,7 +55,7 @@ fn read(path: &Path, force: bool) -> Loaded {
         return Loaded::Huge(size);
     }
     match std::fs::read(path) {
-        Ok(bytes) => Document::from_bytes(path, &bytes, None, force).map_or(Loaded::Binary, Loaded::Doc),
+        Ok(bytes) => Document::from_bytes(path, &bytes, None, force).map_or(Loaded::Binary, |doc| Loaded::Doc(Box::new(doc))),
         Err(e) => Loaded::Failed(format!("Cannot open {name}: {e}")),
     }
 }
@@ -107,7 +107,7 @@ impl Editors {
                 Err(TryRecvError::Disconnected) => Loaded::Failed("The file could not be read.".into()),
             };
             match loaded {
-                Loaded::Doc(buf) => self.arrive(id, buf),
+                Loaded::Doc(buf) => self.arrive(id, *buf),
                 Loaded::Binary => self.docs.get_mut(&id).iter_mut().for_each(|d| d.content = Content::Binary),
                 Loaded::Huge(size) => self.docs.get_mut(&id).iter_mut().for_each(|d| d.content = Content::Huge(size)),
                 Loaded::Failed(error) => {
