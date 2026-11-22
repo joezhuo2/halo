@@ -96,6 +96,8 @@ pub const SETTINGS: &[Meta] = &[
     m("local_history", 0, ED, "Local History", "Keep up to 50 saved versions of each file in the Timeline.", Kind::Toggle),
     m("format_on_save", 0, ED, "Format On Save", "Format the file with its language server when it is saved by hand.", Kind::Toggle),
     m("format_on_paste", 0, ED, "Format On Paste", "Format pasted text with the language server.", Kind::Toggle),
+    m("format_on_type", 0, ED, "Format On Type", "Let the language server reformat the line after you type characters it reacts to, such as a semicolon or a closing brace.", Kind::Toggle),
+    m("linked_editing", 0, ED, "Linked Editing", "Rename the matching HTML, XML or JSX tag while you edit a tag name.", Kind::Toggle),
     m("diagnostics", 0, PROBLEMS, "Diagnostics", "Underline errors and warnings, and list them in the Problems panel.", Kind::Toggle),
     m("status_problems", 0, PROBLEMS, "Status Bar Counts", "Show the number of errors and warnings in the status bar.", Kind::Toggle),
     m("auto_save", 1, FILES, "Auto Save", "When changed files are saved.", Kind::Choice(&[("off", "Off"), ("afterDelay", "After a delay"), ("onFocusChange", "When the editor loses focus"), ("onWindowChange", "When the window loses focus")])),

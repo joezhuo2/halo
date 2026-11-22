@@ -37,6 +37,8 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("local_history", "workbench.localHistory.enabled"),
     ("format_on_save", "editor.formatOnSave"),
     ("format_on_paste", "editor.formatOnPaste"),
+    ("format_on_type", "editor.formatOnType"),
+    ("linked_editing", "editor.linkedEditing"),
     ("word_wrap", "editor.wordWrap"),
     ("auto_close", "editor.autoClosingBrackets"),
     ("auto_close_quotes", "editor.autoClosingQuotes"),
