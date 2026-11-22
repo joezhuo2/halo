@@ -128,6 +128,10 @@ fn remove(path: &Path) -> std::io::Result<()> {
     let meta = path.symlink_metadata()?;
     #[cfg(windows)]
     {
+        if let Some((distro, linux)) = crate::wsl::parse(path) {
+            let out = crate::terminal::hidden_command("wsl.exe").args(["-d", &distro, "-e", "rm", "-rf", "--", &linux]).output()?;
+            return if out.status.success() { Ok(()) } else { Err(std::io::Error::other(String::from_utf8_lossy(&out.stderr).trim().to_owned())) };
+        }
         use std::os::windows::fs::MetadataExt;
         const REPARSE_POINT: u32 = 0x400;
         const DIRECTORY: u32 = 0x10;
@@ -315,6 +319,25 @@ mod tests {
         assert_eq!(done.removed, std::slice::from_ref(&link));
         assert!(link.symlink_metadata().is_err() && target.join("child").is_file());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn permanently_deletes_nonempty_wsl_folder_with_symlinks() {
+        let linux = format!("/tmp/halo-explorer-ops-wsl-{}", std::process::id());
+        let script = format!("rm -rf {linux} && mkdir -p {linux}/folder/lib && echo x > {linux}/folder/lib/f && ln -s lib {linux}/folder/lib64 && printf %s \"$WSL_DISTRO_NAME\"");
+        let Ok(out) = crate::terminal::hidden_command("wsl.exe").args(["-e", "sh", "-c", &script]).output() else { return };
+        let distro = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        if !out.status.success() || distro.is_empty() {
+            return;
+        }
+        let dir = crate::wsl::to_windows(&distro, &linux);
+        let folder = dir.join("folder");
+        let done = delete_permanently(vec![folder.clone(), dir.join("missing")]);
+        assert_eq!(done.removed, std::slice::from_ref(&folder));
+        assert_eq!(done.errors.len(), 1);
+        assert!(folder.symlink_metadata().is_err());
+        delete_permanently(vec![dir]);
     }
 
     #[test]
