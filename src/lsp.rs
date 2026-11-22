@@ -492,6 +492,30 @@ pub fn hints(value: &Value) -> Vec<Hint> {
     out
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorInfo {
+    pub start: Pos,
+    pub end: Pos,
+    pub rgba: [f32; 4],
+}
+
+pub fn colors(value: &Value) -> Vec<ColorInfo> {
+    let mut out: Vec<ColorInfo> = list(value)
+        .iter()
+        .map(|item| {
+            let (start, end) = range(&item["range"]);
+            let channel = |key: &str| item["color"][key].as_f64().unwrap_or(1.0).clamp(0.0, 1.0) as f32;
+            ColorInfo { start, end, rgba: [channel("red"), channel("green"), channel("blue"), channel("alpha")] }
+        })
+        .collect();
+    out.sort_by_key(|c| c.start);
+    out
+}
+
+pub fn presentations(value: &Value) -> Vec<String> {
+    list(value).iter().filter_map(|item| item["textEdit"]["newText"].as_str().or(item["label"].as_str()).map(str::to_owned)).collect()
+}
+
 pub fn actions(value: &Value) -> Vec<(String, Value)> {
     let titled = |item: &Value| Some((item["title"].as_str()?.to_owned(), item.clone()));
     value.as_array().into_iter().flatten().filter_map(titled).collect()
@@ -641,6 +665,7 @@ fn initialize(id: u64, root: &Path, folders: &[(PathBuf, String)]) -> Value {
         "rangeFormatting": {},
         "semanticTokens": tokens,
         "inlayHint": {},
+        "colorProvider": {},
         "callHierarchy": {},
         "typeHierarchy": {},
         "foldingRange": {"lineFoldingOnly": true, "foldingRangeKind": {"valueSet": ["comment", "imports", "region"]}},
@@ -688,6 +713,7 @@ fn capability(method: &str) -> Option<&'static str> {
         "textDocument/rangeFormatting" => "documentRangeFormattingProvider",
         "textDocument/semanticTokens/full" => "semanticTokensProvider",
         "textDocument/inlayHint" => "inlayHintProvider",
+        "textDocument/documentColor" | "textDocument/colorPresentation" => "colorProvider",
         "textDocument/prepareCallHierarchy" => "callHierarchyProvider",
         "textDocument/prepareTypeHierarchy" => "typeHierarchyProvider",
         "textDocument/foldingRange" => "foldingRangeProvider",
@@ -1247,6 +1273,12 @@ mod tests {
         let found = hints(&json!([{"position": {"line": 4, "character": 9}, "label": [{"value": ": "}, {"value": "u8"}], "paddingLeft": true},
             {"position": {"line": 1, "character": 2}, "label": "x:", "paddingRight": true}]));
         assert_eq!(found, vec![Hint { line: 1, col: 2, label: "x: ".into() }, Hint { line: 4, col: 9, label: " : u8".into() }]);
+        let rgba = |r, g, b, a| json!({"red": r, "green": g, "blue": b, "alpha": a});
+        let found = colors(&json!([{"range": span, "color": rgba(0.0, 0.5, 1.0, 1.0)}, {"range": {"start": {"line": 0, "character": 1}, "end": {"line": 0, "character": 5}}, "color": rgba(1.0, 0.0, 0.0, 0.25)}]));
+        assert_eq!(found, vec![ColorInfo { start: (0, 1), end: (0, 5), rgba: [1.0, 0.0, 0.0, 0.25] }, ColorInfo { start: (2, 4), end: (2, 7), rgba: [0.0, 0.5, 1.0, 1.0] }]);
+        assert!(colors(&Value::Null).is_empty());
+        let shown = presentations(&json!([{"label": "rgb(255, 0, 0)"}, {"label": "#ff0000", "textEdit": {"range": span, "newText": "#f00"}}]));
+        assert_eq!(shown, vec!["rgb(255, 0, 0)".to_owned(), "#f00".into()]);
         let item = diagnostic(&json!({"range": span, "severity": 2, "code": "E1", "source": "rustc", "message": "unused"}));
         assert_eq!((item.severity, item.source.as_str(), item.start), (2, "rustc(E1)", (2, 4)));
         assert_eq!(hierarchy(&json!([{"from": {"name": "caller", "uri": target, "selectionRange": span}, "fromRanges": []}]))[0].label, "caller");
