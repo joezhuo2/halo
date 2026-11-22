@@ -39,6 +39,8 @@ pub(super) struct Lang {
     pub hints: Vec<Hint>,
     pub hinted: (u64, usize, usize),
     pub visible: (usize, usize),
+    pub marked: Option<(u64, usize)>,
+    pub marks: Vec<(usize, usize)>,
 }
 
 impl Lang {
@@ -124,6 +126,11 @@ pub(super) fn from_lsp(buf: &Document, (line, col): Pos) -> usize {
         return buf.len();
     }
     buf.line_start(line) + lsp::utf16_to_char(buf.rope.line(line).chars(), col).min(buf.line_len(line))
+}
+
+fn on_word(buf: &Document, head: usize) -> bool {
+    let (a, b) = buf.word_at(head);
+    b > a && is_word(buf.rope.char(a))
 }
 
 pub(super) fn sync(lsp: &mut Lsp, buf: &Document, lang: &mut Lang, ctx: &egui::Context) {
@@ -337,6 +344,7 @@ enum Want {
     Symbols { doc: u64, version: u64 },
     Tokens { doc: u64, version: u64 },
     Hints { doc: u64, version: u64 },
+    Marks { doc: u64, version: u64, head: usize },
     Prepare { doc: u64, pos: usize, call: bool, outgoing: bool },
     Hierarchy { doc: u64, pos: usize, call: bool, outgoing: bool },
 }
@@ -487,9 +495,11 @@ impl Editors {
         if let Some((doc, _)) = self.intel.saving.take_if(|saving| now > saving.1) {
             self.finish_save(doc);
         }
-        let visible: Vec<u64> = self.groups.iter().filter_map(|group| group.tabs.get(group.active).map(|tab| tab.doc)).collect();
-        for id in visible {
-            self.refresh(id, settings, now, ctx);
+        let caret = |g: usize, tab: &Tab| (g == self.active && tab.sels.len() == 1 && tab.sels[0].is_empty()).then(|| tab.sels[0].head);
+        let visible: Vec<(u64, Option<usize>)> =
+            self.groups.iter().enumerate().filter_map(|(g, group)| group.tabs.get(group.active).map(|tab| (tab.doc, caret(g, tab)))).collect();
+        for (id, head) in visible {
+            self.refresh(id, head, settings, now, ctx);
         }
         let outside = |rects: &[Rect]| !ctx.pointer_interact_pos().is_some_and(|pos| rects.iter().any(|r| r.contains(pos)));
         if ctx.input(|i| i.pointer.any_pressed()) && outside(&self.intel.last_rects) {
@@ -499,7 +509,7 @@ impl Editors {
         }
     }
 
-    fn refresh(&mut self, id: u64, settings: &Settings, now: f64, ctx: &egui::Context) {
+    fn refresh(&mut self, id: u64, head: Option<usize>, settings: &Settings, now: f64, ctx: &egui::Context) {
         let Some(doc) = self.docs.get_mut(&id) else { return };
         let (buf, lang) = (&doc.buf, &mut doc.lang);
         let Some(path) = buf.path.as_deref().filter(|_| lang.attached) else { return };
@@ -509,11 +519,21 @@ impl Editors {
             lang.hinted = (0, 0, 0);
         }
         let version = buf.version;
+        let mark = head.filter(|head| on_word(buf, *head)).map(|head| (version, head));
         if now - self.last_input <= 0.3 || now < lang.retry {
-            if lang.requested != version || now < lang.retry {
+            if lang.requested != version || now < lang.retry || lang.marked != mark {
                 ctx.request_repaint_after(Duration::from_millis(350));
             }
             return;
+        }
+        if lang.marked != mark {
+            lang.marked = mark;
+            lang.marks.clear();
+            if let Some((_, head)) = mark
+                && let Some(request) = self.lsp.request(path, "textDocument/documentHighlight", lsp::at(path, to_lsp(buf, head)))
+            {
+                self.intel.wants.push((request, Want::Marks { doc: id, version, head }));
+            }
         }
         let target = json!({"textDocument": {"uri": lsp::uri(path)}});
         if lang.requested != version {
@@ -612,6 +632,11 @@ impl Editors {
                 } else if d.buf.version == version {
                     d.lang.hints = lsp::hints(&value);
                 }
+            }
+            Want::Marks { doc, version, head } => {
+                let Some(d) = self.docs.get_mut(&doc).filter(|d| !failed && d.buf.version == version && d.lang.marked == Some((version, head))) else { return };
+                let marks = lsp::highlights(&value).into_iter().map(|(a, b)| (from_lsp(&d.buf, a), from_lsp(&d.buf, b))).filter(|(a, b)| a < b).collect();
+                d.lang.marks = marks;
             }
             Want::Lens { doc, generation, symbol, impls } => {
                 let Some(d) = self.docs.get_mut(&doc).filter(|d| d.lang.generation == generation) else { return };
@@ -1514,6 +1539,29 @@ mod tests {
         }
         run(&ctx, &mut editors, &settings, vec![Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: vec2(0.0, -1.0), phase: egui::TouchPhase::Move, modifiers: Default::default() }], t + 0.05);
         assert!(editors.intel.hover.as_ref().is_none_or(|h| !h.asked));
+    }
+
+    #[test]
+    fn keeps_only_fresh_symbol_highlights() {
+        let (ctx, settings) = (egui::Context::default(), Settings::default());
+        let mut editors = editor_with_lines(&ctx, &settings);
+        let group = &mut editors.groups[editors.active];
+        let tab = &mut group.tabs[group.active];
+        tab.sels = vec![Sel::caret(4)];
+        let id = tab.doc;
+        let d = editors.docs.get_mut(&id).unwrap();
+        assert!(on_word(&d.buf, 4) && on_word(&d.buf, 3) && !on_word(&d.buf, 22));
+        let version = d.buf.version;
+        d.lang.marked = Some((version, 4));
+        let reply = json!([{"range": lsp::range_json((0, 4), (0, 21)), "kind": 3}, {"range": lsp::range_json((2, 4), (2, 21))}]);
+        editors.reply(Want::Marks { doc: id, version, head: 5 }, Some(reply.clone()), 0.0);
+        editors.reply(Want::Marks { doc: id, version: version + 1, head: 4 }, Some(reply.clone()), 0.0);
+        assert!(editors.docs[&id].lang.marks.is_empty());
+        editors.reply(Want::Marks { doc: id, version, head: 4 }, Some(reply), 0.0);
+        let line2 = editors.docs[&id].buf.line_start(2);
+        assert_eq!(editors.docs[&id].lang.marks, vec![(4, 21), (line2 + 4, line2 + 21)]);
+        run(&ctx, &mut editors, &settings, vec![], 3.0);
+        assert_eq!(editors.docs[&id].lang.marks.len(), 2);
     }
 
     #[test]

@@ -259,6 +259,10 @@ pub fn locations(value: &Value) -> Vec<Location> {
         .collect()
 }
 
+pub fn highlights(value: &Value) -> Vec<(Pos, Pos)> {
+    list(value).iter().map(|item| range(&item["range"])).collect()
+}
+
 pub fn hierarchy(value: &Value) -> Vec<Location> {
     list(value)
         .iter()
@@ -594,6 +598,7 @@ fn initialize(id: u64, root: &Path, folders: &[(PathBuf, String)]) -> Value {
         "typeDefinition": link,
         "implementation": link,
         "references": {},
+        "documentHighlight": {},
         "documentSymbol": {"hierarchicalDocumentSymbolSupport": true},
         "codeAction": {"codeActionLiteralSupport": {"codeActionKind": {"valueSet": kinds}}},
         "rename": {},
@@ -638,6 +643,7 @@ fn capability(method: &str) -> Option<&'static str> {
         "textDocument/typeDefinition" => "typeDefinitionProvider",
         "textDocument/implementation" => "implementationProvider",
         "textDocument/references" => "referencesProvider",
+        "textDocument/documentHighlight" => "documentHighlightProvider",
         "textDocument/documentSymbol" => "documentSymbolProvider",
         "textDocument/codeAction" => "codeActionProvider",
         "textDocument/rename" => "renameProvider",
@@ -1205,6 +1211,8 @@ mod tests {
         let item = diagnostic(&json!({"range": span, "severity": 2, "code": "E1", "source": "rustc", "message": "unused"}));
         assert_eq!((item.severity, item.source.as_str(), item.start), (2, "rustc(E1)", (2, 4)));
         assert_eq!(hierarchy(&json!([{"from": {"name": "caller", "uri": target, "selectionRange": span}, "fromRanges": []}]))[0].label, "caller");
+        assert_eq!(highlights(&json!([{"range": span, "kind": 3}, {"range": span}])), vec![((2, 4), (2, 7)); 2]);
+        assert!(highlights(&Value::Null).is_empty());
     }
 
     #[test]

@@ -167,6 +167,8 @@ file extension.
   and implementations, **Peek Definition** (`Alt+F12`) and **Find All
   References** (`Shift+F12`). Several results open a peek list with a preview
   of each place. `Alt+Left` goes back.
+- **Symbol highlights:** when the caret rests on a name, the other places
+  that use it in the file are highlighted.
 - **Reference counts** sit on a line above each function, method and type.
   Click one to peek at the places that use it. Interfaces and traits also
   show their implementations.

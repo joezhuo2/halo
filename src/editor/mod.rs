@@ -2407,6 +2407,7 @@ impl Editors {
                     let cursor_line = buf_ref.line_of(tab.sels[0].head);
                     let same = tab.sels.first().filter(|s| settings.selection_highlight && tab.sels.len() == 1 && !s.is_empty() && s.end() - s.start() <= 200);
                     let same = same.map(|s| (s.start(), buf_ref.rope.slice(s.start()..s.end()).to_string())).filter(|(_, t)| !t.contains('\n') && !t.trim().is_empty());
+                    let uses: &[(usize, usize)] = if single && lang_ref.marked == Some((buf_ref.version, tab.sels[0].head)) { &lang_ref.marks } else { &[] };
 
                     for column in &settings.rulers {
                         painter.vline(text_x + *column as f32 * char_w, clip.y_range(), Stroke::new(1.0, ui::with_alpha(theme.border, 0.8)));
@@ -2513,6 +2514,11 @@ impl Editors {
                                     let r = Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h));
                                     painter.rect_filled(r, CornerRadius::same(2), ui::with_alpha(theme.selection, 0.5));
                                 }
+                            }
+                        }
+                        for (a, b) in uses.iter().filter(|(a, b)| *b > start && *a <= start + len) {
+                            for (x0, x1, y) in spans(a.saturating_sub(start), b - start) {
+                                painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), CornerRadius::same(2), ui::with_alpha(theme.selection, 0.5));
                             }
                         }
                         if let Some((a, b)) = bracket {
