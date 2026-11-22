@@ -30,6 +30,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("auto_save", "files.autoSave"),
     ("associations", "files.associations"),
     ("code_lens", "editor.codeLens"),
+    ("markdown_validate", "markdown.validate.enabled"),
     ("inlay_hints", "editor.inlayHints.enabled"),
     ("semantic_highlighting", "editor.semanticHighlighting.enabled"),
     ("breadcrumbs", "breadcrumbs.enabled"),

@@ -223,6 +223,9 @@ pub fn completion_icon(kind: u8) -> &'static str {
         9 => icons::PACKAGE,
         13 | 20 => icons::LIST_BULLETS,
         14 => icons::KEY,
+        17 => icons::FILE,
+        18 => icons::HASH,
+        19 => icons::FOLDER,
         21 => icons::HASH,
         25 => icons::TEXT_T,
         _ => icons::BRACKETS_CURLY,
@@ -912,12 +915,20 @@ impl Lsp {
     }
 
     pub fn close(&mut self, path: &Path) {
+        self.problems.remove(&key(path));
         let Some(index) = self.index_of(path) else { return };
         let server = &mut self.servers[index];
         if let Some((target, _)) = server.open.remove(&key(path)) {
             server.notify("textDocument/didClose", json!({"textDocument": {"uri": target}}));
         }
-        self.problems.remove(&key(path));
+    }
+
+    pub fn publish(&mut self, path: PathBuf, server: &str, items: Vec<Diagnostic>) {
+        if !items.is_empty() {
+            self.problems.insert(key(&path), FileProblems { path, server: server.to_owned(), items });
+        } else if self.problems.get(&key(&path)).is_some_and(|p| p.server == server) {
+            self.problems.remove(&key(&path));
+        }
     }
 
     pub fn request(&mut self, path: &Path, method: &str, params: Value) -> Option<u64> {
