@@ -1,6 +1,6 @@
 use super::buffer::{After, Document, Kind, Sel, is_word};
 use super::load::Place;
-use super::{Editors, Tab, links, notice, snippet};
+use super::{Editors, Tab, linked, links, notice, snippet};
 use crate::command::Command;
 use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
 use crate::settings::Settings;
@@ -347,6 +347,7 @@ enum Want {
     Marks { doc: u64, version: u64, head: usize },
     Prepare { doc: u64, pos: usize, call: bool, outgoing: bool },
     Hierarchy { doc: u64, pos: usize, call: bool, outgoing: bool },
+    Linked { doc: u64, version: u64, head: usize },
 }
 
 pub(super) enum Queued {
@@ -698,6 +699,17 @@ impl Editors {
                     self.finish_save(doc);
                 }
             }
+            Want::Linked { doc, version, head } => {
+                let Some(d) = self.docs.get(&doc).filter(|d| d.buf.version == version) else { return };
+                let found = match lsp::linked_ranges(&value) {
+                    Some((ranges, word)) => Some((ranges.iter().map(|r| (from_lsp(&d.buf, r.0), from_lsp(&d.buf, r.1))).collect::<Vec<_>>(), word)),
+                    None => linked::builtin(&d.buf, head).map(|ranges| (ranges, None)),
+                };
+                let Some((ranges, word)) = found else { return };
+                for tab in self.groups.iter_mut().flat_map(|g| &mut g.tabs).filter(|t| t.doc == doc && t.sels.len() == 1 && t.sels[0].head == head) {
+                    tab.link.set(&d.buf, ranges.clone(), word.as_deref());
+                }
+            }
             Want::Prepare { doc, pos, call, outgoing } => {
                 let item = value.as_array().and_then(|items| items.first());
                 let path = self.docs.get(&doc).and_then(|d| d.buf.path.clone());
@@ -871,6 +883,31 @@ impl Editors {
         let params = json!({"textDocument": {"uri": lsp::uri(&path)}, "range": span, "options": options});
         if let Some(request) = self.lsp.request(&path, "textDocument/rangeFormatting", params) {
             self.intel.wants.push((request, Want::Format { doc: id, version: buf.version, save: false }));
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn format_on_type(&mut self, c: char, id: u64, buf: &Document, lang: &mut Lang, head: usize, settings: &Settings, ctx: &egui::Context) {
+        let Some(path) = buf.path.clone().filter(|p| lang.attached && self.lsp.triggers(p, "documentOnTypeFormattingProvider").contains(&c)) else { return };
+        sync(&mut self.lsp, buf, lang, ctx);
+        let mut params = lsp::at(&path, to_lsp(buf, head));
+        params["ch"] = json!(c.to_string());
+        params["options"] = json!({"tabSize": settings.tab_size, "insertSpaces": settings.insert_spaces});
+        if let Some(request) = self.lsp.request(&path, "textDocument/onTypeFormatting", params) {
+            self.intel.wants.push((request, Want::Format { doc: id, version: buf.version, save: false }));
+        }
+    }
+
+    pub(super) fn ask_linked(&mut self, id: u64, buf: &Document, lang: &mut Lang, tab: &mut Tab, head: usize, ctx: &egui::Context) {
+        if let Some(path) = buf.path.clone().filter(|_| lang.attached) {
+            sync(&mut self.lsp, buf, lang, ctx);
+            if let Some(request) = self.lsp.request(&path, "textDocument/linkedEditingRange", lsp::at(&path, to_lsp(buf, head))) {
+                self.intel.wants.push((request, Want::Linked { doc: id, version: buf.version, head }));
+                return;
+            }
+        }
+        if let Some(ranges) = linked::builtin(buf, head) {
+            tab.link.set(buf, ranges, None);
         }
     }
 
@@ -1696,5 +1733,64 @@ mod tests {
         let (before, after, first, shown, focused) = accept_with_tab(vec![include]);
         assert!(after > before && focused, "{before} {after}");
         assert_eq!(first, shown);
+    }
+
+    #[test]
+    fn server_snippet_completions_land_on_tab_stops_with_mirrors() {
+        let accept = |text: &str, start: usize, head: usize, item: Value| {
+            let mut editors = Editors::new();
+            editors.intel.unit = "    ".into();
+            let mut buf = Document::from_text(text, "t".into());
+            let mut tab = Tab { sels: vec![Sel::caret(head)], ..Default::default() };
+            let items = lsp::completions(&json!([item])).0;
+            editors.intel.suggest = Some(Suggest { doc: 0, start, items, shown: vec![0], selected: 0, prefix: None, incomplete: false, dot: false, reveal: true });
+            editors.accept_suggestion(&mut buf, &mut tab);
+            (buf, tab)
+        };
+        let span = |a: usize, b: usize| json!({"start": {"line": 1, "character": a}, "end": {"line": 1, "character": b}});
+        let edit = json!({"insert": span(4, 5), "replace": span(4, 5), "newText": "fn ${1:name}($2) {\n\t$0\n}"});
+        let top = json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "use a;\n"}]);
+        let (mut buf, mut tab) = accept("mod m {\n    f\n}", 12, 13, json!({"label": "fn", "insertTextFormat": 2, "textEdit": edit, "additionalTextEdits": top}));
+        assert_eq!(buf.rope.to_string(), "use a;\nmod m {\n    fn name() {\n        \n    }\n}");
+        assert_eq!((tab.sels[0].start(), tab.sels[0].end(), tab.sels.len()), (22, 26, 1));
+        buf.insert_text(&mut tab.sels, "g");
+        buf.insert_text(&mut tab.sels, "o");
+        snippet::track(&mut tab.snippet, buf.len(), &tab.sels);
+        assert!(snippet::step(&mut tab.snippet, &mut tab.sels, true));
+        assert_eq!(tab.sels[0].head, 25);
+        assert!(snippet::step(&mut tab.snippet, &mut tab.sels, true));
+        assert_eq!((tab.sels[0].head, tab.snippet.is_none()), (37, true));
+
+        let (mut buf, mut tab) = accept("", 0, 0, json!({"label": "for", "insertTextFormat": 2, "insertText": "for (let ${1:i} = 0; $1 < ${2:n}; $1++) {}"}));
+        assert_eq!(tab.sels.iter().map(|s| (s.start(), s.end())).collect::<Vec<_>>(), vec![(9, 10), (16, 17), (23, 24)]);
+        buf.insert_text(&mut tab.sels, "k");
+        buf.insert_text(&mut tab.sels, "j");
+        snippet::track(&mut tab.snippet, buf.len(), &tab.sels);
+        assert_eq!(buf.rope.to_string(), "for (let kj = 0; kj < n; kj++) {}");
+        assert!(snippet::step(&mut tab.snippet, &mut tab.sels, true));
+        assert_eq!(buf.rope.slice(tab.sels[0].start()..tab.sels[0].end()).to_string(), "n");
+
+        let (buf, tab) = accept("v.p", 2, 3, json!({"label": "push", "insertTextFormat": 2, "insertText": "push($0)"}));
+        assert_eq!((buf.rope.to_string().as_str(), tab.sels[0].head, tab.snippet.is_none()), ("v.push()", 7, true));
+    }
+
+    #[test]
+    fn on_type_formatting_applies_only_to_the_version_it_was_asked_for() {
+        let (ctx, settings) = (egui::Context::default(), Settings { lsp: false, ..Settings::default() });
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        run(&ctx, &mut editors, &settings, vec![], 1.0);
+        run(&ctx, &mut editors, &settings, vec![], 1.0);
+        let id = editors.groups[0].tabs[0].doc;
+        let old = editors.docs[&id].buf.version;
+        run(&ctx, &mut editors, &settings, vec![Event::Paste("a;\n".into())], 1.0);
+        let version = editors.docs[&id].buf.version;
+        let edits = json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "  "}]);
+        editors.reply(Want::Format { doc: id, version: old, save: false }, Some(edits.clone()), 0.0);
+        assert_eq!(editors.docs[&id].buf.rope.to_string(), "a;\n");
+        editors.reply(Want::Format { doc: id, version, save: false }, Some(edits), 0.0);
+        assert_eq!(editors.docs[&id].buf.rope.to_string(), "  a;\n");
+        editors.exec(&Command::Undo, &settings, &ctx);
+        assert_eq!(editors.docs[&id].buf.rope.to_string(), "a;\n");
     }
 }
