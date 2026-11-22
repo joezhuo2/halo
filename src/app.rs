@@ -73,6 +73,15 @@ pub struct Halo {
     pub waits: Vec<crate::ipc::Wait>,
     reveal_at: Option<u64>,
     jump: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
+    pub(crate) startup: Option<Startup>,
+}
+
+pub(crate) struct Startup {
+    grid: bool,
+    files: Vec<PathBuf>,
+    args: crate::cli::Args,
+    cmds: Vec<Command>,
+    pub(crate) tabs: bool,
 }
 
 impl Halo {
@@ -106,23 +115,36 @@ impl Halo {
             None => (last, vec![]),
         };
         let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
-        app.cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
+        let cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
         app.set_workspace(workspace, ctx);
-        if arg_is_none && restore && !app.session.grid.as_ref().is_some_and(|grid| app.editors.restore_grid(grid)) {
-            let pins: Vec<_> = app.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
-            app.editors.restore_pins(&pins);
+        let tabs = !files.is_empty() || !app.session.backups.is_empty() || !args.paths.is_empty() || args.diff.is_some() || args.stdin.is_some();
+        if tabs {
+            let wake = ctx.clone();
+            std::thread::spawn(move || {
+                crate::editor::warm();
+                wake.request_repaint();
+            });
         }
-        for file in files.iter().filter(|f| f.is_file()) {
-            if !app.editors.open_paths().contains(file) {
-                app.editors.open_kept(file);
-            }
-        }
-        app.editors.restore(&app.session.backups);
-        crate::terminal_restore::restore(&mut app.bottom, &mut app.editors, &app.settings, app.session.folder.as_deref(), ctx);
-        app.open_args(args, None, ctx);
+        app.startup = Some(Startup { grid: arg_is_none && restore, files, args, cmds, tabs });
         let wake = ctx.clone();
         app.inbox = server.map(|server| crate::ipc::serve(server, move || wake.request_repaint()));
         app
+    }
+
+    fn finish_startup(&mut self, startup: Startup, ctx: &egui::Context) {
+        if startup.grid && !self.session.grid.as_ref().is_some_and(|grid| self.editors.restore_grid(grid)) {
+            let pins: Vec<_> = self.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
+            self.editors.restore_pins(&pins);
+        }
+        for file in startup.files.iter().filter(|f| f.is_file()) {
+            if !self.editors.open_paths().contains(file) {
+                self.editors.open_kept(file);
+            }
+        }
+        self.editors.restore(&self.session.backups);
+        crate::terminal_restore::restore(&mut self.bottom, &mut self.editors, &self.settings, self.session.folder.as_deref(), ctx);
+        self.open_args(startup.args, None, ctx);
+        self.cmds.extend(startup.cmds);
     }
 
     pub(crate) fn build(ctx: &egui::Context, settings: Settings, session: Session) -> Self {
@@ -178,6 +200,7 @@ impl Halo {
             waits: vec![],
             reveal_at: None,
             jump: None,
+            startup: None,
         };
         app.editors.config = app.settings.clone();
         app
@@ -280,7 +303,7 @@ impl Halo {
     }
 
     fn save_session(&mut self) {
-        if crate::windows::secondary() {
+        if crate::windows::secondary() || self.startup.is_some() {
             return;
         }
         let backups = crate::settings::dir().join("backups");
@@ -862,6 +885,9 @@ impl Halo {
             }
             ctx.request_repaint();
         }
+        if let Some(startup) = self.startup.take_if(|s| self.reveal_at.is_none() && (!s.tabs || crate::editor::ready())) {
+            self.finish_startup(startup, &ctx);
+        }
         if let Some(path) = self.editors.active_path().filter(|p| self.session.recent_files.first() != Some(p)) {
             self.session.remember_file(&path);
         }
@@ -892,7 +918,9 @@ impl Halo {
             self.timeline.reload();
         }
         self.poll_compare(&ctx);
-        self.poll_ipc(&ctx);
+        if self.startup.is_none() {
+            self.poll_ipc(&ctx);
+        }
         self.poll_imports();
         if self.accounts.poll() {
             self.git.refresh_prs();
@@ -1175,6 +1203,26 @@ mod tests {
         assert!(!save("onFocusChange", (false, true), (false, true)) && !save("onFocusChange", (true, true), (true, true)));
         assert!(save("onWindowChange", (true, true), (true, false)) && !save("onWindowChange", (true, true), (false, true)));
         assert!(!save("off", (true, true), (false, false)));
+    }
+
+    #[test]
+    fn startup_restore_waits_for_the_window_and_keeps_the_session() {
+        use eframe::egui::{self, Rect, pos2, vec2};
+        let files = vec![std::path::PathBuf::from("a.txt"), std::path::PathBuf::from("b.txt")];
+        let ctx = egui::Context::default();
+        let session = crate::settings::Session { files: files.clone(), ..Default::default() };
+        let mut app = super::Halo::build(&ctx, crate::settings::Settings::default(), session);
+        app.startup = Some(super::Startup { grid: true, files: files.clone(), args: Default::default(), cmds: vec![crate::command::Command::ToggleAi], tabs: true });
+        app.reveal_at = Some(u64::MAX);
+        crate::editor::warm();
+        for _ in 0..3 {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1400.0, 900.0))), ..Default::default() };
+            ctx.run_ui(input, |ui| app.frame(ui)).textures_delta.clear();
+        }
+        assert!(app.startup.is_some() && app.editors.is_empty() && !app.session.ai);
+        app.save_session();
+        assert_eq!(app.session.files, files);
+        assert_eq!(app.session.grid, None);
     }
 
     #[test]

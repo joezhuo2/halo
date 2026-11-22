@@ -626,7 +626,10 @@ impl Halo {
         ui.scope_builder(UiBuilder::new().max_rect(frame).id_salt("editor_area"), |ui| {
             ui.set_clip_rect(rect.intersect(ui.clip_rect()));
             self.editors.poll_background(ui.ctx());
-            if self.editors.is_empty() {
+            if self.startup.as_ref().is_some_and(|s| s.tabs) {
+                ui.add_space(42.0);
+                ui::skeleton(ui, &self.theme, 12);
+            } else if self.editors.is_empty() {
                 self.welcome(ui);
             } else {
                 self.editors.ai_open = ai;
@@ -741,6 +744,10 @@ impl Halo {
                 Outline => self.outline_view(ui),
                 Timeline => self.timeline.ui(ui, &self.theme, active.as_deref(), &mut self.session.timeline, &mut self.cmds),
                 Ai => self.ai.ui(ui, &self.theme, self.settings.font_size, cwd.as_deref(), &mut self.cmds),
+                _ if self.startup.is_some() && view.tab() == Some(PanelTab::Terminal) => {
+                    ui.add_space(8.0);
+                    ui::skeleton(ui, &self.theme, 3);
+                }
                 _ => {
                     let files = self.tasks.files();
                     let tab = view.tab().unwrap_or(PanelTab::Ports);
@@ -757,6 +764,10 @@ impl Halo {
     }
 
     fn explorer_view(&mut self, ui: &mut Ui, active: Option<&std::path::Path>) {
+        if self.startup.is_some() && self.session.folder.is_some() {
+            ui.add_space(ui::SECTION + 8.0);
+            return ui::skeleton(ui, &self.theme, 8);
+        }
         let views = self.session.layout.views(self.session.layout.place(Explorer));
         let (has_outline, has_timeline) = (views.contains(&Outline), views.contains(&Timeline));
         let full = ui.available_rect_before_wrap().height();

@@ -53,8 +53,17 @@ pub fn configure(grammars: &str, associations: &BTreeMap<String, String>) {
     let _ = CONFIG.set((grammars.to_owned(), associations.clone()));
 }
 
+static SET: OnceLock<SyntaxSet> = OnceLock::new();
+
+pub fn ready() -> bool {
+    SET.get().is_some()
+}
+
+pub fn warm() {
+    syntaxes();
+}
+
 fn syntaxes() -> &'static SyntaxSet {
-    static SET: OnceLock<SyntaxSet> = OnceLock::new();
     SET.get_or_init(|| {
         let set = SyntaxSet::load_defaults_newlines();
         let Some(folder) = CONFIG.get().map(|c| Path::new(&c.0)).filter(|f| f.is_dir()) else { return set };
