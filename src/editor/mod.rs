@@ -1082,7 +1082,8 @@ impl Editors {
                 });
             }
             Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | MoveLineUp
-            | EmmetExpand | SelectAllOccurrences | ExpandSelection | ShrinkSelection | GoToBracket | SelectToBracket | CursorUndo | CursorColumnSelectLeft | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
+            | EmmetExpand | SelectAllOccurrences | ExpandSelection | ShrinkSelection | GoToBracket | SelectToBracket | CursorUndo | CursorColumnSelectLeft | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow
+            | SortLinesAscending | SortLinesDescending | RemoveDuplicateLines | ReverseLines => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
                 self.with_active(|buf, tab| {
@@ -1156,6 +1157,9 @@ impl Editors {
                         DeleteLine => drop(buf.delete_lines(sels)),
                         JoinLines => drop(buf.join_lines(sels)),
                         InsertLineAbove | InsertLineBelow => drop(buf.insert_line(sels, cmd == InsertLineAbove)),
+                        SortLinesAscending | SortLinesDescending => drop(buf.sort_lines(sels, cmd == SortLinesDescending)),
+                        RemoveDuplicateLines => drop(buf.delete_duplicate_lines(sels)),
+                        ReverseLines => drop(buf.reverse_lines(sels)),
                         _ => {
                             buf.select_next_occurrence(sels, cmd == MoveSelectionToNextFindMatch);
                         }

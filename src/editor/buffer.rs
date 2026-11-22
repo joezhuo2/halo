@@ -914,6 +914,74 @@ impl Document {
         changed
     }
 
+    pub fn sort_lines(&mut self, sels: &mut Vec<Sel>, descending: bool) -> bool {
+        self.rewrite_lines(sels, |lines| {
+            lines.sort_by_cached_key(|l| (l.to_lowercase(), std::cmp::Reverse(l.clone())));
+            if descending {
+                lines.reverse();
+            }
+        })
+    }
+
+    pub fn delete_duplicate_lines(&mut self, sels: &mut Vec<Sel>) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        self.rewrite_lines(sels, |lines| lines.retain(|l| seen.insert(l.clone())))
+    }
+
+    pub fn reverse_lines(&mut self, sels: &mut Vec<Sel>) -> bool {
+        self.rewrite_lines(sels, |lines| lines.reverse())
+    }
+
+    fn rewrite_lines(&mut self, sels: &mut Vec<Sel>, mut rewrite: impl FnMut(&mut Vec<String>)) -> bool {
+        let whole = sels.len() == 1 && self.line_of(sels[0].start()) == self.line_of(sels[0].end());
+        let ranges = if whole { vec![Sel::new(0, self.len())] } else { sels.clone() };
+        let mut spans: Vec<(usize, usize)> = ranges
+            .iter()
+            .map(|s| {
+                let (first, last) = (self.line_of(s.start()), self.line_of(s.end()));
+                (first, if last > first && s.end() == self.line_start(last) { last - 1 } else { last })
+            })
+            .collect();
+        spans.sort_unstable();
+        spans.dedup_by(|next, prev| {
+            let overlap = next.0 <= prev.1;
+            if overlap {
+                prev.1 = prev.1.max(next.1);
+            }
+            overlap
+        });
+        let edits: EditList = spans
+            .into_iter()
+            .filter(|(a, b)| a < b)
+            .filter_map(|(a, b)| {
+                let mut lines: Vec<String> = (a..=b).map(|l| self.line_text(l)).collect();
+                let old = lines.join("\n");
+                rewrite(&mut lines);
+                let new = lines.join("\n");
+                (new != old).then(|| (self.line_start(a), self.line_end(b), new))
+            })
+            .collect();
+        let before = sels.clone();
+        let changed = self.apply(sels, edits.clone(), Kind::Other, After::Map);
+        if changed {
+            let len = self.len();
+            *sels = before
+                .iter()
+                .map(|s| match edits.iter().find(|e| !whole && e.0 <= s.start() && s.start() <= e.1) {
+                    Some(e) => {
+                        let start = map_pos(&edits, e.0);
+                        Sel::new(start, start + e.2.chars().count())
+                    }
+                    None if whole => Sel::new(s.anchor.min(len), s.head.min(len)),
+                    None => Sel::new(map_pos(&edits, s.anchor), map_pos(&edits, s.head)),
+                })
+                .collect();
+            merge_sels(sels);
+            self.fix_after(sels);
+        }
+        changed
+    }
+
     pub fn indent(&mut self, sels: &mut Vec<Sel>, unit: &str) -> bool {
         let edits = self
             .touched_lines(sels)
@@ -1717,6 +1785,28 @@ mod tests {
         assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("  one\n  \n  two", 8));
         d.insert_line(&mut sels, false);
         assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("  one\n  \n  \n  two", 11));
+    }
+
+    #[test]
+    fn sorts_dedups_and_reverses_lines() {
+        let mut d = doc("b\nA\na\nc\nb\n");
+        let mut sels = vec![Sel::caret(1)];
+        d.sort_lines(&mut sels, false);
+        assert_eq!((d.rope.to_string().as_str(), sels[0].head), ("a\nA\nb\nb\nc\n", 1));
+        d.sort_lines(&mut sels, true);
+        assert_eq!(d.rope.to_string(), "c\nb\nb\nA\na\n");
+        d.undo(&mut sels);
+        assert_eq!(d.rope.to_string(), "a\nA\nb\nb\nc\n");
+        d.delete_duplicate_lines(&mut sels);
+        assert_eq!(d.rope.to_string(), "a\nA\nb\nc\n");
+
+        let mut d = doc("3\n2\n1\nz\ny\nx");
+        let mut sels = vec![Sel::new(0, 4), Sel::new(6, 9)];
+        d.reverse_lines(&mut sels);
+        assert_eq!(d.rope.to_string(), "2\n3\n1\ny\nz\nx");
+        assert_eq!(sels.iter().map(|s| (s.start(), s.end())).collect::<Vec<_>>(), [(0, 3), (6, 9)]);
+        let mut sels = vec![Sel::caret(0), Sel::caret(2)];
+        assert!(!d.reverse_lines(&mut sels));
     }
 
     #[test]

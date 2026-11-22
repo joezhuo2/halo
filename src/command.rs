@@ -72,6 +72,10 @@ pub enum Command {
     JoinLines,
     InsertLineAbove,
     InsertLineBelow,
+    SortLinesAscending,
+    SortLinesDescending,
+    RemoveDuplicateLines,
+    ReverseLines,
     Fold,
     Unfold,
     FoldAll,
@@ -622,6 +626,7 @@ pub fn all() -> Vec<Command> {
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
+        SortLinesAscending, SortLinesDescending, RemoveDuplicateLines, ReverseLines,
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
         SelectAll, AddCursorAbove, AddCursorBelow, AddCursorsToLineEnds, SelectNextOccurrence, MoveSelectionToNextFindMatch, SelectAllOccurrences, ExpandSelection, ShrinkSelection,
         SelectToBracket, CursorUndo, ToggleColumnSelection, CursorColumnSelectLeft, CursorColumnSelectRight, CursorColumnSelectUp,
@@ -819,11 +824,11 @@ impl Command {
             | NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => "File",
             Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
-            | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection => "Edit",
+            | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection
+            | SortLinesAscending | SortLinesDescending | RemoveDuplicateLines | ReverseLines => "Edit",
             SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | SelectAllOccurrences
             | ExpandSelection | ShrinkSelection | SelectToBracket | CursorUndo | ToggleColumnSelection | CursorColumnSelectLeft
-            | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown => "Selection",
-            ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
+            | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown => "Selection",            ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
             | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | FilterExplorer | ToggleFileNesting
             | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
             | LayoutTwoColumns | LayoutThreeColumns | LayoutTwoRows | LayoutThreeRows | LayoutGrid | LayoutTwoRowsRight | LayoutTwoColumnsBottom
@@ -922,6 +927,10 @@ impl Command {
             JoinLines => "Join Lines",
             InsertLineAbove => "Insert Line Above",
             InsertLineBelow => "Insert Line Below",
+            SortLinesAscending => "Sort Lines Ascending",
+            SortLinesDescending => "Sort Lines Descending",
+            RemoveDuplicateLines => "Delete Duplicate Lines",
+            ReverseLines => "Reverse Lines",
             Fold => "Fold",
             Unfold => "Unfold",
             FoldAll => "Fold All",
