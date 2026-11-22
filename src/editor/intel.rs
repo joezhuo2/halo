@@ -41,6 +41,11 @@ pub(super) struct Lang {
     pub visible: (usize, usize),
     pub marked: Option<(u64, usize)>,
     pub marks: Vec<(usize, usize)>,
+    pub code_lens: Vec<(lsp::CodeLens, bool)>,
+    pub lensed: u64,
+    pub lens_gen: u64,
+    pub bulb_at: Option<(u64, usize)>,
+    pub bulb: Option<(bool, Vec<(String, Value)>)>,
 }
 
 impl Lang {
@@ -50,6 +55,9 @@ impl Lang {
         for symbol in &mut self.symbols {
             symbol.line = lsp::shift(symbol.line, line, delta).unwrap_or(line);
             symbol.end_line = lsp::shift(symbol.end_line, line, delta).unwrap_or(line).max(symbol.line);
+        }
+        for (lens, _) in &mut self.code_lens {
+            lens.line = lsp::shift(lens.line, line, delta).unwrap_or(line);
         }
         self.hints.retain_mut(|hint| hint.line != line && lsp::shift(hint.line, line, delta).map(|moved| hint.line = moved).is_some());
         if delta == 0 {
@@ -347,6 +355,9 @@ enum Want {
     Marks { doc: u64, version: u64, head: usize },
     Prepare { doc: u64, pos: usize, call: bool, outgoing: bool },
     Hierarchy { doc: u64, pos: usize, call: bool, outgoing: bool },
+    CodeLens { doc: u64, version: u64 },
+    Resolve { doc: u64, generation: u64, index: usize },
+    Bulb { doc: u64, version: u64, line: usize },
 }
 
 pub(super) enum Queued {
@@ -354,6 +365,20 @@ pub(super) enum Queued {
     Peek(u64, usize, &'static str, Vec<Location>),
     Action(u64, Value),
     Hierarchy(u64, usize, bool, bool),
+    Lens(u64, lsp::CodeLens),
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum LensClick {
+    Own(usize, bool),
+    Server(usize),
+}
+
+const LENS_COMMANDS: [&str; 5] =
+    ["rust-analyzer.runSingle", "rust-analyzer.debugSingle", "rust-analyzer.showReferences", "editor.action.showReferences", "rust-analyzer.gotoLocation"];
+
+pub(super) fn runs_lens(command: &str, offered: &Value) -> bool {
+    LENS_COMMANDS.contains(&command) || offered["commands"].as_array().is_some_and(|list| list.iter().any(|name| name == command))
 }
 
 struct Suggest {
@@ -437,6 +462,10 @@ impl Intel {
         self.actions = None;
         self.hover = None;
     }
+
+    pub fn show_actions(&mut self, doc: u64, items: Vec<(String, Value)>) {
+        self.actions = Some(Actions { doc, items, selected: 0, reveal: true });
+    }
 }
 
 impl Editors {
@@ -516,12 +545,14 @@ impl Editors {
         if lang.settled != self.lsp.settled {
             lang.settled = self.lsp.settled;
             lang.requested = 0;
+            lang.lensed = 0;
             lang.hinted = (0, 0, 0);
         }
         let version = buf.version;
         let mark = head.filter(|head| on_word(buf, *head)).map(|head| (version, head));
+        let bulb = head.filter(|_| settings.lightbulb).map(|head| (version, buf.line_of(head)));
         if now - self.last_input <= 0.3 || now < lang.retry {
-            if lang.requested != version || now < lang.retry || lang.marked != mark {
+            if lang.requested != version || now < lang.retry || lang.marked != mark || lang.bulb_at != bulb {
                 ctx.request_repaint_after(Duration::from_millis(350));
             }
             return;
@@ -533,6 +564,18 @@ impl Editors {
                 && let Some(request) = self.lsp.request(path, "textDocument/documentHighlight", lsp::at(path, to_lsp(buf, head)))
             {
                 self.intel.wants.push((request, Want::Marks { doc: id, version, head }));
+            }
+        }
+        if lang.bulb_at != bulb {
+            (lang.bulb_at, lang.bulb) = (bulb, None);
+            if let (Some((_, line)), Some(head)) = (bulb, head) {
+                let at = to_lsp(buf, head);
+                let problems: Vec<Value> = self.lsp.diagnostics(path).iter().filter(|d| d.start.0 <= line && d.end.0 >= line).map(|d| d.raw.clone()).collect();
+                let context = json!({"diagnostics": problems, "triggerKind": 2});
+                let params = json!({"textDocument": {"uri": lsp::uri(path)}, "range": lsp::range_json(at, at), "context": context});
+                if let Some(request) = self.lsp.request(path, "textDocument/codeAction", params) {
+                    self.intel.wants.push((request, Want::Bulb { doc: id, version, line }));
+                }
             }
         }
         let target = json!({"textDocument": {"uri": lsp::uri(path)}});
@@ -560,7 +603,26 @@ impl Editors {
         if !settings.code_lens {
             return;
         }
+        if lang.lensed != version {
+            lang.lensed = version;
+            if let Some(request) = self.lsp.request(path, "textDocument/codeLens", target.clone()) {
+                self.intel.wants.push((request, Want::CodeLens { doc: id, version }));
+            }
+        }
         let mut budget = 12;
+        let (resolves, generation) = (self.lsp.provider(path, "codeLensProvider")["resolveProvider"] == true, lang.lens_gen);
+        let unresolved = |lens: &(lsp::CodeLens, bool)| resolves && !lens.1 && lens.0.raw["command"].is_null() && lens.0.line + 2 >= first && lens.0.line <= last;
+        for (index, (lens, asked)) in lang.code_lens.iter_mut().enumerate().filter(|(_, lens)| unresolved(lens)) {
+            if budget == 0 {
+                ctx.request_repaint();
+                break;
+            }
+            budget -= 1;
+            *asked = true;
+            if let Some(request) = self.lsp.request(path, "codeLens/resolve", lens.raw.clone()) {
+                self.intel.wants.push((request, Want::Resolve { doc: id, generation, index }));
+            }
+        }
         for lens in lang.lens.iter_mut().filter(|lens| !lens.asked) {
             let Some(symbol) = lang.symbols.get(lens.symbol).filter(|s| s.line + 2 >= first && s.line <= last) else { continue };
             if budget == 0 {
@@ -718,6 +780,42 @@ impl Editors {
             Want::Hierarchy { doc, pos, call, outgoing } => {
                 self.open_peek(doc, pos, hierarchy_title(call, outgoing), lsp::hierarchy(&value), Some((call, outgoing)));
             }
+            Want::CodeLens { doc, version } => {
+                let Some(d) = self.docs.get_mut(&doc) else { return };
+                if failed {
+                    d.lang.lensed = 0;
+                    d.lang.retry = now + 1.0;
+                }
+                if failed || d.buf.version != version {
+                    return;
+                }
+                let mut old = std::mem::take(&mut d.lang.code_lens);
+                let mut found = lsp::code_lenses(&value);
+                for lens in found.iter_mut().filter(|lens| lens.raw["command"].is_null()) {
+                    if let Some(at) = old.iter().position(|o| o.0.line == lens.line && o.0.raw["command"].is_null() && !o.0.title.is_empty()) {
+                        let kept = old.remove(at).0;
+                        (lens.title, lens.command, lens.args) = (kept.title, kept.command, kept.args);
+                    }
+                }
+                d.lang.code_lens = found.into_iter().map(|lens| (lens, false)).collect();
+                d.lang.lens_gen += 1;
+            }
+            Want::Resolve { doc, generation, index } => {
+                let Some(d) = self.docs.get_mut(&doc).filter(|d| d.lang.lens_gen == generation) else { return };
+                let Some((lens, asked)) = d.lang.code_lens.get_mut(index) else { return };
+                if failed {
+                    *asked = false;
+                    d.lang.retry = now + 1.0;
+                } else {
+                    let found = lsp::code_lens(&value);
+                    (lens.title, lens.command, lens.args) = (found.title, found.command, found.args);
+                }
+            }
+            Want::Bulb { doc, version, line } => {
+                let Some(d) = self.docs.get_mut(&doc).filter(|d| d.lang.bulb_at == Some((version, line))) else { return };
+                let found = lsp::actions(&value);
+                d.lang.bulb = (!found.is_empty()).then(|| (lsp::quick_fix(&found), found));
+            }
         }
     }
 
@@ -838,6 +936,45 @@ impl Editors {
                 Queued::Peek(doc, pos, title, items) => self.open_peek(doc, pos, title, items, None),
                 Queued::Action(doc, action) => self.run_action(doc, action),
                 Queued::Hierarchy(doc, pos, call, outgoing) => self.prepare(doc, pos, call, outgoing),
+                Queued::Lens(doc, lens) => self.run_lens(doc, lens),
+            }
+        }
+    }
+
+    fn run_lens(&mut self, doc: u64, lens: lsp::CodeLens) {
+        let args = &lens.args;
+        match lens.command.as_str() {
+            "rust-analyzer.runSingle" | "rust-analyzer.debugSingle" => {
+                let Some((line, cwd, test)) = lsp::runnable(&args[0]) else {
+                    return ui::notify_info(format!("{} is not a cargo command, so Halo cannot run it.", lens.title.trim()));
+                };
+                let debug = lens.command.ends_with("debugSingle");
+                match test.filter(|_| debug) {
+                    Some(id) => self.tests.clicked = Some((crate::test_parse::Kind::Rust, id, true)),
+                    None => {
+                        if debug {
+                            ui::notify_info("Halo can debug single cargo tests only, so this runs without the debugger.");
+                        }
+                        self.tests.run = Some((line, cwd));
+                    }
+                }
+            }
+            "rust-analyzer.showReferences" | "editor.action.showReferences" => {
+                let target = args[0].as_str().and_then(lsp::path_of).and_then(|path| self.find_doc(&path)).unwrap_or(doc);
+                let Some(d) = self.docs.get(&target) else { return };
+                let pos = from_lsp(&d.buf, lsp::pos(&args[1]));
+                let title = if lens.title.contains("implementation") { "Implementations" } else { "References" };
+                self.open_peek(target, pos, title, lsp::locations(&args[2]), None);
+            }
+            "rust-analyzer.gotoLocation" => {
+                if let Some(found) = lsp::locations(&args[0]).into_iter().next() {
+                    self.jump(&found.path, found.start, true);
+                }
+            }
+            name => {
+                if let Some(path) = self.docs.get(&doc).and_then(|d| d.buf.path.clone()) {
+                    self.lsp.request(&path, "workspace/executeCommand", json!({"command": name, "arguments": args}));
+                }
             }
         }
     }
@@ -1688,6 +1825,62 @@ mod tests {
                 assert!(seen[if direct { 6 } else { 60 }..].windows(2).all(|w| w[1] == w[0]), "{unit:?} {smooth} {seen:?}");
             }
         }
+    }
+
+    #[test]
+    fn server_lenses_replace_own_counts_run_on_click_and_the_lightbulb_opens_actions() {
+        let (ctx, settings) = (egui::Context::default(), Settings::default());
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        run(&ctx, &mut editors, &settings, vec![], 1.0);
+        run(&ctx, &mut editors, &settings, vec![Event::Paste("fn a() {}\nfn b() {}\n".into())], 1.0);
+        let id = editors.groups[0].tabs[0].doc;
+        editors.groups[0].tabs[0].sels = vec![Sel::caret(0)];
+        let place = Location { path: "x.rs".into(), start: (0, 0), end: (0, 1), label: String::new() };
+        let runnable = json!({"kind": "cargo", "args": {"cargoArgs": ["test"], "executableArgs": ["t", "--exact"]}});
+        let lens = |command: &str, title: &str, args: Value| {
+            let raw = json!({"range": lsp::range_json((0, 0), (0, 2)), "command": {"title": title, "command": command, "arguments": args}});
+            (lsp::code_lens(&raw), false)
+        };
+        let d = editors.docs.get_mut(&id).unwrap();
+        let version = d.buf.version;
+        let lang = &mut d.lang;
+        lang.attached = true;
+        lang.symbols = vec![Symbol { name: "a".into(), kind: 12, line: 0, col: 3, end_line: 0, depth: 0, container: String::new(), path: None }];
+        lang.lens = vec![Lens { symbol: 0, refs: Some(vec![place]), impls: None, asked: true }];
+        lang.code_lens = vec![lens("rust-analyzer.runSingle", "Run Test", json!([runnable])), lens("rust-analyzer.showReferences", "3 references", json!([null, {"line": 0, "character": 3}, []]))];
+        lang.bulb_at = Some((version, 0));
+        lang.bulb = Some((true, vec![("Fix it".into(), json!({"title": "Fix it", "kind": "quickfix"}))]));
+        run(&ctx, &mut editors, &settings, vec![], 1.5);
+        let mut t = 2.0;
+        let mut click = |editors: &mut Editors, pos: Pos2| {
+            for pressed in [None, Some(true), Some(false)] {
+                t += 0.05;
+                let events = match pressed {
+                    None => vec![Event::PointerMoved(pos)],
+                    Some(pressed) => vec![Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }],
+                };
+                run(&ctx, editors, &settings, events, t);
+            }
+        };
+        let font = FontId::monospace(settings.font_size);
+        let (char_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
+        let line_h = (row_h * 1.25).round();
+        let top = super::super::TAB_H + 22.0;
+        click(&mut editors, pos2(8.0 * char_w + 6.0 + 4.0, top + 0.5 * line_h));
+        assert_eq!(editors.tests.run, Some(("cargo test -- t --exact".into(), None)), "the first lens is the server's Run, not Halo's own count");
+        assert!(editors.intel.peek.is_none());
+
+        assert!(editors.intel.actions.is_none());
+        click(&mut editors, pos2(char_w * 1.1 + 2.0, top + 1.5 * line_h));
+        assert_eq!(editors.intel.actions.as_ref().map(|a| (a.doc, a.items.len())), Some((id, 1)));
+        editors.docs.get_mut(&id).unwrap().buf.version += 1;
+        editors.intel.actions = None;
+        click(&mut editors, pos2(char_w * 1.1 + 2.0, top + 1.5 * line_h));
+        assert!(editors.intel.actions.is_none(), "the lightbulb is gone once the document changed");
+
+        assert!(runs_lens("x.fix", &json!({"commands": ["x.fix"]})) && runs_lens("rust-analyzer.gotoLocation", &Value::Null));
+        assert!(!runs_lens("x.other", &json!({"commands": ["x.fix"]})) && !runs_lens("", &Value::Null));
     }
 
     #[test]
