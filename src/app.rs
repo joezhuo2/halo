@@ -551,6 +551,14 @@ impl Halo {
                     false => self.search.pick("Select a command to run", items),
                 }
             }
+            OpenRecent => {
+                let item = |p: &PathBuf| (p.file_name().unwrap_or(p.as_os_str()).to_string_lossy().into_owned(), p.to_string_lossy().into_owned(), open_recent(p));
+                let items: Vec<_> = self.session.recent.iter().chain(&self.session.recent_files).map(item).collect();
+                match items.is_empty() {
+                    true => ui::notify("There are no recent folders or files yet."),
+                    false => self.search.pick("Select a folder or file to open", items),
+                }
+            }
             ChangeTerminalColor => {
                 let items = crate::terminal::color_names().map(|(color, name)| (name.to_owned(), String::new(), SetTerminalColor(color)));
                 self.search.pick("Select a color for the terminal", items.into());
@@ -759,10 +767,8 @@ impl Halo {
                     let resp = ui
                         .add(egui::Button::new(RichText::new(name).color(theme.text)).frame(false))
                         .on_hover_text(folder.to_string_lossy());
-                    if resp.clicked() && crate::workspace::is_workspace_file(folder) {
-                        self.cmds.push(Command::OpenWorkspace(folder.clone()));
-                    } else if resp.clicked() {
-                        self.cmds.push(Command::OpenPath(folder.clone()));
+                    if resp.clicked() {
+                        self.cmds.push(open_recent(folder));
                     }
                 }
             }
@@ -1010,6 +1016,13 @@ fn auto_save(mode: &str, due: impl FnOnce() -> bool, was: (bool, bool), now: (bo
 pub(crate) fn offer_workspace(file: &std::path::Path) {
     let text = format!("{} is a workspace file. Open the workspace?", file.file_name().unwrap_or_default().to_string_lossy());
     ui::notify_with(crate::notifications::Severity::Info, text, vec![("Open Workspace".into(), Command::OpenWorkspace(file.to_path_buf()))]);
+}
+
+fn open_recent(path: &std::path::Path) -> Command {
+    match crate::workspace::is_workspace_file(path) {
+        true => Command::OpenWorkspace(path.to_path_buf()),
+        false => Command::OpenPath(path.to_path_buf()),
+    }
 }
 
 pub(crate) fn strip_unc(path: PathBuf) -> PathBuf {

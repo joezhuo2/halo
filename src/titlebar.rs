@@ -113,7 +113,7 @@ impl Halo {
     fn menus(&mut self, ui: &mut Ui) {
         use Command::*;
         self.menu(ui, "File", &[
-            Some(NewFile), Some(NewWindow), Some(OpenFile), Some(OpenFolder), Some(OpenFolderInNewWindow), Some(OpenWorkspaceFromFile), None,
+            Some(NewFile), Some(NewWindow), Some(OpenFile), Some(OpenFolder), Some(OpenFolderInNewWindow), Some(OpenWorkspaceFromFile), Some(OpenRecent), None,
             Some(AddFolderToWorkspace), Some(SaveWorkspaceAs), None,
             Some(Save), Some(SaveAs), Some(SaveAll), None,
             Some(CompareFile), Some(CompareClipboard), Some(CompareSaved), None,

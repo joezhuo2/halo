@@ -309,6 +309,8 @@ what it searches:
   View..." or a drag moves the Explorer, Source Control, Testing, Outline,
   Timeline, Terminal and the other views between the side bars and the
   panel.
+- **Open Recent** (`Ctrl+R`, or File > Open Recent) lists the recent folders
+  and files to open again.
 - **Windows:** right-click the taskbar icon for recent folders, recent files
   and New Window. Pin an item to keep it in the list.
 - **macOS:** the native traffic lights sit in the title bar, and the green
@@ -386,6 +388,7 @@ The defaults follow VS Code:
 | `Ctrl+\` | Split editor |
 | `` Ctrl+Shift+` `` | New terminal |
 | `Ctrl+K Ctrl+O` | Open folder |
+| `Ctrl+R` | Open a recent folder or file |
 | `Ctrl+K Ctrl+T` | Switch light and dark theme |
 | `F5` | Run file, or start debugging |
 | `Ctrl+Shift+B` | Run build task |

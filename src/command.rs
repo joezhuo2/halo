@@ -10,6 +10,7 @@ pub enum Command {
     OpenFile,
     OpenFolder,
     OpenFolderIn(PathBuf),
+    OpenRecent,
     OpenPath(PathBuf),
     OpenDiff(String, Vec<String>),
     CompareFile,
@@ -547,6 +548,7 @@ fn defaults() -> Vec<Binding> {
         e(ca, Key::ArrowDown, AddCursorBelow),
         g(C, Key::N, NewFile),
         g(C, Key::O, OpenFile),
+        g(C, Key::R, OpenRecent),
         g(C, Key::P, GoToFile),
         g(C, Key::S, Save),
         g(C, Key::W, CloseEditor),
@@ -589,6 +591,9 @@ fn defaults() -> Vec<Binding> {
             (b.when, b.cond) = (SEND_TO_SHELL.to_owned(), shell.clone());
         }
     }
+    for b in list.iter_mut().filter(|b| b.command == OpenRecent) {
+        (b.when, b.cond) = ("!terminalFocus".to_owned(), crate::when::parse("!terminalFocus").ok().map(Arc::new));
+    }
     for b in list.iter_mut().filter(|b| b.command == PauseDebugging) {
         (b.when, b.cond) = ("debugState == 'running'".to_owned(), crate::when::parse("debugState == 'running'").ok().map(Arc::new));
     }
@@ -610,7 +615,7 @@ fn defaults() -> Vec<Binding> {
 pub fn all() -> Vec<Command> {
     use Command::*;
     let mut commands = vec![
-        NewFile, NewWindow, OpenFile, OpenFolder, OpenFolderInNewWindow, DuplicateWorkspace, Save, SaveAs, SaveAll, CloseEditor, CloseFolder,
+        NewFile, NewWindow, OpenFile, OpenFolder, OpenRecent, OpenFolderInNewWindow, DuplicateWorkspace, Save, SaveAs, SaveAll, CloseEditor, CloseFolder,
         AddFolderToWorkspace, RemoveFolderFromWorkspace, SaveWorkspaceAs, OpenWorkspaceFromFile, CloseWorkspace, OpenSettings, OpenSettingsJson,
         OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected,
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
@@ -805,7 +810,7 @@ impl Command {
     pub fn category(&self) -> &'static str {
         use Command::*;
         match self {
-            NewFile | OpenFile | OpenFolder | OpenFolderIn(_) | OpenPath(_) | Save | SaveAs | SaveAll | CloseEditor
+            NewFile | OpenFile | OpenFolder | OpenFolderIn(_) | OpenRecent | OpenPath(_) | Save | SaveAs | SaveAll | CloseEditor
             | CloseFolder | AddFolderToWorkspace | RemoveFolderFromWorkspace | RemoveWorkspaceFolder(_) | AddWorkspaceFolder(_) | MoveWorkspaceFolder(..)
             | SaveWorkspaceAs | OpenWorkspaceFromFile | OpenWorkspace(_) | CloseWorkspace | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit | ImportTheme
             | BrowseThemes | SelectTheme | ImportThemeFile(_) | SetTheme(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
@@ -858,6 +863,7 @@ impl Command {
             NewFile => "New File",
             OpenFile => "Open File...",
             OpenFolder | OpenFolderIn(_) => "Open Folder...",
+            OpenRecent => "Open Recent...",
             OpenPath(_) => "Open",
             OpenDiff(..) => "Open Changes",
             CompareFile => "Compare Active File With…",
@@ -1222,5 +1228,8 @@ mod tests {
         let save = built.iter().find(|b| b.command == Command::Save).unwrap();
         assert!(save.active(focus(false, true).as_object().unwrap()) && save.active(focus(true, false).as_object().unwrap()));
         assert!(!save.active(focus(true, true).as_object().unwrap()));
+        let recent = built.iter().find(|b| b.command == Command::OpenRecent).unwrap();
+        assert_eq!(recent.shortcut, parse_key("ctrl+r").unwrap());
+        assert!(recent.active(focus(false, false).as_object().unwrap()) && !recent.active(focus(true, false).as_object().unwrap()));
     }
 }
