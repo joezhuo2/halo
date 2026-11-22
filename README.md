@@ -46,9 +46,6 @@ Get the latest build from
 - **macOS:** `halo-x.y.z-macos-arm64.tar.gz` (Apple silicon) or
   `halo-x.y.z-macos-x64.tar.gz` (Intel).
 
-Windows 11 is the tested platform. The Linux and macOS builds compile and are
-produced by the same workflow, but have not been run by hand yet.
-
 ### First launch
 
 Halo is not code-signed, so the system warns the first time you open it. The
