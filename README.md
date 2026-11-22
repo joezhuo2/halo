@@ -109,7 +109,8 @@ language you want diagnostics and completion in. Each is optional.
   an abbreviation such as `ul>li*3` in HTML, Vue, Svelte and PHP files.
 - **Status bar pickers** for the language, indentation (detect and convert),
   encoding and line ending of the file.
-- **Links** in the text open with `Ctrl+Click`.
+- **Links** and paths to existing files in the text open with `Ctrl+Click`;
+  holding `Ctrl` underlines what a click would follow.
 - **Syntax highlighting** for 68 languages from the bundled grammars, plus
   any `.sublime-syntax` file you add. A minimap sits beside the text.
 - **Tabs:** drag a tab to reorder it, drop it on another group to move it, or

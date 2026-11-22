@@ -6,6 +6,61 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-22
+
+Checked with tests on Windows, including WSL tests against a real clangd and
+git in Ubuntu. Not yet tried by hand in the running app.
+
+### Added
+
+- **Open Recent** (`Ctrl+R`, or File > Open Recent) picks a recent folder or
+  file.
+- **Line commands**: Sort Lines Ascending / Descending, Delete Duplicate
+  Lines and Reverse Lines.
+- **Transform case**: Transform to Uppercase, Lowercase, Title Case, Snake
+  Case, Camel Case and Kebab Case.
+- **More cursors**: `Shift+Alt+I` adds a cursor at the end of every selected
+  line, and `Ctrl+K Ctrl+D` moves the last added occurrence to the next
+  match.
+- **Go to Bracket** (`Ctrl+Shift+\`) jumps to the matching bracket, and
+  Select to Bracket selects the brackets and what is between them.
+- **Go to Last Edit Location** (`Ctrl+K Ctrl+Q`).
+- **Column selection mode**: drags select a box, and `Ctrl+Shift+Alt+Arrow`
+  grows a box from the keyboard.
+- **Symbol highlights**: resting the caret on a name highlights its other
+  uses in the file, from the language server's document highlights.
+- **Find history**: `Up` and `Down` in the find box recall earlier searches.
+- **Problems filter**: filter the Problems panel by text, by severity and to
+  the active file.
+- **Outline** follows the caret and sorts by position, name or kind.
+- **Wrap Tabs** setting (`workbench.editor.wrapTabs`) wraps editor tabs onto
+  more rows instead of scrolling them.
+- **Lock an editor group** so new files open in another group, with a lock
+  button and Lock Group on the tab menu. The lock is kept across restarts.
+- **Ctrl+hover** underlines what `Ctrl+Click` follows, and `Ctrl+Click` opens
+  paths to existing files.
+- `docs/measure-startup.ps1` times startup and idle memory of the release
+  build.
+
+### Changed
+
+- **Faster startup**: the window opens before the session is restored, and
+  the Explorer, editor and terminal show skeletons until their content
+  loads. The window is on screen in 570 ms instead of 829 ms with a local
+  folder, and in 569 ms instead of 1011 ms with a WSL folder (see
+  Performance in the README).
+- The workspace folder is checked on a background thread, so a sleeping WSL
+  folder no longer holds back the window.
+
+### Fixed
+
+- Hovering an error squiggle that sits on punctuation or has an empty range
+  showed nothing; it now shows the message (for example clangd's CUDA error
+  at the top of `.cu` files).
+- The Explorer could not delete WSL folders that contain Linux symlinks
+  (#1); it now deletes them inside the distro. It refuses to delete a distro
+  root.
+
 ## [0.1.7] - 2026-11-21
 
 Checked with tests on Windows, including WSL tests against a real clangd and
@@ -378,7 +433,9 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/joezhuo2/halo/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/joezhuo2/halo/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/joezhuo2/halo/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/joezhuo2/halo/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/joezhuo2/halo/compare/v0.1.3...v0.1.4
