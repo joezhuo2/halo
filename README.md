@@ -93,7 +93,9 @@ language you want diagnostics and completion in. Each is optional.
   (`Ctrl+Shift+Enter`) or below (`Ctrl+Enter`). Comments toggle with `Ctrl+/`
   (line) and `Shift+Alt+A` (block).
 - **Brackets and quotes** close as you type and wrap a selection. Brackets
-  are colored by depth, with indentation guides.
+  are colored by depth, with indentation guides. `Ctrl+Shift+\` jumps to the
+  matching bracket, and Select to Bracket selects the brackets and what is
+  between them.
 - **Word wrap** (`Alt+Z`), **code folding** by indentation (the gutter arrows,
   `Ctrl+Shift+[` and `Ctrl+Shift+]`), **sticky scroll**, rulers and visible
   whitespace. Each has a switch in Settings.

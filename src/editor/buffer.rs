@@ -1359,6 +1359,17 @@ impl Document {
         wider.min_by_key(|o| o.1 - o.0).map_or(s, |o| Sel::new(o.0, o.1))
     }
 
+    pub fn to_bracket(&self, sels: &mut Vec<Sel>, select: bool) {
+        for s in sels.iter_mut() {
+            let Some((open, close)) = self.matching_bracket(s.head).or_else(|| self.enclosing(s.head, s.head)) else { continue };
+            *s = match select {
+                true => Sel::new(open, close + 1),
+                false => Sel::caret(if s.head == close || s.head == close + 1 { open } else { close }),
+            };
+        }
+        merge_sels(sels);
+    }
+
     pub fn conflicts(&self) -> Vec<[usize; 4]> {
         let mut out = vec![];
         let mut open: Option<[usize; 3]> = None;
@@ -1713,6 +1724,14 @@ mod tests {
             seen.push((s.start(), s.end()));
         }
         assert_eq!(seen, vec![(14, 16), (14, 19), (13, 20), (10, 20), (9, 21), (0, 22), (0, 23), (0, 34)]);
+
+        let jump = |at: usize, select: bool| {
+            let mut sels = vec![Sel::caret(at)];
+            d.to_bracket(&mut sels, select);
+            (sels[0].anchor, sels[0].head)
+        };
+        assert_eq!([jump(9, false), jump(20, false), jump(21, false), jump(15, false), jump(0, false)], [(20, 20), (9, 9), (9, 9), (19, 19), (0, 0)]);
+        assert_eq!([jump(15, true), jump(9, true)], [(13, 20), (9, 21)]);
     }
 
     #[test]

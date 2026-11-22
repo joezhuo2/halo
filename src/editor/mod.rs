@@ -1053,7 +1053,7 @@ impl Editors {
                 });
             }
             Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | MoveLineUp
-            | EmmetExpand | SelectAllOccurrences | ExpandSelection | ShrinkSelection | CursorUndo | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
+            | EmmetExpand | SelectAllOccurrences | ExpandSelection | ShrinkSelection | GoToBracket | SelectToBracket | CursorUndo | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
                 self.with_active(|buf, tab| {
@@ -1099,6 +1099,7 @@ impl Editors {
                             Some((before, after)) if buffer::same(&after, sels) => *sels = before,
                             _ => tab.grown.clear(),
                         },
+                        GoToBracket | SelectToBracket => buf.to_bracket(sels, cmd == SelectToBracket),
                         CursorUndo => {
                             if let Some(before) = tab.trail.pop() {
                                 tab.seen.1 = before.clone();
