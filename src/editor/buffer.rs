@@ -122,6 +122,7 @@ pub struct Document {
     undo: Vec<Transaction>,
     redo: Vec<Transaction>,
     moves: Vec<(u64, u64, EditList)>,
+    pub edited: Option<(u64, usize)>,
     pub dirty_from: Option<usize>,
     pub note: Option<String>,
     pub read_only: bool,
@@ -347,6 +348,7 @@ impl Document {
             undo: vec![],
             redo: vec![],
             moves: vec![],
+            edited: None,
             dirty_from: None,
             note: None,
             read_only: false,
@@ -580,6 +582,7 @@ impl Document {
         self.touch(first_line);
         let from = self.version;
         self.record(changes, before, sels.clone(), kind);
+        self.edited = sels.first().map(|s| (self.version, s.head));
         if self.moves.len() >= 8 {
             self.moves.remove(0);
         }

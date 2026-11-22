@@ -115,8 +115,8 @@ language you want diagnostics and completion in. Each is optional.
   restart. A newly opened file is a preview with
   an italic title, and the next file you open takes its tab until you edit it
   or double-click the tab. `Ctrl+Tab` switches between recent files,
-  `Ctrl+Shift+T` reopens a closed one, and `Alt+Left` and `Alt+Right` go back
-  and forward.
+  `Ctrl+Shift+T` reopens a closed one, `Alt+Left` and `Alt+Right` go back
+  and forward, and `Ctrl+K Ctrl+Q` returns to the last edit.
 - **Split editor** right (`Ctrl+\`), down (`Ctrl+K Ctrl+\`), left or up, or
   pick a layout such as Two Rows or Grid (2x2). Drag the lines between groups
   to resize them, maximize a group with `Ctrl+K Ctrl+M`, and move between

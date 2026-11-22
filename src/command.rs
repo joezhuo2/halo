@@ -164,6 +164,7 @@ pub enum Command {
     PrevEditor,
     GoBack,
     GoForward,
+    GoToLastEditLocation,
     ReopenClosed,
     KeepEditor,
     NextChange,
@@ -482,6 +483,7 @@ fn defaults() -> Vec<Binding> {
         k(C, Key::Num0, FoldAll),
         k(C, Key::J, UnfoldAll),
         k(C, Key::D, MoveSelectionToNextFindMatch),
+        k(C, Key::Q, GoToLastEditLocation),
         e(Modifiers::ALT, Key::ArrowUp, MoveLineUp),
         e(Modifiers::ALT, Key::ArrowDown, MoveLineDown),
         e(sa, Key::ArrowUp, CopyLineUp),
@@ -610,7 +612,7 @@ pub fn all() -> Vec<Command> {
         MarkdownPreview, MarkdownPreviewSide, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
         MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
         AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations,
-        GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, ReopenClosed,
+        GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation, ReopenClosed,
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
         ShowHover, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
@@ -809,7 +811,7 @@ impl Command {
             | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter | AlignPanelJustify | AlignPanelLeft | AlignPanelRight
             | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
-            | GoForward | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
+            | GoForward | GoToLastEditLocation | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
             ShowHover | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
@@ -986,6 +988,7 @@ impl Command {
             PrevEditor => "Previous Editor",
             GoBack => "Go Back",
             GoForward => "Go Forward",
+            GoToLastEditLocation => "Go to Last Edit Location",
             ReopenClosed => "Reopen Closed Editor",
             KeepEditor => "Keep Editor Open",
             NextChange => "Go to Next Change",

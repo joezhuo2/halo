@@ -1041,6 +1041,14 @@ impl Editors {
                     self.marks.apply(&path, crate::debug::Gutter::Ask(line, crate::debug::Ask::Condition));
                 }
             }
+            GoToLastEditLocation => {
+                let last = self.docs.iter().filter_map(|(id, d)| Some((d.buf.edited?, *id))).max_by_key(|(edit, _)| edit.0);
+                if let Some(((_, pos), id)) = last {
+                    self.remember();
+                    self.show_doc(id);
+                    self.with_active(|_, tab| tab.sels = vec![Sel::caret(pos)]);
+                }
+            }
             GoTo(line, column) => {
                 if self.groups[g].tabs[t].sels.first().is_some_and(|s| s.head > 0) {
                     self.remember();
@@ -3441,6 +3449,12 @@ end", "word ".repeat(100)))], &settings);
         assert_eq!(titles(&editors).len(), 2);
         editors.exec(&Command::ReopenClosed, &settings, &ctx);
         assert_eq!((titles(&editors).len(), editors.active_path()), (3, Some(before)));
+
+        editors.open(&file("a.txt"));
+        editors.finish_loads();
+        editors.exec(&Command::GoToLastEditLocation, &settings, &ctx);
+        assert_eq!(editors.active_path(), Some(file("b.txt")));
+        assert_eq!(editors.with_active(|_, tab| tab.sels[0].head), Some(1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -150,7 +150,7 @@ impl Halo {
             Some(GoToFile), Some(GoToSymbol), Some(GoToWorkspaceSymbol), Some(GoToLine), Some(GoToBracket), Some(FindInFiles), Some(ShowCommands), None,
             Some(GoToDefinition), Some(GoToDeclaration), Some(GoToTypeDefinition), Some(GoToImplementation), Some(FindReferences),
             Some(ShowCallHierarchy), Some(ShowTypeHierarchy), None,
-            Some(GoBack), Some(NextEditor), Some(PrevEditor), None,
+            Some(GoBack), Some(GoToLastEditLocation), Some(NextEditor), Some(PrevEditor), None,
             Some(NextChange), Some(PrevChange),
         ]);
         ui.menu_button("Run", |ui| {
