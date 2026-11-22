@@ -28,6 +28,24 @@ pub fn notify(text: impl Into<String>) {
     notify_warning(text);
 }
 
+pub fn recall(ui: &Ui, id: Id, history: &[String], at: &mut Option<usize>, text: &mut String) {
+    if history.is_empty() || !ui.memory(|m| m.has_focus(id)) {
+        return;
+    }
+    let (up, down) = ui.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp), i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)));
+    let last = history.len() - 1;
+    if up {
+        let newest = if history[last] == *text { last.saturating_sub(1) } else { last };
+        *at = Some(at.map_or(newest, |at| at.saturating_sub(1)));
+    }
+    if down {
+        *at = at.and_then(|at| (at < last).then_some(at + 1));
+    }
+    if up || down {
+        *text = at.map(|at| history[at].clone()).unwrap_or_default();
+    }
+}
+
 #[allow(dead_code)]
 pub fn notify_info(text: impl Into<String>) {
     notify_with(Severity::Info, text, vec![]);

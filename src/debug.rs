@@ -401,19 +401,7 @@ impl Console {
         let line = Rect::from_min_max(pos2(body.left(), body.bottom() - input_h), body.max);
         ui.painter().hline(line.x_range(), line.top(), Stroke::new(1.0, theme.border));
         let id = Id::new("debug_console_input");
-        if ui.memory(|m| m.has_focus(id)) && !self.history.is_empty() {
-            let (up, down) = ui.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, Key::ArrowUp), i.consume_key(egui::Modifiers::NONE, Key::ArrowDown)));
-            let last = self.history.len() - 1;
-            if up {
-                self.at = Some(self.at.map_or(last, |at| at.saturating_sub(1)));
-            }
-            if down {
-                self.at = self.at.and_then(|at| (at < last).then_some(at + 1));
-            }
-            if up || down {
-                self.input = self.at.map(|at| self.history[at].clone()).unwrap_or_default();
-            }
-        }
+        ui::recall(ui, id, &self.history, &mut self.at, &mut self.input);
         ui.painter().text(pos2(line.left() + 14.0, line.center().y), Align2::LEFT_CENTER, icons::CARET_RIGHT, FontId::proportional(13.0), theme.accent);
         let edit = TextEdit::singleline(&mut self.input).id(id).font(font).hint_text("Evaluate an expression").frame(egui::Frame::NONE).desired_width(f32::INFINITY);
         let resp = ui.put(line.shrink2(vec2(14.0, 6.0)).with_min_x(line.left() + 30.0), edit);

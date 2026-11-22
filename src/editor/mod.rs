@@ -131,6 +131,8 @@ struct Find {
     focus: bool,
     matches: Vec<(usize, usize)>,
     key: (u64, u64, String, [bool; 3], Option<(usize, usize)>),
+    history: Vec<String>,
+    at: Option<usize>,
 }
 
 enum TabAction {
@@ -3010,7 +3012,9 @@ impl Editors {
                 if ui::icon_button(ui, theme, caret, 22.0, false, "Toggle Replace").clicked() {
                     self.find.replace ^= true;
                 }
-                let field = ui.add(TextEdit::singleline(&mut self.find.query).margin(ui::FIELD).desired_width(170.0).hint_text("Find"));
+                let query_id = Id::new("editor_find_query");
+                ui::recall(ui, query_id, &self.find.history, &mut self.find.at, &mut self.find.query);
+                let field = ui.add(TextEdit::singleline(&mut self.find.query).id(query_id).margin(ui::FIELD).desired_width(170.0).hint_text("Find"));
                 if self.find.focus {
                     field.request_focus();
                     self.find.focus = false;
@@ -3088,6 +3092,11 @@ impl Editors {
             }
         });
         let f = &mut self.find;
+        if (step != 0 || close || replace_one || replace_all) && !f.query.is_empty() {
+            f.history.retain(|h| *h != f.query);
+            f.history.push(f.query.clone());
+            f.at = None;
+        }
         let targets: &[(usize, usize)] = match (replace_all, replace_one, current) {
             (true, ..) => &f.matches,
             (_, true, Some(index)) => &f.matches[index..index + 1],
@@ -3571,6 +3580,30 @@ end", "word ".repeat(100)))], &settings);
         });
         assert!(replaced, "a replace button in the find bar");
         assert!(["a1 2b\nc3 d4\ne5", "a1 2b\n3c 4d\ne5"].contains(&text(&editors).as_str()), "{}", text(&editors));
+    }
+
+    #[test]
+    fn find_input_recalls_earlier_searches_with_arrows() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        editors.exec(&Command::Find, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        for word in ["alpha", "beta", "alpha"] {
+            editors.find.query = word.into();
+            frame(&ctx, &mut editors, vec![key(Key::Enter, Default::default())]);
+            frame(&ctx, &mut editors, vec![]);
+        }
+        assert_eq!(editors.find.history, ["beta", "alpha"]);
+        let mut recalled = vec![];
+        for arrow in [Key::ArrowUp, Key::ArrowUp, Key::ArrowDown, Key::ArrowDown] {
+            frame(&ctx, &mut editors, vec![key(arrow, Default::default())]);
+            recalled.push(editors.find.query.clone());
+        }
+        assert_eq!(recalled, ["beta", "beta", "alpha", ""]);
     }
 
     #[test]

@@ -86,7 +86,8 @@ language you want diagnostics and completion in. Each is optional.
   last cursor move.
 - **Find and replace** in the file (`Ctrl+F`, `Ctrl+H`) with match case,
   whole word, regular expressions (`$1` in the replacement), find in
-  selection and preserve case. **Go to Line** is `Ctrl+G`.
+  selection and preserve case. `Up` and `Down` in the find box recall earlier
+  searches. **Go to Line** is `Ctrl+G`.
 - **Search in files** (`Ctrl+Shift+F`) in the side bar: replace in files,
   include and exclude globs, a results tree, and the results as a tab whose
   lines open on a double-click.
