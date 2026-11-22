@@ -44,12 +44,12 @@
 
 ## M6: editing (0.1.2, done)
 
-- Editor: word wrap, folding by indentation, auto-closing pairs, line operations, block comments, box selection, select all occurrences, expand and shrink selection, cursor undo, snippets with tab stops, word completion, Emmet, visible whitespace, rulers, sticky scroll, bracket colors, guides and clickable links.
+- Editor: word wrap, folding by indentation, auto-closing pairs, line operations, block comments, box selection (mouse, keyboard and a column selection mode), select all occurrences, expand and shrink selection, cursor undo, snippets with tab stops, word completion, Emmet, visible whitespace, rulers, sticky scroll, bracket colors, guides and clickable links.
 - Find: regular expressions, find in selection and preserve case in the file, and a search view with replace in files, globs, a results tree and results in a tab (`find.rs`).
 - Files: status bar pickers for language, indentation, encoding and line ending, trim and final newline on save, hot exit, and a compare, reload or overwrite bar when a changed file changes on disk.
 - Tabs: preview tabs, the recent switcher, reopen closed editor, back and forward.
 - Auto update (`update.rs`): installs the latest release at startup through `curl`, `tar` and the system hash tool. Never run against a real newer release.
-- Not built: folding ranges and selection ranges from language servers, CSS Emmet, keyboard box selection, visual-row Home and End under word wrap, searching unsaved buffers in the search view, pickers in the command list, and encodings beyond UTF-8, UTF-16 and ISO 8859-1.
+- Not built: folding ranges and selection ranges from language servers, CSS Emmet, visual-row Home and End under word wrap, searching unsaved buffers in the search view, pickers in the command list, and encodings beyond UTF-8, UTF-16 and ISO 8859-1.
 
 ## M7: interface polish (0.1.3, done)
 

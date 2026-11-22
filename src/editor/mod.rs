@@ -98,6 +98,7 @@ struct Tab {
     pair: ((u64, usize), Option<(usize, usize)>),
     stuck: usize,
     box_anchor: Option<usize>,
+    col_box: Option<[usize; 4]>,
     snippet: Option<snippet::Session>,
     grown: Vec<(Vec<Sel>, Vec<Sel>)>,
     trail: Vec<Vec<Sel>>,
@@ -1061,7 +1062,7 @@ impl Editors {
                 });
             }
             Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | MoveLineUp
-            | EmmetExpand | SelectAllOccurrences | ExpandSelection | ShrinkSelection | GoToBracket | SelectToBracket | CursorUndo | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
+            | EmmetExpand | SelectAllOccurrences | ExpandSelection | ShrinkSelection | GoToBracket | SelectToBracket | CursorUndo | CursorColumnSelectLeft | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
                 self.with_active(|buf, tab| {
@@ -1108,6 +1109,15 @@ impl Editors {
                             _ => tab.grown.clear(),
                         },
                         GoToBracket | SelectToBracket => buf.to_bracket(sels, cmd == SelectToBracket),
+                        CursorColumnSelectLeft | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown => {
+                            let motion = match cmd {
+                                CursorColumnSelectLeft => Motion::Left,
+                                CursorColumnSelectRight => Motion::Right,
+                                CursorColumnSelectUp => Motion::Up,
+                                _ => Motion::Down,
+                            };
+                            buf.column_select(sels, &mut tab.col_box, motion);
+                        }
                         CursorUndo => {
                             if let Some(before) = tab.trail.pop() {
                                 tab.seen.1 = before.clone();
@@ -1131,7 +1141,7 @@ impl Editors {
                         }
                     }
                 });
-                if matches!(cmd, SelectAll | AddCursorAbove)
+                if matches!(cmd, SelectAll | AddCursorAbove | CursorColumnSelectUp)
                     && let Some((g, t)) = self.active_tab()
                 {
                     let tab = &mut self.groups[g].tabs[t];
@@ -2272,6 +2282,11 @@ impl Editors {
                                 tab.sels.push(Sel::caret(p));
                                 merge_sels(&mut tab.sels);
                                 tab.drag_anchor = Some(p);
+                            } else if settings.column_selection && !follows_link {
+                                let anchor = if mods.shift { tab.sels.last().map_or(p, |s| s.anchor) } else { p };
+                                tab.box_anchor = Some(anchor);
+                                tab.sels = buf_ref.box_sels(anchor, p);
+                                tab.drag_anchor = None;
                             } else if mods.shift && let Some(s) = tab.sels.last_mut() {
                                 s.head = p;
                                 s.goal = None;

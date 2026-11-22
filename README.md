@@ -78,7 +78,9 @@ language you want diagnostics and completion in. Each is optional.
   `Ctrl+K Ctrl+D` skips the last one added for the next, `Ctrl+Alt+Up`
   and `Ctrl+Alt+Down` add cursors above and below, and `Shift+Alt+I` puts a
   cursor at the end of every selected line.
-- **Selections:** `Alt+Click` adds a cursor, `Shift+Alt+drag` selects a box,
+- **Selections:** `Alt+Click` adds a cursor, `Shift+Alt+drag` and
+  `Ctrl+Shift+Alt+Arrow` select a box (plain drags do too in Toggle Column
+  Selection Mode),
   `Ctrl+Shift+L` selects every occurrence, `Shift+Alt+Right` and
   `Shift+Alt+Left` grow and shrink the selection, and `Ctrl+U` undoes the
   last cursor move.

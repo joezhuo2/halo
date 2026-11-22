@@ -63,6 +63,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("cursor_surrounding_lines", "editor.cursorSurroundingLines"),
     ("mouse_wheel_zoom", "editor.mouseWheelZoom"),
     ("multi_cursor_modifier", "editor.multiCursorModifier"),
+    ("column_selection", "editor.columnSelection"),
     ("word_separators", "editor.wordSeparators"),
     ("match_brackets", "editor.matchBrackets"),
     ("selection_highlight", "editor.selectionHighlight"),

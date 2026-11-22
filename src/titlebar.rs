@@ -131,7 +131,8 @@ impl Halo {
         ]);
         self.menu(ui, "Selection", &[
             Some(SelectAll), None,
-            Some(AddCursorAbove), Some(AddCursorBelow), Some(AddCursorsToLineEnds), Some(SelectNextOccurrence),
+            Some(AddCursorAbove), Some(AddCursorBelow), Some(AddCursorsToLineEnds), Some(SelectNextOccurrence), None,
+            Some(ToggleColumnSelection),
         ]);
         self.menu_with(ui, "View", &[
             Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), Some(ShowTesting), None,

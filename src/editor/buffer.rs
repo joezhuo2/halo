@@ -1309,9 +1309,33 @@ impl Document {
     // shortcut: box columns count characters, upgrade to visual columns if tabs or wide glyphs skew the box
     pub fn box_sels(&self, anchor: usize, head: usize) -> Vec<Sel> {
         let (first, last) = (self.line_of(anchor), self.line_of(head));
-        let (from, to) = (anchor - self.line_start(first), head - self.line_start(last));
+        self.box_cols([first, anchor - self.line_start(first), last, head - self.line_start(last)])
+    }
+
+    fn box_cols(&self, [first, from, last, to]: [usize; 4]) -> Vec<Sel> {
         let on = |line: usize| Sel::new(self.line_start(line) + from.min(self.line_len(line)), self.line_start(line) + to.min(self.line_len(line)));
         (first.min(last)..=first.max(last)).map(on).collect()
+    }
+
+    pub fn column_select(&self, sels: &mut Vec<Sel>, held: &mut Option<[usize; 4]>, motion: Motion) {
+        let (Some(first), Some(last)) = (sels.first(), sels.last()) else { return };
+        let at = |pos: usize| (self.line_of(pos), pos - self.line_start(self.line_of(pos)));
+        let [l0, c0, mut l1, mut c1] = match *held {
+            Some(b) if same(sels, &self.box_cols(b)) => b,
+            _ => {
+                let ((l0, c0), (l1, c1)) = (at(first.anchor), at(last.head));
+                [l0, c0, l1, c1]
+            }
+        };
+        match motion {
+            Motion::Left => c1 = c1.saturating_sub(1),
+            Motion::Right if (l0.min(l1)..=l0.max(l1)).any(|line| self.line_len(line) > c1) => c1 += 1,
+            Motion::Up => l1 = l1.saturating_sub(1),
+            Motion::Down => l1 = (l1 + 1).min(self.lines() - 1),
+            _ => {}
+        }
+        *held = Some([l0, c0, l1, c1]);
+        *sels = self.box_cols([l0, c0, l1, c1]);
     }
 
     pub fn select_all_occurrences(&self, sels: &mut Vec<Sel>) {
@@ -1735,6 +1759,26 @@ mod tests {
         };
         assert_eq!([jump(9, false), jump(20, false), jump(21, false), jump(15, false), jump(0, false)], [(20, 20), (9, 9), (9, 9), (19, 19), (0, 0)]);
         assert_eq!([jump(15, true), jump(9, true)], [(13, 20), (9, 21)]);
+    }
+
+    #[test]
+    fn keyboard_box_selection_keeps_its_column_past_short_lines() {
+        let d = doc("abcd\nab\nabcdef");
+        let pairs = |sels: &[Sel]| sels.iter().map(|s| (s.anchor, s.head)).collect::<Vec<_>>();
+        let (mut sels, mut held) = (vec![Sel::caret(1)], None);
+        for motion in [Motion::Down, Motion::Right, Motion::Right, Motion::Down] {
+            d.column_select(&mut sels, &mut held, motion);
+        }
+        assert_eq!(pairs(&sels), vec![(1, 3), (6, 7), (9, 11)]);
+        for _ in 0..5 {
+            d.column_select(&mut sels, &mut held, Motion::Right);
+        }
+        assert_eq!(held, Some([0, 1, 2, 6]));
+        let (mut sels, mut held) = (vec![Sel::new(1, 3), Sel::new(6, 7), Sel::new(9, 11)], None);
+        d.column_select(&mut sels, &mut held, Motion::Up);
+        assert_eq!(pairs(&sels), vec![(1, 3), (6, 7)]);
+        d.column_select(&mut sels, &mut held, Motion::Left);
+        assert_eq!(pairs(&sels), vec![(1, 2), (6, 7)]);
     }
 
     #[test]

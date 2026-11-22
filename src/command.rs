@@ -87,6 +87,11 @@ pub enum Command {
     ShrinkSelection,
     SelectToBracket,
     CursorUndo,
+    ToggleColumnSelection,
+    CursorColumnSelectLeft,
+    CursorColumnSelectRight,
+    CursorColumnSelectUp,
+    CursorColumnSelectDown,
 
     ShowExplorer,
     ShowSourceControl,
@@ -431,6 +436,7 @@ pub struct Entry {
 
 pub const SEND_TO_SHELL: &str = "!terminalFocus || !config.terminal.integrated.sendKeybindingsToShell";
 const NOT_TEXT: &str = "!editorTextFocus";
+const TEXT: &str = "editorTextFocus";
 
 fn defaults() -> Vec<Binding> {
     use Command::*;
@@ -445,7 +451,12 @@ fn defaults() -> Vec<Binding> {
     let k = |m, k, c| bind(key(C, Key::K), Some(key(m, k)), Scope::Global, c);
     let t = |m, k, c| bind(key(C, Key::Semicolon), Some(key(m, k)), Scope::Global, c);
     let sa = Modifiers::SHIFT | Modifiers::ALT;
+    let csa = cs | Modifiers::ALT;
     let mut list = vec![
+        g(csa, Key::ArrowLeft, CursorColumnSelectLeft),
+        g(csa, Key::ArrowRight, CursorColumnSelectRight),
+        g(csa, Key::ArrowUp, CursorColumnSelectUp),
+        g(csa, Key::ArrowDown, CursorColumnSelectDown),
         t(NONE, Key::A, RunAllTests),
         t(NONE, Key::E, RunFailedTests),
         t(NONE, Key::C, RunTestAtCursor),
@@ -585,6 +596,10 @@ fn defaults() -> Vec<Binding> {
     for b in list.iter_mut().filter(|b| matches!(b.command, MoveEditorUp | MoveEditorDown)) {
         (b.when, b.cond) = (NOT_TEXT.to_owned(), text.clone());
     }
+    let typing = crate::when::parse(TEXT).ok().map(Arc::new);
+    for b in list.iter_mut().filter(|b| matches!(b.command, CursorColumnSelectLeft | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown)) {
+        (b.when, b.cond) = (TEXT.to_owned(), typing.clone());
+    }
     for b in list.iter_mut().filter(|b| b.shortcut == key(NONE, Key::F11)) {
         b.when = if b.command == StepInto { "inDebugMode" } else { "!inDebugMode" }.to_owned();
         b.cond = crate::when::parse(&b.when).ok().map(Arc::new);
@@ -603,7 +618,8 @@ pub fn all() -> Vec<Command> {
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
         SelectAll, AddCursorAbove, AddCursorBelow, AddCursorsToLineEnds, SelectNextOccurrence, MoveSelectionToNextFindMatch, SelectAllOccurrences, ExpandSelection, ShrinkSelection,
-        SelectToBracket, CursorUndo, ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
+        SelectToBracket, CursorUndo, ToggleColumnSelection, CursorColumnSelectLeft, CursorColumnSelectRight, CursorColumnSelectUp,
+        CursorColumnSelectDown, ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
         SplitEditorDown, SplitEditorLeft, SplitEditorUp, LayoutSingle, LayoutTwoColumns, LayoutThreeColumns, LayoutTwoRows, LayoutThreeRows,
         LayoutGrid, LayoutTwoRowsRight, LayoutTwoColumnsBottom, ToggleMaximizeGroup, ResetGroupSizes, FocusGroupLeft, FocusGroupRight,
         FocusGroupUp, FocusGroupDown, MoveEditorLeft, MoveEditorRight, MoveEditorUp, MoveEditorDown, CloseGroup, MoveEditorToNewWindow,
@@ -799,7 +815,8 @@ impl Command {
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
             | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection => "Edit",
             SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | SelectAllOccurrences
-            | ExpandSelection | ShrinkSelection | SelectToBracket | CursorUndo => "Selection",
+            | ExpandSelection | ShrinkSelection | SelectToBracket | CursorUndo | ToggleColumnSelection | CursorColumnSelectLeft
+            | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
             | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | FilterExplorer | ToggleFileNesting
             | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
@@ -913,6 +930,11 @@ impl Command {
             ShrinkSelection => "Shrink Selection",
             SelectToBracket => "Select to Bracket",
             CursorUndo => "Cursor Undo",
+            ToggleColumnSelection => "Toggle Column Selection Mode",
+            CursorColumnSelectLeft => "Column Select Left",
+            CursorColumnSelectRight => "Column Select Right",
+            CursorColumnSelectUp => "Column Select Up",
+            CursorColumnSelectDown => "Column Select Down",
             ShowExplorer => "Explorer",
             ShowSourceControl => "Source Control",
             ShowRunAndDebug => "Run and Debug",

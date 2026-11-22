@@ -443,6 +443,10 @@ impl Halo {
                 self.settings.file_nesting ^= true;
                 self.settings.save();
             }
+            ToggleColumnSelection => {
+                self.settings.column_selection ^= true;
+                self.settings.save();
+            }
             ToggleWordWrap => {
                 self.settings.word_wrap = if self.settings.word_wrap == "off" { "on" } else { "off" }.into();
                 self.settings.save();
