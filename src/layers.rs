@@ -72,6 +72,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("hot_exit", "files.hotExit"),
     ("tab_close_button", "workbench.editor.tabCloseButton"),
     ("enable_preview", "workbench.editor.enablePreview"),
+    ("wrap_tabs", "workbench.editor.wrapTabs"),
     ("confirm_delete", "explorer.confirmDelete"),
     ("explorer_sort", "explorer.sortOrder"),
     ("zoom_level", "window.zoomLevel"),

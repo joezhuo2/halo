@@ -117,7 +117,9 @@ language you want diagnostics and completion in. Each is optional.
   skipped by Close Others, Close All and `Ctrl+W`, and come back after a
   restart. A newly opened file is a preview with
   an italic title, and the next file you open takes its tab until you edit it
-  or double-click the tab. `Ctrl+Tab` switches between recent files,
+  or double-click the tab. With the Wrap Tabs setting
+  (`workbench.editor.wrapTabs`) on, tabs that do not fit wrap onto more
+  rows instead of scrolling. `Ctrl+Tab` switches between recent files,
   `Ctrl+Shift+T` reopens a closed one, `Alt+Left` and `Alt+Right` go back
   and forward, and `Ctrl+K Ctrl+Q` returns to the last edit.
 - **Split editor** right (`Ctrl+\`), down (`Ctrl+K Ctrl+\`), left or up, or

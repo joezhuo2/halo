@@ -115,6 +115,7 @@ pub const SETTINGS: &[Meta] = &[
     m("restore_session", 2, "Window", "Restore Session", "Open the last folder and its files when Halo starts.", Kind::Toggle),
     m("tab_close_button", 2, "Workbench", "Tab Close Button", "Where the close button of an editor tab is.", Kind::Choice(&[("right", "Right"), ("left", "Left"), ("off", "Off")])),
     m("enable_preview", 2, "Workbench", "Enable Preview", "Open files from a single click in a preview tab that the next one replaces.", Kind::Toggle),
+    m("wrap_tabs", 2, "Workbench", "Wrap Tabs", "Wrap editor tabs onto more rows when they do not fit in one, instead of scrolling them.", Kind::Toggle),
     m("sidebar_location", 2, "Workbench", "Side Bar Location", "The side of the window the primary side bar and the activity bar are on. The secondary side bar is on the other side.", Kind::Choice(&[("left", "Left"), ("right", "Right")])),
     m("activity_bar_location", 2, "Workbench", "Activity Bar Location", "Where the icons that switch the views of the primary side bar are.", Kind::Choice(&[("default", "Beside the side bar"), ("top", "At the top of the side bar"), ("hidden", "Hidden")])),
     m("panel_location", 2, "Workbench", "Panel Default Location", "Where the panel opens. View: Move Panel changes it for the session.", Kind::Choice(&[("bottom", "Bottom"), ("top", "Top"), ("left", "Left"), ("right", "Right")])),

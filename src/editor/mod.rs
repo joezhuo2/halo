@@ -246,6 +246,19 @@ fn tab_layout(tabs: &[(f32, bool)], hidden: Option<usize>, incoming: Option<(f32
     (gap, lefts, width)
 }
 
+fn tab_rows(tabs: &[(f32, bool)], lefts: &[f32], hidden: Option<usize>, wrap: f32) -> (Vec<(f32, usize)>, Vec<f32>) {
+    let mut starts = vec![0.0];
+    let spots = tabs.iter().zip(lefts).enumerate().map(|(i, (&(w, _), &left))| {
+        let mut x = left - starts[starts.len() - 1];
+        if Some(i) != hidden && x > 0.0 && x + w > wrap {
+            starts.push(left);
+            x = 0.0;
+        }
+        (x, starts.len() - 1)
+    }).collect();
+    (spots, starts)
+}
+
 pub struct Editors {
     docs: HashMap<u64, Doc>,
     next_id: u64,
@@ -1558,8 +1571,7 @@ impl Editors {
 
     #[allow(clippy::too_many_arguments)]
     fn group_ui(&mut self, ui: &mut Ui, g: usize, rect: Rect, theme: &Theme, settings: &Settings, git: &Git, pending: &mut Vec<Command>) {
-        let strip = Rect::from_min_size(rect.min, vec2(rect.width(), TAB_H));
-        self.tab_strip(ui, g, strip, theme, pending);
+        let strip = self.tab_strip(ui, g, Rect::from_min_size(rect.min, vec2(rect.width(), TAB_H)), theme, pending);
         let mut body = Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max);
         let terminal = self.groups[g].tabs.get(self.groups[g].active).is_some_and(|tab| self.terminals.contains_key(&tab.doc));
         if settings.breadcrumbs && !self.groups[g].tabs.is_empty() && !terminal {
@@ -1610,9 +1622,7 @@ impl Editors {
         }
     }
 
-    fn tab_strip(&mut self, ui: &mut Ui, g: usize, strip: Rect, theme: &Theme, pending: &mut Vec<Command>) {
-        ui.painter().rect_filled(strip, CornerRadius::ZERO, theme.panel);
-        ui.painter().hline(strip.x_range(), strip.bottom() - 0.5, Stroke::new(1.0, theme.border));
+    fn tab_strip(&mut self, ui: &mut Ui, g: usize, strip: Rect, theme: &Theme, pending: &mut Vec<Command>) -> Rect {
         let severities = self.severities();
         let group = &self.groups[g];
         let active = group.active;
@@ -1621,53 +1631,64 @@ impl Editors {
         let last = self.grid.corner == Some(g);
         let floating = self.win_of(g) != 0;
         let md = group.tabs.get(active).is_some_and(|t| t.md.is_none() && self.docs.get(&t.doc).is_some_and(|d| d.buf.path.as_deref().is_some_and(markdown::is_markdown)));
-        let tabs_rect = Rect::from_min_max(strip.min, pos2(strip.right() - if last { 60.0 } else { 34.0 } - if md { 26.0 } else { 0.0 }, strip.bottom()));
+        let right = strip.right() - if last { 60.0 } else { 34.0 } - if md { 26.0 } else { 0.0 };
+        let faces: Vec<_> = group.tabs.iter().map(|tab| {
+            let terminal = self.terminals.get(&tab.doc);
+            let (title, dirty) = match (terminal, self.docs.get(&tab.doc)) {
+                (Some(terminal), _) => (terminal.title(), false),
+                (_, Some(doc)) => {
+                    let title = match (&tab.diff, &tab.merge) {
+                        (Some(d), _) => d.title.clone(),
+                        (_, Some(m)) => m.title.clone(),
+                        _ if tab.md.is_some() => format!("Preview {}", doc.buf.title),
+                        _ => doc.buf.title.clone(),
+                    };
+                    (title, doc.buf.is_dirty() && tab.md.is_none())
+                }
+                _ => (String::new(), false),
+            };
+            let mut name = LayoutJob::simple_singleline(title, FontId::proportional(13.0), Color32::PLACEHOLDER);
+            name.sections[0].format.italics = tab.preview && !dirty;
+            let (icon, tint) = match terminal {
+                Some(terminal) => (icons::TERMINAL_WINDOW, Some(terminal.tint(theme)).filter(|c| *c != theme.text_dim)),
+                None => (icons::FILE_CODE, None),
+            };
+            let close = match self.config.tab_close_button.as_str() {
+                "left" => 1,
+                "off" => 2,
+                _ => 0,
+            };
+            let severity = self.docs.get(&tab.doc).and_then(|d| d.buf.path.as_deref()).and_then(|p| lsp::worst(&severities, p));
+            TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned, icon, tint, close, severity }
+        }).collect();
+        let widths: Vec<_> = faces.iter().map(|f| (f.width(), f.pinned)).collect();
+        let wrap = if self.config.wrap_tabs { right - strip.left() } else { f32::INFINITY };
+        let rows = tab_rows(&widths, &tab_layout(&widths, None, None).1, None, wrap).1.len();
+        let area = Rect::from_min_size(strip.min, vec2(strip.width(), rows as f32 * TAB_H));
+        ui.painter().rect_filled(area, CornerRadius::ZERO, theme.panel);
+        ui.painter().hline(area.x_range(), area.bottom() - 0.5, Stroke::new(1.0, theme.border));
+        let tabs_rect = Rect::from_min_max(area.min, pos2(right, area.bottom()));
         let maximize = ui.interact(tabs_rect, Id::new(("editor_strip", g)), Sense::click()).double_clicked();
         ui.scope_builder(UiBuilder::new().max_rect(tabs_rect), |ui| {
-            ScrollArea::horizontal().id_salt(("editor_tabs", g)).scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
-                let faces: Vec<_> = group.tabs.iter().map(|tab| {
-                    let terminal = self.terminals.get(&tab.doc);
-                    let (title, dirty) = match (terminal, self.docs.get(&tab.doc)) {
-                        (Some(terminal), _) => (terminal.title(), false),
-                        (_, Some(doc)) => {
-                            let title = match (&tab.diff, &tab.merge) {
-                                (Some(d), _) => d.title.clone(),
-                                (_, Some(m)) => m.title.clone(),
-                                _ if tab.md.is_some() => format!("Preview {}", doc.buf.title),
-                                _ => doc.buf.title.clone(),
-                            };
-                            (title, doc.buf.is_dirty() && tab.md.is_none())
-                        }
-                        _ => (String::new(), false),
-                    };
-                    let mut name = LayoutJob::simple_singleline(title, FontId::proportional(13.0), Color32::PLACEHOLDER);
-                    name.sections[0].format.italics = tab.preview && !dirty;
-                    let (icon, tint) = match terminal {
-                        Some(terminal) => (icons::TERMINAL_WINDOW, Some(terminal.tint(theme)).filter(|c| *c != theme.text_dim)),
-                        None => (icons::FILE_CODE, None),
-                    };
-                    let close = match self.config.tab_close_button.as_str() {
-                        "left" => 1,
-                        "off" => 2,
-                        _ => 0,
-                    };
-                    let severity = self.docs.get(&tab.doc).and_then(|d| d.buf.path.as_deref()).and_then(|p| lsp::worst(&severities, p));
-                    TabFace { name: ui.painter().layout_job(name), dirty, pinned: tab.pinned, icon, tint, close, severity }
-                }).collect();
-                let widths: Vec<_> = faces.iter().map(|f| (f.width(), f.pinned)).collect();
-                let pos = ui.ctx().pointer_latest_pos().filter(|p| strip.contains(*p));
+            let tabs = |ui: &mut Ui| {
+                let pos = ui.ctx().pointer_latest_pos().filter(|p| area.contains(*p));
                 let hidden = self.drag.as_ref().filter(|d| g == d.group || pos.is_some())
                     .and_then(|d| group.tabs.iter().position(|t| t.doc == d.doc));
+                let (_, starts) = tab_rows(&widths, &tab_layout(&widths, hidden, None).1, hidden, wrap);
                 let incoming = self.drag.as_ref().zip(pos).map(|(d, p)| {
-                    let x = if p.x < tabs_rect.right() { p.x - ui.cursor().left() } else { f32::INFINITY };
+                    let row = (((p.y - area.top()) / TAB_H).max(0.0) as usize).min(starts.len() - 1);
+                    let end = starts.get(row + 1).copied().unwrap_or(f32::INFINITY);
+                    let x = if p.x < tabs_rect.right() { (starts[row] + p.x - ui.cursor().left()).min(end) } else { end };
                     (d.face.width(), d.face.pinned, x)
                 });
                 let (gap, lefts, width) = tab_layout(&widths, hidden, incoming);
+                let (spots, _) = tab_rows(&widths, &lefts, hidden, wrap);
                 if let Some(slot) = gap {
                     self.drop = Some(DropAt::Tab(g, slot));
                 }
-                let (_, row) = ui.allocate_space(vec2(width, TAB_H));
-                for (t, (face, left)) in faces.into_iter().zip(lefts).enumerate() {
+                let height = spots.iter().map(|s| s.1 + 1).max().unwrap_or(1) as f32 * TAB_H;
+                let (_, row) = ui.allocate_space(vec2(width.min(wrap), height));
+                for (t, (face, (left, line))) in faces.into_iter().zip(spots).enumerate() {
                     if Some(t) == hidden {
                         continue;
                     }
@@ -1682,7 +1703,7 @@ impl Editors {
                     };
                     let duration = if self.drag.is_some() && !crate::a11y::reduced() { ui::ANIM } else { 0.0 };
                     let x = ui.ctx().animate_value_with_time(id.with("left"), left, duration);
-                    let r = Rect::from_min_size(row.min + vec2(x, 0.0), vec2(face.width(), TAB_H));
+                    let r = Rect::from_min_size(row.min + vec2(x, line as f32 * TAB_H), vec2(face.width(), TAB_H));
                     let resp = ui.interact(r, id, Sense::click_and_drag());
                     let problems = match face.severity {
                         Some(1) => ", contains errors",
@@ -1797,7 +1818,13 @@ impl Editors {
                         }
                     });
                 }
-            });
+            };
+            match wrap.is_finite() {
+                true => tabs(ui),
+                false => {
+                    ScrollArea::horizontal().id_salt(("editor_tabs", g)).scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden).show(ui, tabs);
+                }
+            }
         });
         if last {
             let ai = Rect::from_center_size(pos2(strip.right() - 43.0, strip.center().y), vec2(24.0, 24.0));
@@ -1877,6 +1904,7 @@ impl Editors {
             }
             None => {}
         }
+        area
     }
 
     fn refresh_matches(&mut self, doc_id: u64, buf: &Document, tab: &mut Tab) {
@@ -3670,6 +3698,33 @@ end", "word ".repeat(100)))], &settings);
         assert_eq!(layout(None, Some((50.0, false, 90.0))), (Some(2), vec![0.0, 40.0, 175.0], 235.0));
         assert_eq!(layout(Some(0), Some((40.0, false, 90.0))), (Some(1), vec![0.0, 0.0, 125.0], 185.0));
         assert_eq!(tab_layout(&[], None, Some((50.0, true, 10.0))), (Some(0), vec![], 50.0));
+    }
+
+    #[test]
+    fn wrapped_tabs_start_a_new_row_when_the_next_one_does_not_fit() {
+        let tabs = [(100.0, false), (100.0, false), (100.0, false)];
+        let lefts = [0.0, 100.0, 200.0];
+        assert_eq!(tab_rows(&tabs, &lefts, None, 250.0), (vec![(0.0, 0), (100.0, 0), (0.0, 1)], vec![0.0, 200.0]));
+        assert_eq!(tab_rows(&tabs, &lefts, None, f32::INFINITY).1.len(), 1);
+        assert_eq!(tab_rows(&tabs, &[0.0, 0.0, 100.0], Some(0), 200.0).0, vec![(0.0, 0), (0.0, 0), (100.0, 0)]);
+        assert_eq!(tab_rows(&[(300.0, false)], &[0.0], None, 250.0).0, vec![(0.0, 0)]);
+    }
+
+    #[test]
+    fn wrap_tabs_grows_the_strip_to_more_rows() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        let mut settings = Settings::default();
+        for _ in 0..12 {
+            editors.exec(&Command::NewFile, &settings, &ctx);
+        }
+        let strip = |ctx: &egui::Context| ctx.read_response(Id::new(("editor_strip", 0usize))).unwrap().rect.height();
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        assert_eq!(strip(&ctx), TAB_H);
+        settings.wrap_tabs = true;
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        frame_with(&ctx, &mut editors, vec![], &settings);
+        assert!(strip(&ctx) >= 2.0 * TAB_H, "{}", strip(&ctx));
     }
 
     fn tab_button(pos: Pos2, button: PointerButton, pressed: bool) -> Event {
