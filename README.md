@@ -31,6 +31,8 @@
 > Codex CLIs, and a settings page for fonts, colors, languages and key
 > bindings.
 
+<p align="center"><b>Opens in 597 ms, idles at 125.8 MB</b> (folder with two files restored, Windows 11; see <a href="#performance">Performance</a>)</p>
+
 <p align="center"><img src="assets/halo-demo.gif" alt="Halo tour: the editor with explorer and terminal, a split editor, the command list, source control with the commit graph, the AI panel, the settings pages for the editor, colors and keyboard shortcuts, and the light theme" width="100%"></p>
 
 ## Download
@@ -510,17 +512,59 @@ src/
   ui.rs             shared widgets, animation helpers and the logo
 installer/halo.iss  Inno Setup script
 assets/             icon, screenshots and the demo
-docs/               requirements, decisions, architecture, milestones, handoff
+docs/               requirements, decisions, architecture, milestones, handoff,
+                    and the startup measurement script
 ```
 
-### Memory (Windows 11, release build)
+### Performance
 
-Measured on the milestone 3 build, maximized on a high-DPI display.
+The window and its chrome are drawn before the session is restored. The
+explorer, the editor and the terminal show skeleton rows until the folder, the
+open files and the terminals have loaded, which happens right after the window
+appears; the folder check and the syntax definitions load on a background
+thread. The session file is not written until the restore has finished.
 
-| State | Private working set |
-| --- | --- |
-| Folder open | about 90 MB |
-| Folder, a file and a terminal | about 100 MB |
+Median of 5 runs per row, v0.1.7 before and after this change:
+
+| Session | Window on screen | Settled | Working set | Private bytes |
+| --- | --- | --- | --- | --- |
+| Folder, 2 files, terminal: before | 880 ms | 1387 ms | 123.2 MB | 128.9 MB |
+| Folder, 2 files, terminal: after | 597 ms | 1236 ms | 125.8 MB | 125.8 MB |
+| WSL folder, 2 files, terminal: before | 1082 ms | 1606 ms | 126.3 MB | 124.3 MB |
+| WSL folder, 2 files, terminal: after | 563 ms | 1218 ms | 130.4 MB | 125.7 MB |
+| No folder: before | 732 ms | 1263 ms | 108.9 MB | 111.2 MB |
+| No folder: after | 543 ms | 1055 ms | 109.0 MB | 130.5 MB |
+
+- **Window on screen:** from process start until the main window is visible
+  and no longer cloaked (Halo keeps it cloaked until its first frames are
+  drawn).
+- **Settled:** the last moment at which Halo used more than half of one core
+  over the previous 500 ms, so it includes up to 500 ms of tail after the
+  work ends.
+- **Memory:** working set and private bytes of `halo.exe` 10 s after start.
+- With no folder there is nothing to restore, so the change does not touch
+  that path: an earlier set of 5 runs each gave 634 ms before and 651 ms
+  after, and private bytes land near 110 MB or near 130 MB from run to run
+  in both builds.
+- About 400 ms of every start is eframe creating the window and the OpenGL
+  context, before any Halo code runs.
+
+Machine: AMD Ryzen AI 9 HX 370 (12 cores), Radeon 890M (driver
+32.0.21036.1002), 31.1 GB RAM, Windows 11 Home 10.0.26200, rustc 1.98.1,
+`cargo build --release` (thin LTO, one codegen unit). Each run uses test mode
+(`HALO_COMMANDS=none`, off screen, unfocused, default size). The folders are
+small temporary git repositories with a `README.md`, `docs/notes.txt` and
+`data.json`, one on the Windows drive and one under `/tmp` in Ubuntu 24.04 on
+WSL 2 (already running); the session opens `docs/notes.txt` and `README.md`
+with the panel showing a terminal. To repeat it, write a `session.json` for
+your own test folder and run from the repository root:
+
+```powershell
+.\docs\measure-startup.ps1 -Exe target\release\halo.exe -Session C:\path\to\test-session.json -Runs 5
+```
+
+The script backs up `%APPDATA%\halo\session.json`, copies the given session
+over it before each run, and puts the original back at the end.
 
 ## Contributing
 
