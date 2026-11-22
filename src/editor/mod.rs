@@ -1083,7 +1083,8 @@ impl Editors {
             }
             Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | MoveLineUp
             | EmmetExpand | SelectAllOccurrences | ExpandSelection | ShrinkSelection | GoToBracket | SelectToBracket | CursorUndo | CursorColumnSelectLeft | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow
-            | SortLinesAscending | SortLinesDescending | RemoveDuplicateLines | ReverseLines => {
+            | SortLinesAscending | SortLinesDescending | RemoveDuplicateLines | ReverseLines | TransformToUppercase | TransformToLowercase
+            | TransformToTitlecase | TransformToSnakecase | TransformToCamelcase | TransformToKebabcase => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
                 self.with_active(|buf, tab| {
@@ -1160,6 +1161,12 @@ impl Editors {
                         SortLinesAscending | SortLinesDescending => drop(buf.sort_lines(sels, cmd == SortLinesDescending)),
                         RemoveDuplicateLines => drop(buf.delete_duplicate_lines(sels)),
                         ReverseLines => drop(buf.reverse_lines(sels)),
+                        TransformToUppercase => drop(buf.transform_case(sels, |t| t.to_uppercase())),
+                        TransformToLowercase => drop(buf.transform_case(sels, |t| t.to_lowercase())),
+                        TransformToTitlecase => drop(buf.transform_case(sels, buffer::title_case)),
+                        TransformToSnakecase => drop(buf.transform_case(sels, buffer::snake_case)),
+                        TransformToCamelcase => drop(buf.transform_case(sels, buffer::camel_case)),
+                        TransformToKebabcase => drop(buf.transform_case(sels, buffer::kebab_case)),
                         _ => {
                             buf.select_next_occurrence(sels, cmd == MoveSelectionToNextFindMatch);
                         }

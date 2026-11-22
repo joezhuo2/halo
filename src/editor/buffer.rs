@@ -281,6 +281,69 @@ fn map_pos(edits: &EditList, pos: usize) -> usize {
     (pos as isize + delta) as usize
 }
 
+pub fn title_case(text: &str) -> String {
+    let chars: Vec<char> = text.to_lowercase().chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        let start = match i.checked_sub(1).map(|j| chars[j]) {
+            None => true,
+            Some('\'') => i < 2 || !chars[i - 2].is_alphabetic(),
+            Some(p) => !p.is_alphanumeric(),
+        };
+        match start && c.is_alphabetic() {
+            true => out.extend(c.to_uppercase()),
+            false => out.push(c),
+        }
+    }
+    out
+}
+
+fn split_humps(text: &str, sep: char) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        let next_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
+        if let Some(p) = i.checked_sub(1).map(|j| chars[j])
+            && c.is_uppercase()
+            && (p.is_lowercase() || ((p.is_uppercase() || p.is_numeric()) && next_lower))
+        {
+            out.push(sep);
+        }
+        out.push(c);
+    }
+    out.to_lowercase()
+}
+
+pub fn snake_case(text: &str) -> String {
+    split_humps(text, '_')
+}
+
+pub fn kebab_case(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let inner = |i: usize| i > 0 && !chars[i - 1].is_whitespace() && chars.get(i + 1).is_some_and(|n| !n.is_whitespace());
+    let dashed: String = chars.iter().enumerate().map(|(i, &c)| if c == '_' && inner(i) { '-' } else { c }).collect();
+    split_humps(&dashed, '-')
+}
+
+pub fn camel_case(text: &str) -> String {
+    let multi = text.contains('\n');
+    let mut words = text.split(|c: char| c == '_' || c == '-' || (!multi && c.is_whitespace()));
+    let first = words.next().unwrap_or_default();
+    let mut rest = first.chars();
+    let mut out: String = match (rest.next(), rest.clone().next()) {
+        (Some(a), Some(b)) if a.is_uppercase() && !b.is_uppercase() => a.to_lowercase().chain(rest).collect(),
+        _ => first.to_owned(),
+    };
+    for word in words {
+        let mut chars = word.chars();
+        if let Some(head) = chars.next() {
+            out.extend(head.to_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    out
+}
+
 pub fn wrap(text: impl Iterator<Item = char>, cols: usize, mut cut: impl FnMut(usize)) {
     let (mut width, mut soft) = (0, None::<(usize, usize)>);
     for (i, c) in text.enumerate() {
@@ -973,6 +1036,37 @@ impl Document {
                         Sel::new(start, start + e.2.chars().count())
                     }
                     None if whole => Sel::new(s.anchor.min(len), s.head.min(len)),
+                    None => Sel::new(map_pos(&edits, s.anchor), map_pos(&edits, s.head)),
+                })
+                .collect();
+            merge_sels(sels);
+            self.fix_after(sels);
+        }
+        changed
+    }
+
+    pub fn transform_case(&mut self, sels: &mut Vec<Sel>, case: impl Fn(&str) -> String) -> bool {
+        let mut edits: EditList = sels
+            .iter()
+            .filter_map(|s| {
+                let (a, b) = if s.is_empty() { self.word_at(s.head) } else { (s.start(), s.end()) };
+                (!s.is_empty() || self.rope.get_char(a).is_some_and(is_word)).then_some((a, b))
+            })
+            .filter_map(|(a, b)| {
+                let old = self.text_of(a, b);
+                let new = case(&old);
+                (new != old).then_some((a, b, new))
+            })
+            .collect();
+        edits.sort_by_key(|e| (e.0, e.1));
+        edits.dedup_by(|next, prev| next.0 < prev.1);
+        let before = sels.clone();
+        let changed = self.apply(sels, edits.clone(), Kind::Other, After::Map);
+        if changed {
+            *sels = before
+                .iter()
+                .map(|s| match edits.iter().find(|e| s.is_empty() && e.0 <= s.head && s.head <= e.1) {
+                    Some(e) => Sel::caret(map_pos(&edits, e.0) + (s.head - e.0).min(e.2.chars().count())),
                     None => Sel::new(map_pos(&edits, s.anchor), map_pos(&edits, s.head)),
                 })
                 .collect();
@@ -1807,6 +1901,25 @@ mod tests {
         assert_eq!(sels.iter().map(|s| (s.start(), s.end())).collect::<Vec<_>>(), [(0, 3), (6, 9)]);
         let mut sels = vec![Sel::caret(0), Sel::caret(2)];
         assert!(!d.reverse_lines(&mut sels));
+    }
+
+    #[test]
+    fn transforms_case() {
+        assert_eq!(title_case("hello WORLD, it's o'neil 2nd"), "Hello World, It's O'neil 2nd");
+        assert_eq!(snake_case("fooBar XMLHttpRequest v2Beta"), "foo_bar xml_http_request v2_beta");
+        assert_eq!(kebab_case("fooBar foo_bar HTTPServer"), "foo-bar foo-bar http-server");
+        assert_eq!(camel_case("Foo_bar-baz qux"), "fooBarBazQux");
+        assert_eq!(camel_case("HTML_parser"), "HTMLParser");
+
+        let mut d = doc("one two\nthree");
+        let mut sels = vec![Sel::caret(1), Sel::caret(2), Sel::new(8, 13)];
+        d.transform_case(&mut sels, snake_case);
+        assert!(!d.transform_case(&mut sels, snake_case));
+        d.transform_case(&mut sels, |t| t.to_uppercase());
+        assert_eq!(d.rope.to_string(), "ONE two\nTHREE");
+        assert_eq!(sels.iter().map(|s| (s.anchor, s.head)).collect::<Vec<_>>(), [(1, 1), (2, 2), (8, 13)]);
+        d.undo(&mut sels);
+        assert_eq!(d.rope.to_string(), "one two\nthree");
     }
 
     #[test]
