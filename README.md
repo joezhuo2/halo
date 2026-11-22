@@ -31,7 +31,7 @@
 > Codex CLIs, and a settings page for fonts, colors, languages and key
 > bindings.
 
-<p align="center"><b>Opens in 597 ms, idles at 125.8 MB</b> (folder with two files restored, Windows 11; see <a href="#performance">Performance</a>)</p>
+<p align="center"><b>Opens in 570 ms, idles at 125.6 MB</b> (folder with two files restored, Windows 11; see <a href="#performance">Performance</a>)</p>
 
 <p align="center"><img src="assets/halo-demo.gif" alt="Halo tour: the editor with explorer and terminal, a split editor, the command list, source control with the commit graph, the AI panel, the settings pages for the editor, colors and keyboard shortcuts, and the light theme" width="100%"></p>
 
@@ -524,16 +524,16 @@ open files and the terminals have loaded, which happens right after the window
 appears; the folder check and the syntax definitions load on a background
 thread. The session file is not written until the restore has finished.
 
-Median of 5 runs per row, v0.1.7 before and after this change:
+Median of 5 runs per row, v0.1.7 against v0.1.8:
 
 | Session | Window on screen | Settled | Working set | Private bytes |
 | --- | --- | --- | --- | --- |
-| Folder, 2 files, terminal: before | 880 ms | 1387 ms | 123.2 MB | 128.9 MB |
-| Folder, 2 files, terminal: after | 597 ms | 1236 ms | 125.8 MB | 125.8 MB |
-| WSL folder, 2 files, terminal: before | 1082 ms | 1606 ms | 126.3 MB | 124.3 MB |
-| WSL folder, 2 files, terminal: after | 563 ms | 1218 ms | 130.4 MB | 125.7 MB |
-| No folder: before | 732 ms | 1263 ms | 108.9 MB | 111.2 MB |
-| No folder: after | 543 ms | 1055 ms | 109.0 MB | 130.5 MB |
+| Folder, 2 files, terminal: v0.1.7 | 829 ms | 1355 ms | 127.0 MB | 128.4 MB |
+| Folder, 2 files, terminal: v0.1.8 | 570 ms | 1149 ms | 125.6 MB | 125.7 MB |
+| WSL folder, 2 files, terminal: v0.1.7 | 1011 ms | 1531 ms | 124.4 MB | 124.8 MB |
+| WSL folder, 2 files, terminal: v0.1.8 | 569 ms | 1292 ms | 130.2 MB | 125.4 MB |
+| No folder: v0.1.7 | 656 ms | 1177 ms | 106.7 MB | 132.0 MB |
+| No folder: v0.1.8 | 577 ms | 1095 ms | 107.2 MB | 113.1 MB |
 
 - **Window on screen:** from process start until the main window is visible
   and no longer cloaked (Halo keeps it cloaked until its first frames are
@@ -542,10 +542,14 @@ Median of 5 runs per row, v0.1.7 before and after this change:
   over the previous 500 ms, so it includes up to 500 ms of tail after the
   work ends.
 - **Memory:** working set and private bytes of `halo.exe` 10 s after start.
-- With no folder there is nothing to restore, so the change does not touch
-  that path: an earlier set of 5 runs each gave 634 ms before and 651 ms
-  after, and private bytes land near 110 MB or near 130 MB from run to run
+- With no folder there is nothing to restore, so that row moves only by
+  noise, and private bytes land near 110 MB or near 130 MB from run to run
   in both builds.
+- The first start after a new build is slower (1.5 to 1.9 s here) while
+  Windows scans the new file; the median leaves it out.
+- The features added in v0.1.8 cost no idle memory: a build with only the
+  startup change measured 126.5, 130.1 and 107.0 MB working set for the
+  three sessions.
 - About 400 ms of every start is eframe creating the window and the OpenGL
   context, before any Halo code runs.
 
