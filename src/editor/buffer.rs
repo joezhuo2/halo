@@ -1224,6 +1224,21 @@ impl Document {
         Some(pos)
     }
 
+    pub fn cursors_to_line_ends(&self, sels: &mut Vec<Sel>) {
+        let mut out = vec![];
+        for s in sels.iter().filter(|s| !s.is_empty()) {
+            let (first, last) = (self.line_of(s.start()), self.line_of(s.end()));
+            out.extend((first..last).map(|line| Sel::caret(self.line_end(line))));
+            if s.end() > self.line_start(last) {
+                out.push(Sel::caret(s.end()));
+            }
+        }
+        if !out.is_empty() {
+            merge_sels(&mut out);
+            *sels = out;
+        }
+    }
+
     pub fn text_of(&self, start: usize, end: usize) -> String {
         self.rope.slice(start.min(self.len())..end.min(self.len())).to_string()
     }
@@ -1689,6 +1704,21 @@ mod tests {
             seen.push((s.start(), s.end()));
         }
         assert_eq!(seen, vec![(14, 16), (14, 19), (13, 20), (10, 20), (9, 21), (0, 22), (0, 23), (0, 34)]);
+    }
+
+    #[test]
+    fn puts_a_cursor_at_the_end_of_each_selected_line() {
+        let d = doc("ab\ncde\nf\ng");
+        let heads = |sels: &[Sel]| sels.iter().map(|s| (s.anchor, s.head)).collect::<Vec<_>>();
+        let mut sels = vec![Sel::new(1, 8)];
+        d.cursors_to_line_ends(&mut sels);
+        assert_eq!(heads(&sels), vec![(2, 2), (6, 6), (8, 8)]);
+        let mut sels = vec![Sel::new(0, 7), Sel::caret(9)];
+        d.cursors_to_line_ends(&mut sels);
+        assert_eq!(heads(&sels), vec![(2, 2), (6, 6)]);
+        let mut sels = vec![Sel::caret(4)];
+        d.cursors_to_line_ends(&mut sels);
+        assert_eq!(heads(&sels), vec![(4, 4)]);
     }
 
     #[test]

@@ -1052,7 +1052,7 @@ impl Editors {
                     tab.sels = vec![Sel::caret(pos)];
                 });
             }
-            Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | SelectNextOccurrence | MoveLineUp
+            Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveLineUp
             | EmmetExpand | SelectAllOccurrences | ExpandSelection | ShrinkSelection | CursorUndo | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
@@ -1085,6 +1085,7 @@ impl Editors {
                         AddCursorBelow => {
                             buf.add_cursor(sels, true);
                         }
+                        AddCursorsToLineEnds => buf.cursors_to_line_ends(sels),
                         SelectAllOccurrences => buf.select_all_occurrences(sels),
                         ExpandSelection => {
                             if tab.grown.last().is_some_and(|step| !buffer::same(&step.1, sels)) {
