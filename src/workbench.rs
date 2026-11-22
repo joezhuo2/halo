@@ -744,7 +744,8 @@ impl Halo {
                 _ => {
                     let files = self.tasks.files();
                     let tab = view.tab().unwrap_or(PanelTab::Ports);
-                    self.bottom.body(ui, rect, tab, &self.theme, &self.settings, cwd.as_deref(), &self.editors.lsp, &files, &mut self.cmds);
+                    let active = self.editors.active_path();
+                    self.bottom.body(ui, rect, tab, &self.theme, &self.settings, cwd.as_deref(), &self.editors.lsp, &files, active.as_deref(), &mut self.cmds);
                 }
             }
         });

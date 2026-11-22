@@ -161,7 +161,8 @@ file extension.
 
 - **Diagnostics:** errors and warnings are underlined in the text and marked
   in the minimap, listed in the **Problems** panel (`Ctrl+Shift+M`) and
-  counted in the status bar. Click a problem to go to it.
+  counted in the status bar. Click a problem to go to it. The panel filters
+  by text, by severity and to the active file.
 - **Completion** as you type or with `Ctrl+Space`, **signature help** inside
   a call, and **hover** when the pointer rests on a name.
 - **Go to Definition** (`F12` or `Ctrl+Click`), declaration, type definition

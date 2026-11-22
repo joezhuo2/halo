@@ -1064,6 +1064,24 @@ pub struct BottomPanel {
     pub test_output: String,
     integrate: bool,
     renaming: Option<(u64, String, bool)>,
+    problems: ProblemFilter,
+}
+
+#[derive(Default)]
+struct ProblemFilter {
+    text: String,
+    hide: [bool; 3],
+    active_only: bool,
+}
+
+impl ProblemFilter {
+    fn shows(&self, path: &Path, problem: &Diagnostic) -> bool {
+        let needle = self.text.trim().to_lowercase();
+        let found = |text: &str| text.to_lowercase().contains(&needle);
+        problem.severity <= 3
+            && !self.hide[(problem.severity as usize).clamp(1, 3) - 1]
+            && (needle.is_empty() || found(&problem.message) || found(&problem.source) || found(&path.to_string_lossy()))
+    }
 }
 
 impl BottomPanel {
@@ -1086,6 +1104,7 @@ impl BottomPanel {
             test_output: String::new(),
             integrate: true,
             renaming: None,
+            problems: ProblemFilter::default(),
         }
     }
 
@@ -1474,6 +1493,7 @@ impl BottomPanel {
         cwd: Option<&Path>,
         lsp: &Lsp,
         task_files: &[(PathBuf, Vec<Diagnostic>)],
+        active: Option<&Path>,
         cmds: &mut Vec<Command>,
     ) {
         self.integrate = settings.shell_integration;
@@ -1484,7 +1504,7 @@ impl BottomPanel {
             match tab {
                 PanelTab::Terminal => self.terminals(ui, body, theme, settings, cwd, cmds),
                 PanelTab::Ports => self.ports_ui(ui, body, theme),
-                PanelTab::Problems => problems_ui(ui, theme, lsp, task_files, cwd, cmds),
+                PanelTab::Problems => problems_ui(ui, theme, lsp, task_files, cwd, active, &mut self.problems, cmds),
                 PanelTab::Output => crate::output::ui(ui, theme, settings.font_size, cmds),
                 PanelTab::Debug => self.debug_ui(ui, body, theme, settings.font_size),
                 PanelTab::Tests => test_output_ui(ui, theme, &self.test_output, settings.font_size),
@@ -1687,11 +1707,44 @@ impl BottomPanel {
     }
 }
 
-fn problems_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, task_files: &[(PathBuf, Vec<Diagnostic>)], cwd: Option<&Path>, cmds: &mut Vec<Command>) {
+#[allow(clippy::too_many_arguments)]
+fn problems_ui(
+    ui: &mut Ui,
+    theme: &Theme,
+    lsp: &Lsp,
+    task_files: &[(PathBuf, Vec<Diagnostic>)],
+    cwd: Option<&Path>,
+    active: Option<&Path>,
+    filter: &mut ProblemFilter,
+    cmds: &mut Vec<Command>,
+) {
+    ui.horizontal(|ui| {
+        ui.add_space(10.0);
+        ui.add(TextEdit::singleline(&mut filter.text).hint_text("Filter (e.g. text, path, source)").desired_width(220.0));
+        ui.add_space(4.0);
+        for (index, (icon, tip)) in [(icons::X_CIRCLE, "Show Errors"), (icons::WARNING, "Show Warnings"), (icons::INFO, "Show Infos")].into_iter().enumerate() {
+            if ui::icon_button(ui, theme, icon, 22.0, !filter.hide[index], tip).clicked() {
+                filter.hide[index] ^= true;
+            }
+        }
+        if ui::icon_button(ui, theme, icons::FILE, 22.0, filter.active_only, "Show Active File Only").clicked() {
+            filter.active_only ^= true;
+        }
+    });
     let from_tasks = task_files.iter().map(|(path, items)| (path, items));
-    let files: Vec<_> = lsp.problems().map(|file| (&file.path, &file.items)).chain(from_tasks).filter(|(_, items)| items.iter().any(|d| d.severity <= 3)).collect();
-    if files.is_empty() {
+    let all: Vec<_> = lsp.problems().map(|file| (&file.path, &file.items)).chain(from_tasks).filter(|(_, items)| items.iter().any(|d| d.severity <= 3)).collect();
+    if all.is_empty() {
         return empty(ui, theme, "No problems have been detected in the workspace.");
+    }
+    let active = active.map(crate::lsp::key);
+    let files: Vec<_> = all
+        .into_iter()
+        .filter(|(path, _)| !filter.active_only || active.as_ref().is_some_and(|a| *a == crate::lsp::key(path)))
+        .map(|(path, items)| (path, items.iter().filter(|d| filter.shows(path, d)).collect::<Vec<_>>()))
+        .filter(|(_, items)| !items.is_empty())
+        .collect();
+    if files.is_empty() {
+        return empty(ui, theme, "No results found with provided filter criteria.");
     }
     ScrollArea::vertical().id_salt("problems").auto_shrink(false).show(ui, |ui| {
         ui.add_space(4.0);
@@ -1704,7 +1757,7 @@ fn problems_ui(ui: &mut Ui, theme: &Theme, lsp: &Lsp, task_files: &[(PathBuf, Ve
             let title = format!("{}  {name}", icons::FILE_CODE);
             let end = painter.text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(12.5), theme.text);
             painter.text(pos2(end.right() + 10.0, r.center().y), Align2::LEFT_CENTER, folder, FontId::proportional(11.5), theme.text_dim);
-            for problem in items.iter().filter(|d| d.severity <= 3) {
+            for problem in items {
                 let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                 ui::row_bg(ui, theme, r, row.id, row.hovered(), false);
                 ui::tree_item(ui, &row, &format!("{}: {}, line {}", ["Error", "Warning", "Info"][(problem.severity as usize).clamp(1, 3) - 1], problem.message.lines().next().unwrap_or_default(), problem.start.0 + 1), false, 1, None);
@@ -1752,6 +1805,24 @@ fn empty(ui: &mut Ui, theme: &Theme, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filters_problems_by_text_and_severity() {
+        let problem = |severity, message: &str| Diagnostic { start: (0, 0), end: (0, 1), severity, message: message.into(), source: "clang".into(), raw: serde_json::Value::Null };
+        let path = Path::new("/w/src/main.cpp");
+        let (error, warning, hint) = (problem(1, "Unknown type"), problem(2, "unused x"), problem(4, "style"));
+        let mut filter = ProblemFilter::default();
+        assert!(filter.shows(path, &error) && filter.shows(path, &warning) && !filter.shows(path, &hint));
+        filter.hide[1] = true;
+        assert!(filter.shows(path, &error) && !filter.shows(path, &warning));
+        filter.hide[1] = false;
+        filter.text = " UNKNOWN ".into();
+        assert!(filter.shows(path, &error) && !filter.shows(path, &warning));
+        filter.text = "main.cpp".into();
+        assert!(filter.shows(path, &warning));
+        filter.text = "clang".into();
+        assert!(filter.shows(path, &warning));
+    }
 
     #[test]
     fn encodes_keys() {
