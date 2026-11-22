@@ -129,6 +129,9 @@ fn remove(path: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
         if let Some((distro, linux)) = crate::wsl::parse(path) {
+            if linux == "/" {
+                return Err(std::io::Error::other("refusing to delete the distro root"));
+            }
             let out = crate::terminal::hidden_command("wsl.exe").args(["-d", &distro, "-e", "rm", "-rf", "--", &linux]).output()?;
             return if out.status.success() { Ok(()) } else { Err(std::io::Error::other(String::from_utf8_lossy(&out.stderr).trim().to_owned())) };
         }
