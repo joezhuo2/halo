@@ -20,6 +20,7 @@ use crate::command::{self, Command, Scope};
 use crate::git::{Git, LineChange};
 use crate::lsp::{self, Lsp};
 use crate::settings::{Backup, Settings};
+use crate::terminal_links::{Link, Target};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use buffer::{After, Document, Kind, Motion, Sel, Take, hidden, is_word, merge_sels};
@@ -341,6 +342,16 @@ fn links(text: &str) -> Vec<(usize, usize)> {
         from = at + len.max(4);
     }
     out
+}
+
+fn line_links(ctx: &egui::Context, id: Id, text: &str, dir: Option<&Path>) -> Vec<Link> {
+    let (key, want) = (id.with("line_links"), (text.to_owned(), dir.map(Path::to_path_buf)));
+    if let Some((_, found)) =ctx.data(|d| d.get_temp::<((String, Option<PathBuf>), Vec<Link>)>(key)).filter(|cached| cached.0 == want) {
+        return found;
+    }
+    let found = crate::terminal_links::find(text, dir, None, Path::is_file);
+    ctx.data_mut(|d| d.insert_temp(key, (want, found.clone())));
+    found
 }
 
 fn notice(text: String) -> Option<(String, Option<Instant>)> {
@@ -2108,7 +2119,7 @@ impl Editors {
         let lens_font = FontId::proportional((settings.font_size * 0.88).round());
         let (mut activated, mut touched, mut pressed_text) = (false, false, false);
         let (mut caret_at, mut hover_at, mut peek_y, mut over_word, mut lens_open) = (None, None, None, None, None);
-        let mut over_problem = None;
+        let (mut over_problem, mut ctrl_span) = (None, None);
         let mut toggle_fold = None;
         let folded: &[(usize, usize)] = if diffed { &[] } else { folds };
         let changes = path.as_deref().and_then(|p| git.line_changes(p)).filter(|_| !diffed && !buf.large);
@@ -2260,9 +2271,13 @@ impl Editors {
                                 tab.drag_anchor = Some(p);
                                 if follows_link {
                                     let line = buf_ref.line_of(p);
-                                    let (text, column) = (buf_ref.line_text(line), p - buf_ref.line_start(line));
-                                    match links(&text).into_iter().find(|link| link.0 <= column && column < link.1) {
-                                        Some((from, to)) => ui::open_url(&text.chars().skip(from).take(to - from).collect::<String>()),
+                                    let (column, dir) = (p - buf_ref.line_start(line), buf_ref.path.as_deref().and_then(Path::parent));
+                                    match line_links(ui.ctx(), id, &buf_ref.line_text(line), dir).into_iter().find(|l| l.start <= column && column < l.end).map(|l| l.target) {
+                                        Some(Target::Url(url)) => ui::open_url(&url),
+                                        Some(Target::File(path, place)) => {
+                                            pending.push(Command::OpenPath(path));
+                                            pending.extend(place.map(|(line, col)| Command::GoTo(line, col)));
+                                        }
                                         None => pending.push(Command::GoToDefinition),
                                     }
                                 }
@@ -2314,10 +2329,21 @@ impl Editors {
                             if inside && a < b && buf_ref.rope.get_char(a).is_some_and(is_word) {
                                 over_word = Some((a, b));
                             }
-                            let column = p - buf_ref.line_start(line);
+                            let start = buf_ref.line_start(line);
+                            let column = p - start;
                             let under = if column > 0 && row.x(piece, column) > pos.x - text_x { p - 1 } else { p };
                             if inside && intel::problem_at(problems, intel::to_lsp(buf_ref, under)) {
                                 over_problem = Some((under, under + 1));
+                            }
+                            if follows_link && inside {
+                                let dir = buf_ref.path.as_deref().and_then(Path::parent);
+                                ctrl_span = match line_links(ui.ctx(), id, &buf_ref.line_text(line), dir).into_iter().find(|l| l.start <= column && column < l.end) {
+                                    Some(link) => Some((start + link.start, start + link.end)),
+                                    None => over_word.filter(|_| lang_ref.attached),
+                                };
+                            }
+                            if ctrl_span.is_some() {
+                                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                             }
                         }
                     }
@@ -2492,8 +2518,10 @@ impl Editors {
                         let linked = if len >= 10 { buf_ref.line_text(line) } else { String::new() };
                         for (x0, x1, y) in links(&linked).into_iter().flat_map(|link| spans(link.0, link.1)) {
                             painter.hline(x0..=x1, y + line_h - 2.0, Stroke::new(1.0, ui::with_alpha(theme.accent, 0.7)));
-                            if follows_link && resp.hovered() && pointer.is_some_and(|pos| pos.x >= x0 && pos.x <= x1 && pos.y >= y && pos.y < y + line_h) {
-                                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                        }
+                        if let Some((from, to)) = ctrl_span.filter(|span| span.0 >= start && span.1 <= start + len) {
+                            for (x0, x1, y) in spans(from - start, to - start) {
+                                painter.hline(x0..=x1, y + line_h - 2.0, Stroke::new(1.0, theme.accent));
                             }
                         }
                         if settings.render_whitespace != "none" {
@@ -3244,6 +3272,17 @@ end", "word ".repeat(100)))], &settings);
         let found: Vec<String> = links(text).into_iter().map(|(from, to)| text.chars().skip(from).take(to - from).collect()).collect();
         assert_eq!(found, vec!["https://example.com/a?b=1#c", "http://x.io"]);
         assert!(links("no links here").is_empty());
+    }
+
+    #[test]
+    fn ctrl_click_targets_existing_files_and_urls() {
+        let dir = std::env::temp_dir().join(format!("halo-line-links-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("b.h"), "").unwrap();
+        let text = "#include \"b.h\" // https://x.io, missing.h";
+        let found: Vec<(usize, usize, Target)> = line_links(&egui::Context::default(), Id::new("t"), text, Some(&dir)).into_iter().map(|l| (l.start, l.end, l.target)).collect();
+        assert_eq!(found, vec![(9, 14, Target::File(dir.join("b.h"), None)), (18, 30, Target::Url("https://x.io".into()))]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
