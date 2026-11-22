@@ -127,7 +127,9 @@ language you want diagnostics and completion in. Each is optional.
   to resize them, maximize a group with `Ctrl+K Ctrl+M`, and move between
   groups with `Ctrl+K Ctrl+Arrow`. Dropping a tab on any edge of a group
   splits that way; dropping it outside the window opens it in its own
-  window. `Ctrl+Shift+N` opens a new Halo window.
+  window. `Ctrl+Shift+N` opens a new Halo window. Lock a group (View:
+  Toggle Editor Group Lock, or Lock Group on a tab's menu) and files you
+  open go to another group; a lock button on the group unlocks it.
 - **Merge conflicts** get a bar with Accept Current, Accept Incoming, Accept
   Both and Next, and open in the **merge editor**: Incoming, Current, an
   optional Base and an editable Result, with accept per conflict and Complete

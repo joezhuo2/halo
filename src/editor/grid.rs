@@ -40,6 +40,8 @@ struct Saved {
     wins: Vec<(Node, Option<[f32; 4]>)>,
     groups: Vec<Vec<(PathBuf, bool)>>,
     active: usize,
+    #[serde(default)]
+    locked: Vec<usize>,
 }
 
 fn direction(cmd: &Command) -> Dir {
@@ -84,6 +86,15 @@ impl Editors {
         }
         self.grid.maximized = None;
         new
+    }
+
+    pub(super) fn avoid_locked(&mut self) {
+        let g = self.active.min(self.groups.len() - 1);
+        if !self.groups[g].locked {
+            return;
+        }
+        let free = self.grid.wins[self.win_of(g)].node.leaves().into_iter().find(|&l| !self.groups[l].locked);
+        self.active = free.unwrap_or_else(|| self.split_group(g, Dir::Right));
     }
 
     pub(super) fn neighbor(&self, g: usize, dir: Dir) -> Option<usize> {
@@ -218,6 +229,7 @@ impl Editors {
                 }
             }
             ResetGroupSizes => self.grid.wins[w].node.even(None),
+            ToggleEditorGroupLock => self.groups[g].locked ^= true,
             FocusGroupLeft | FocusGroupRight | FocusGroupUp | FocusGroupDown => {
                 self.grid.maximized = None;
                 if let Some(n) = self.neighbor(g, dir) {
@@ -449,7 +461,8 @@ impl Editors {
                 .collect()
         }).collect();
         let wins = self.grid.wins.iter().map(|w| (w.node.clone(), w.rect.map(|r| [r.left(), r.top(), r.width(), r.height()]))).collect();
-        serde_json::to_value(Saved { wins, groups, active: self.active }).unwrap_or_default()
+        let locked = (0..self.groups.len()).filter(|&g| self.groups[g].locked).collect();
+        serde_json::to_value(Saved { wins, groups, active: self.active, locked }).unwrap_or_default()
     }
 
     pub fn restore_grid(&mut self, value: &serde_json::Value) -> bool {
@@ -472,6 +485,9 @@ impl Editors {
                 self.add_tab(id, vec![Sel::caret(0)]);
                 self.groups[g].tabs.last_mut().into_iter().for_each(|tab| tab.pinned = *pinned);
             }
+        }
+        for (g, group) in self.groups.iter_mut().enumerate() {
+            group.locked = saved.locked.contains(&g);
         }
         self.active = saved.active.min(self.groups.len() - 1);
         true
@@ -631,6 +647,37 @@ mod tests {
         assert_eq!(back.active, editors.active);
         assert!(!Editors::new().restore_grid(&serde_json::json!({"wins": [[{"Leaf": 3}, null]], "groups": [[]], "active": 0})));
         assert!(!Editors::new().restore_grid(&serde_json::json!(["old"])));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_locked_group_sends_new_files_to_another_group_and_stays_locked_after_restore() {
+        let dir = std::env::temp_dir().join(format!("halo-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let files: Vec<PathBuf> = ["a.txt", "b.txt", "c.txt"].iter().map(|n| dir.join(n)).collect();
+        files.iter().for_each(|f| std::fs::write(f, "x").unwrap());
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        editors.open_kept(&files[0]);
+        run(&mut editors, &ctx, &[SplitEditor, ToggleEditorGroupLock]);
+        assert!(editors.groups[1].locked && editors.active == 1);
+        editors.open(&files[1]);
+        assert_eq!((editors.active, docs(&editors, 0).len(), docs(&editors, 1).len()), (0, 2, 1));
+        editors.active = 1;
+        editors.open_kept(&files[0]);
+        assert_eq!((editors.active, docs(&editors, 1).len()), (1, 1));
+        run(&mut editors, &ctx, &[NewFile]);
+        assert_eq!((editors.active, docs(&editors, 0).len()), (0, 3));
+        editors.groups[0].locked = true;
+        editors.active = 1;
+        editors.open_kept(&files[2]);
+        assert_eq!((editors.groups.len(), editors.active, docs(&editors, 2).len()), (3, 2, 1));
+        let state = serde_json::from_str(&serde_json::to_string(&editors.grid_state()).unwrap()).unwrap();
+        let mut back = Editors::new();
+        assert!(back.restore_grid(&state));
+        assert_eq!(back.groups.iter().map(|g| g.locked).collect::<Vec<_>>(), [true, true, false]);
+        run(&mut back, &ctx, &[ToggleEditorGroupLock]);
+        assert!(back.groups.iter().all(|g| g.locked));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

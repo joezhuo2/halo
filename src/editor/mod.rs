@@ -114,6 +114,7 @@ struct Group {
     active: usize,
     recent: Vec<u64>,
     used: bool,
+    locked: bool,
 }
 
 #[derive(Default)]
@@ -659,8 +660,10 @@ impl Editors {
     pub fn insert_terminal(&mut self, (g, t): (usize, usize), active: bool, terminal: crate::terminal::Terminal) {
         let (g, was, focus) = (g.min(self.groups.len().saturating_sub(1)), self.active, self.want_focus);
         let old = self.groups.get(g).map_or(0, |group| group.active);
+        let locked = std::mem::take(&mut self.groups[g].locked);
         self.active = g;
         self.add_terminal(terminal);
+        self.groups[g].locked = locked;
         let group = &mut self.groups[self.active];
         if let Some(tab) = group.tabs.pop() {
             let at = t.min(group.tabs.len());
@@ -706,6 +709,7 @@ impl Editors {
 
     fn add_tab(&mut self, doc: u64, sels: Vec<Sel>) {
         self.active = self.active.min(self.groups.len() - 1);
+        self.avoid_locked();
         let group = &mut self.groups[self.active];
         group.tabs.push(Tab { doc, sels, ..Default::default() });
         group.active = group.tabs.len() - 1;
@@ -735,6 +739,7 @@ impl Editors {
 
     fn place(&mut self, id: u64, preview: bool) {
         let preview = preview && self.config.enable_preview;
+        self.avoid_locked();
         let group = &mut self.groups[self.active];
         let clean = |tab: &Tab| tab.preview && !self.docs.get(&tab.doc).is_some_and(|d| d.buf.is_dirty());
         let Some(at) = group.tabs.iter().position(clean).filter(|_| preview) else {
@@ -1630,8 +1635,9 @@ impl Editors {
         let mut action = None;
         let last = self.grid.corner == Some(g);
         let floating = self.win_of(g) != 0;
+        let locked = group.locked;
         let md = group.tabs.get(active).is_some_and(|t| t.md.is_none() && self.docs.get(&t.doc).is_some_and(|d| d.buf.path.as_deref().is_some_and(markdown::is_markdown)));
-        let right = strip.right() - if last { 60.0 } else { 34.0 } - if md { 26.0 } else { 0.0 };
+        let right = strip.right() - if last { 60.0 } else { 34.0 } - if md { 26.0 } else { 0.0 } - if locked { 26.0 } else { 0.0 };
         let faces: Vec<_> = group.tabs.iter().map(|tab| {
             let terminal = self.terminals.get(&tab.doc);
             let (title, dirty) = match (terminal, self.docs.get(&tab.doc)) {
@@ -1799,6 +1805,11 @@ impl Editors {
                                 ui.close();
                             }
                         }
+                        if ui.button(if locked { "Unlock Group" } else { "Lock Group" }).clicked() {
+                            action = Some(TabAction::Activate(t));
+                            pending.push(Command::ToggleEditorGroupLock);
+                            ui.close();
+                        }
                         if let Some(terminal) = self.terminals.get_mut(&tab.doc) {
                             ui.separator();
                             if ui.button("Rename...").clicked() {
@@ -1840,6 +1851,15 @@ impl Editors {
                 if ui::icon_button(ui, theme, icons::EYE, 24.0, false, "Open Markdown Preview (Ctrl+Shift+V)").clicked() {
                     self.active = g;
                     pending.push(Command::MarkdownPreview);
+                }
+            });
+        }
+        if locked {
+            let lock = Rect::from_center_size(pos2(right + 17.0, strip.center().y), vec2(24.0, 24.0));
+            ui.scope_builder(UiBuilder::new().max_rect(lock), |ui| {
+                if ui::icon_button(ui, theme, icons::LOCK, 24.0, true, "Unlock Group").clicked() {
+                    self.active = g;
+                    pending.push(Command::ToggleEditorGroupLock);
                 }
             });
         }

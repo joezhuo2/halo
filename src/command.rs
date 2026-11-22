@@ -114,6 +114,7 @@ pub enum Command {
     LayoutTwoRowsRight,
     LayoutTwoColumnsBottom,
     ToggleMaximizeGroup,
+    ToggleEditorGroupLock,
     ResetGroupSizes,
     FocusGroupLeft,
     FocusGroupRight,
@@ -626,7 +627,7 @@ pub fn all() -> Vec<Command> {
         SelectToBracket, CursorUndo, ToggleColumnSelection, CursorColumnSelectLeft, CursorColumnSelectRight, CursorColumnSelectUp,
         CursorColumnSelectDown, ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
         SplitEditorDown, SplitEditorLeft, SplitEditorUp, LayoutSingle, LayoutTwoColumns, LayoutThreeColumns, LayoutTwoRows, LayoutThreeRows,
-        LayoutGrid, LayoutTwoRowsRight, LayoutTwoColumnsBottom, ToggleMaximizeGroup, ResetGroupSizes, FocusGroupLeft, FocusGroupRight,
+        LayoutGrid, LayoutTwoRowsRight, LayoutTwoColumnsBottom, ToggleMaximizeGroup, ToggleEditorGroupLock, ResetGroupSizes, FocusGroupLeft, FocusGroupRight,
         FocusGroupUp, FocusGroupDown, MoveEditorLeft, MoveEditorRight, MoveEditorUp, MoveEditorDown, CloseGroup, MoveEditorToNewWindow,
         CopyEditorToNewWindow, MoveEditorToMainWindow,
         ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff, FilterExplorer, ToggleFileNesting, FocusOpenEditors,
@@ -826,7 +827,7 @@ impl Command {
             | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | FilterExplorer | ToggleFileNesting
             | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
             | LayoutTwoColumns | LayoutThreeColumns | LayoutTwoRows | LayoutThreeRows | LayoutGrid | LayoutTwoRowsRight | LayoutTwoColumnsBottom
-            | ToggleMaximizeGroup | ResetGroupSizes | FocusGroupLeft | FocusGroupRight | FocusGroupUp | FocusGroupDown | MoveEditorLeft
+            | ToggleMaximizeGroup | ToggleEditorGroupLock | ResetGroupSizes | FocusGroupLeft | FocusGroupRight | FocusGroupUp | FocusGroupDown | MoveEditorLeft
             | MoveEditorRight | MoveEditorUp | MoveEditorDown | CloseGroup | MoveEditorToNewWindow | CopyEditorToNewWindow
             | MoveEditorToMainWindow | ToggleFullScreen | ToggleZenMode | ToggleCenteredLayout
             | ToggleSidebarPosition | ToggleSecondarySidebar | MovePanelLeft | MovePanelRight | MovePanelBottom | MovePanelTop
@@ -961,6 +962,7 @@ impl Command {
             LayoutTwoRowsRight => "Editor Layout: Two Rows Right",
             LayoutTwoColumnsBottom => "Editor Layout: Two Columns Bottom",
             ToggleMaximizeGroup => "Toggle Maximize Editor Group",
+            ToggleEditorGroupLock => "View: Toggle Editor Group Lock",
             ResetGroupSizes => "Reset Editor Group Sizes",
             FocusGroupLeft => "Focus Editor Group Left",
             FocusGroupRight => "Focus Editor Group Right",
