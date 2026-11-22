@@ -30,6 +30,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("auto_save", "files.autoSave"),
     ("associations", "files.associations"),
     ("code_lens", "editor.codeLens"),
+    ("lightbulb", "editor.lightbulb.enabled"),
     ("inlay_hints", "editor.inlayHints.enabled"),
     ("semantic_highlighting", "editor.semanticHighlighting.enabled"),
     ("breadcrumbs", "breadcrumbs.enabled"),
@@ -140,6 +141,7 @@ pub fn to_halo(key: &str, value: Value) -> Value {
         ("restore_session", Value::String(s)) => json!(s != "none"),
         ("auto_update", Value::String(s)) => json!(!matches!(s.as_str(), "none" | "manual")),
         ("inlay_hints", Value::String(s)) => json!(s.starts_with("on")),
+        ("lightbulb", Value::String(s)) => json!(s != "off"),
         ("semantic_highlighting", Value::String(_)) => json!(true),
         ("rulers", Value::Array(list)) => list.into_iter().map(|r| r.get("column").cloned().unwrap_or(r)).collect(),
         ("files_exclude", Value::Object(map)) => map.into_iter().filter(|(_, on)| on.as_bool() == Some(true)).map(|(k, _)| json!(k)).collect(),
@@ -164,6 +166,7 @@ pub fn to_vscode(key: &str, value: Value) -> Value {
         "restore_session" => on(&value, "all", "none"),
         "auto_update" => on(&value, "default", "none"),
         "inlay_hints" => on(&value, "on", "off"),
+        "lightbulb" => on(&value, "onCode", "off"),
         "files_exclude" => match value {
             Value::Array(list) => Value::Object(list.into_iter().filter_map(|p| Some((p.as_str()?.to_owned(), json!(true)))).collect()),
             other => other,
