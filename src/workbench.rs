@@ -764,7 +764,7 @@ impl Halo {
     }
 
     fn explorer_view(&mut self, ui: &mut Ui, active: Option<&std::path::Path>) {
-        if self.startup.is_some() && self.session.folder.is_some() {
+        if self.startup.as_ref().is_some_and(|s| s.arg.is_some() || self.session.folder.is_some()) {
             ui.add_space(ui::SECTION + 8.0);
             return ui::skeleton(ui, &self.theme, 8);
         }

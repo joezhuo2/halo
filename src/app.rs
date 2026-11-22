@@ -77,11 +77,13 @@ pub struct Halo {
 }
 
 pub(crate) struct Startup {
-    grid: bool,
-    files: Vec<PathBuf>,
+    pub(crate) arg: Option<PathBuf>,
+    restore: bool,
+    fresh: bool,
     args: crate::cli::Args,
     cmds: Vec<Command>,
     pub(crate) tabs: bool,
+    loaded: std::sync::mpsc::Receiver<()>,
 }
 
 impl Halo {
@@ -98,7 +100,29 @@ impl Halo {
 
         let arg = args.paths.iter().position(|t| t.path.is_dir()).map(|i| args.paths.remove(i).path);
         let restore = app.settings.restore_session && !crate::windows::secondary();
-        let saved = std::mem::take(&mut app.session.workspace);
+        let fresh = arg.is_none() && args.paths.is_empty() && args.add.is_empty() && args.diff.is_none() && args.stdin.is_none();
+        let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
+        let cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
+        let tabs = (fresh && restore && !app.session.files.is_empty()) || !app.session.backups.is_empty() || !args.paths.is_empty() || args.diff.is_some() || args.stdin.is_some();
+        let folder = app.session.workspace.file.clone().or(app.session.folder.clone()).filter(|_| restore && arg.is_none());
+        let (wake, (tx, rx)) = (ctx.clone(), std::sync::mpsc::channel::<()>());
+        std::thread::spawn(move || {
+            let _ = folder.is_some_and(|f| f.exists());
+            if tabs {
+                crate::editor::warm();
+            }
+            drop(tx);
+            wake.request_repaint();
+        });
+        app.startup = Some(Startup { arg, restore, fresh, args, cmds, tabs, loaded: rx });
+        let wake = ctx.clone();
+        app.inbox = server.map(|server| crate::ipc::serve(server, move || wake.request_repaint()));
+        app
+    }
+
+    fn finish_startup(&mut self, startup: Startup, ctx: &egui::Context) {
+        let Startup { arg, restore, fresh, args, cmds, .. } = startup;
+        let saved = std::mem::take(&mut self.session.workspace);
         let last = match &saved.file {
             _ if !restore => Workspace::default(),
             Some(file) => Workspace::open(file).unwrap_or_else(|error| {
@@ -106,45 +130,27 @@ impl Halo {
                 Workspace::default()
             }),
             None if saved.folders.len() > 1 => saved,
-            None => app.session.folder.clone().filter(|f| f.is_dir()).map(Workspace::single).unwrap_or_default(),
+            None => self.session.folder.clone().filter(|f| f.is_dir()).map(Workspace::single).unwrap_or_default(),
         };
-        let arg_is_none = arg.is_none() && args.paths.is_empty() && args.add.is_empty() && args.diff.is_none() && args.stdin.is_none();
         let (workspace, files) = match arg {
             Some(path) => (Workspace::single(strip_unc(path)), vec![]),
-            None if arg_is_none && restore => (last, app.session.files.clone()),
+            None if fresh && restore => (last, self.session.files.clone()),
             None => (last, vec![]),
         };
-        let startup = std::env::var("HALO_COMMANDS").unwrap_or_default();
-        let cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
-        app.set_workspace(workspace, ctx);
-        let tabs = !files.is_empty() || !app.session.backups.is_empty() || !args.paths.is_empty() || args.diff.is_some() || args.stdin.is_some();
-        if tabs {
-            let wake = ctx.clone();
-            std::thread::spawn(move || {
-                crate::editor::warm();
-                wake.request_repaint();
-            });
-        }
-        app.startup = Some(Startup { grid: arg_is_none && restore, files, args, cmds, tabs });
-        let wake = ctx.clone();
-        app.inbox = server.map(|server| crate::ipc::serve(server, move || wake.request_repaint()));
-        app
-    }
-
-    fn finish_startup(&mut self, startup: Startup, ctx: &egui::Context) {
-        if startup.grid && !self.session.grid.as_ref().is_some_and(|grid| self.editors.restore_grid(grid)) {
+        self.set_workspace(workspace, ctx);
+        if fresh && restore && !self.session.grid.as_ref().is_some_and(|grid| self.editors.restore_grid(grid)) {
             let pins: Vec<_> = self.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
             self.editors.restore_pins(&pins);
         }
-        for file in startup.files.iter().filter(|f| f.is_file()) {
+        for file in files.iter().filter(|f| f.is_file()) {
             if !self.editors.open_paths().contains(file) {
                 self.editors.open_kept(file);
             }
         }
         self.editors.restore(&self.session.backups);
         crate::terminal_restore::restore(&mut self.bottom, &mut self.editors, &self.settings, self.session.folder.as_deref(), ctx);
-        self.open_args(startup.args, None, ctx);
-        self.cmds.extend(startup.cmds);
+        self.open_args(args, None, ctx);
+        self.cmds.extend(cmds);
     }
 
     pub(crate) fn build(ctx: &egui::Context, settings: Settings, session: Session) -> Self {
@@ -885,7 +891,7 @@ impl Halo {
             }
             ctx.request_repaint();
         }
-        if let Some(startup) = self.startup.take_if(|s| self.reveal_at.is_none() && (!s.tabs || crate::editor::ready())) {
+        if let Some(startup) = self.startup.take_if(|s| self.reveal_at.is_none() && s.loaded.try_recv() != Err(std::sync::mpsc::TryRecvError::Empty)) {
             self.finish_startup(startup, &ctx);
         }
         if let Some(path) = self.editors.active_path().filter(|p| self.session.recent_files.first() != Some(p)) {
@@ -1212,14 +1218,19 @@ mod tests {
         let ctx = egui::Context::default();
         let session = crate::settings::Session { files: files.clone(), ..Default::default() };
         let mut app = super::Halo::build(&ctx, crate::settings::Settings::default(), session);
-        app.startup = Some(super::Startup { grid: true, files: files.clone(), args: Default::default(), cmds: vec![crate::command::Command::ToggleAi], tabs: true });
-        app.reveal_at = Some(u64::MAX);
-        crate::editor::warm();
-        for _ in 0..3 {
+        let (tx, loaded) = std::sync::mpsc::channel();
+        let cmds = vec![crate::command::Command::ToggleAi];
+        app.startup = Some(super::Startup { arg: None, restore: true, fresh: true, args: Default::default(), cmds, tabs: true, loaded });
+        let run = |app: &mut super::Halo| {
             let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1400.0, 900.0))), ..Default::default() };
             ctx.run_ui(input, |ui| app.frame(ui)).textures_delta.clear();
-        }
-        assert!(app.startup.is_some() && app.editors.is_empty() && !app.session.ai);
+        };
+        (0..3).for_each(|_| run(&mut app));
+        assert!(app.startup.is_some(), "still loading in the background");
+        drop(tx);
+        app.reveal_at = Some(u64::MAX);
+        (0..3).for_each(|_| run(&mut app));
+        assert!(app.startup.is_some() && app.editors.is_empty() && !app.session.ai, "loaded but the window is not shown yet");
         app.save_session();
         assert_eq!(app.session.files, files);
         assert_eq!(app.session.grid, None);
