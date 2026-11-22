@@ -28,7 +28,7 @@ use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, CursorIcon, Event, EventFilter, FontId, Id, Key, Layout, PointerButton,
     Pos2, Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, ViewportCommand, pos2,
-    scroll_area::ScrollBarVisibility, vec2,
+    scroll_area::{ScrollBarVisibility, ScrollSource}, vec2,
 };
 use highlight::{Highlighter, Spans};
 use intel::{Intel, Lang, Piece, Queued, Row, from_lsp};
@@ -106,6 +106,7 @@ struct Tab {
     diff: Option<Box<diff_view::DiffTab>>,
     merge: Option<Box<merge_view::MergeTab>>,
     md: Option<Box<markdown::MdTab>>,
+    zone: Option<usize>,
 }
 
 #[derive(Default)]
@@ -408,6 +409,19 @@ fn build_rows(buf: &Document, wrap: Option<usize>, folds: &[(usize, usize)], len
     }
     starts.push(at + pads.iter().filter(|p| p.0 >= buf.lines()).map(|p| p.1).sum::<u32>());
     starts
+}
+
+fn lens_row(starts: &[u32], lens: &[(usize, usize)], line: usize) -> Option<usize> {
+    let found = lens.binary_search_by_key(&line, |row| row.0).ok().map(|at| lens[at].1);
+    found.filter(|_| starts[line + 1] > starts[line])
+}
+
+fn locate_row(starts: &[u32], lens: &[(usize, usize)], row: usize) -> (usize, Option<usize>, usize) {
+    let line = starts[..starts.len() - 1].partition_point(|start| *start as usize <= row).saturating_sub(1);
+    match lens_row(starts, lens, line) {
+        Some(found) if row == starts[line] as usize => (line, Some(found), 0),
+        found => (line, None, row.saturating_sub(starts[line] as usize + found.is_some() as usize)),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2137,7 +2151,7 @@ impl Editors {
         };
         lens_rows.sort_unstable();
         lens_rows.dedup_by_key(|row| row.0);
-        let pads = match (&shown, merging.as_mut()) {
+        let mut pads = match (&shown, merging.as_mut()) {
             (Some(d), _) => d.pads(),
             (None, Some(m)) => {
                 m.sync(buf);
@@ -2145,8 +2159,22 @@ impl Editors {
             }
             _ => vec![],
         };
-        let change_anchor = if diffed { None } else { self.change_anchor(doc_id, buf) };
         let row_folds: &[(usize, usize)] = if diffed { &[] } else { folds };
+        let fixed = ((text_rect.height() * 0.4 / line_h) as u32).clamp(4, 18);
+        let peek_line = self.peek_line(g, doc_id, buf);
+        let change = if diffed || peek_line.is_some() { None } else { self.change_anchor(doc_id, buf, g) };
+        let zone = match (peek_line, change) {
+            (Some(line), _) => Some((line, fixed, usize::MAX)),
+            (None, Some((line, lines, index))) => Some((line, (lines as u32 + 3).min(fixed), index)),
+            _ => None,
+        };
+        let zone = zone.filter(|z| z.0 < total && hidden(row_folds, z.0).is_none());
+        if let Some((line, size, _)) = zone {
+            match pads.binary_search_by_key(&(line + 1), |p| p.0) {
+                Ok(at) => pads[at].1 += size,
+                Err(at) => pads.insert(at, (line + 1, size)),
+            }
+        }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         (buf.version, wrap_cols, row_folds, &lens_rows, &pads).hash(&mut hasher);
         if tab.rows.0 != hasher.finish() || tab.rows.1.len() != total + 1 {
@@ -2154,18 +2182,9 @@ impl Editors {
         }
         let starts = std::mem::take(&mut tab.rows.1);
         let rows = starts[total] as usize;
-        let lens_at = |line: usize| match starts[line + 1] > starts[line] {
-            true => lens_rows.binary_search_by_key(&line, |row| row.0).ok().map(|at| lens_rows[at].1),
-            false => None,
-        };
+        let lens_at = |line: usize| lens_row(&starts, &lens_rows, line);
         let top_of = |line: usize| starts[line] as usize + lens_at(line).is_some() as usize;
-        let locate = |row: usize| -> (usize, Option<usize>, usize) {
-            let line = starts[..total].partition_point(|start| *start as usize <= row).saturating_sub(1);
-            match lens_at(line) {
-                Some(lens) if row == starts[line] as usize => (line, Some(lens), 0),
-                _ => (line, None, row.saturating_sub(top_of(line))),
-            }
-        };
+        let locate = |row: usize| locate_row(&starts, &lens_rows, row);
         let gutter_w = gutter_of(total);
         let spare = if lang.hints.is_empty() { 10.0 } else { 40.0 };
         let wide = if wrap_cols.is_some() { 0.0 } else { gutter_w + (max_cols.1 as f32 + spare) * char_w };
@@ -2189,7 +2208,6 @@ impl Editors {
         let (mut bp_action, bp_w) = (None, char_w * 2.2 + 2.0);
         let (test_marks, mut test_click) = (path.as_deref().and_then(|p| self.tests.of(p)).cloned(), None);
         let test_at = |line: usize| test_marks.as_ref()?.tests.iter().find(|t| t.0 == line && !marks.as_ref().is_some_and(|m| m.0.iter().any(|b| b.line == line)));
-        let peek_pos = self.intel.peek.as_ref().filter(|p| p.doc == doc_id && is_active).map(|p| p.pos);
         let hint_format = TextFormat {
             font_id: FontId::monospace((settings.font_size * 0.9).round()),
             color: theme.text_dim,
@@ -2199,12 +2217,12 @@ impl Editors {
         };
         let lens_font = FontId::proportional((settings.font_size * 0.88).round());
         let (mut activated, mut touched, mut pressed_text) = (false, false, false);
-        let (mut caret_at, mut hover_at, mut peek_y, mut over_word, mut lens_open) = (None, None, None, None, None);
+        let (mut caret_at, mut hover_at, mut zone_y, mut over_word, mut lens_open) = (None, None, None, None, None);
         let (mut over_problem, mut ctrl_span) = (None, None);
         let mut toggle_fold = None;
         let folded: &[(usize, usize)] = if diffed { &[] } else { folds };
         let changes = path.as_deref().and_then(|p| git.line_changes(p)).filter(|_| !diffed && !buf.large);
-        let (mut change_y, mut change_click) = (None, None);
+        let mut change_click = None;
         let mut visible = (0, 0);
         let mut area = ScrollArea::both().id_salt(id.with("scroll")).auto_shrink(false);
         let (version, anchor, row, offset) = tab.anchor;
@@ -2215,6 +2233,14 @@ impl Editors {
         }
         if let Some(y) = tab.set_scroll.take() {
             area = area.vertical_scroll_offset(y.max(0.0));
+        }
+        if let Some((line, size, _)) = zone
+            && let Some(pos) = ui.input(|i| i.pointer.hover_pos())
+        {
+            let top = text_rect.top() - tab.anchor.3 + (starts[line + 1] - size) as f32 * line_h;
+            if text_rect.contains(pos) && (top..top + size as f32 * line_h).contains(&pos.y) {
+                area = area.scroll_source(ScrollSource { mouse_wheel: false, ..Default::default() });
+            }
         }
         let buf_ref: &Document = buf;
         let lang_ref: &Lang = lang;
@@ -2670,12 +2696,6 @@ impl Editors {
                         if let Some((word, _)) = hover_word.filter(|word| within(word.0)) {
                             hover_at = Some(at(word - start));
                         }
-                        if peek_pos.is_some_and(within) {
-                            peek_y = Some(bottom);
-                        }
-                        if change_anchor == Some(line) {
-                            change_y = Some(bottom);
-                        }
                     }
 
                     let gutter = Rect::from_min_max(clip.min, pos2(clip.left() + gutter_w - 4.0, clip.bottom()));
@@ -2752,9 +2772,16 @@ impl Editors {
                         let target = Rect::from_min_max(pos2(x - gutter_w - char_w * 3.0, above), pos2(x + char_w * 4.0, top + line_h * (2.0 + around)));
                         ui.scroll_to_rect(target, None);
                     }
+                    zone_y = zone.map(|(line, size, _)| origin.y + (starts[line + 1] - size) as f32 * line_h);
+                    if let (Some(y), Some((_, size, key))) = (zone_y, zone)
+                        && tab.zone != Some(key)
+                    {
+                        ui.scroll_to_rect(Rect::from_min_max(pos2(clip.left(), y - line_h), pos2(clip.left() + 1.0, y + size as f32 * line_h)), None);
+                    }
                 })
             })
             .inner;
+        tab.zone = zone.map(|z| z.2);
         let scroll_y = out.state.offset.y;
         doc.top = visible.0;
         tab.anchor = (buf.version, buf.line_start(visible.0), starts[visible.0], scroll_y);
@@ -2919,8 +2946,16 @@ impl Editors {
         self.hover_ui(&ctx, theme, &font, g, doc_id, hover_at, line_h);
         if is_active {
             self.popups(ui, theme, doc_id, buf, tab, caret_at, line_h, &font);
-            self.peek_ui(ui, theme, &font, text_rect, peek_y, doc_id);
-            self.change_peek_ui(ui, theme, &font, text_rect, change_y, doc_id, buf, pending);
+        }
+        if let (Some(top), Some((_, size, _))) = (zone_y, zone) {
+            let rect = Rect::from_min_size(pos2(text_rect.left(), top), vec2(text_rect.width(), size as f32 * line_h));
+            ui.scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
+                ui.set_clip_rect(text_rect.intersect(ui.clip_rect()));
+                match peek_line {
+                    Some(_) => self.peek_ui(ui, theme, &font, rect, doc_id),
+                    None => self.change_peek_ui(ui, theme, &font, rect, doc_id, buf, pending),
+                }
+            });
         }
 
         let find_t = ui::anim(ui, Id::new(("editor_find", g)), find_open);
@@ -4075,5 +4110,84 @@ three
         frame_with(&ctx, &mut editors, vec![Event::Text("(".into()), Event::Text("\"".into())], &settings);
         let doc = editors.docs.values().next().unwrap();
         assert_eq!((doc.buf.rope.to_string().as_str(), doc.buf.crlf), ("(\"\"", false));
+    }
+
+    #[test]
+    fn maps_rows_through_a_peek_zone_lens_rows_and_folds() {
+        let buf = Document::from_text("a\nb\nc\nd\ne\nf\n", "t".into());
+        let (folds, lens, zone) = ([(3, 4)], [(2, 0), (5, 1)], [(2, 3)]);
+        let starts = build_rows(&buf, None, &folds, &lens, &zone);
+        assert_eq!(starts, vec![0, 1, 5, 7, 8, 8, 10, 11]);
+        for line in (0..7).filter(|l| *l != 4) {
+            let top = starts[line] as usize + lens_row(&starts, &lens, line).is_some() as usize;
+            assert_eq!(locate_row(&starts, &lens, top), (line, None, 0), "line {line}");
+        }
+        assert_eq!((locate_row(&starts, &lens, 5), locate_row(&starts, &lens, 8)), ((2, Some(0), 0), (5, Some(1), 0)));
+        assert_eq!((2..5).map(|row| locate_row(&starts, &lens, row)).collect::<Vec<_>>(), vec![(1, None, 1), (1, None, 2), (1, None, 3)]);
+        assert!((0..11).all(|row| locate_row(&starts, &lens, row).0 != 4));
+        assert_eq!(lens_row(&starts, &lens, 4), None);
+    }
+
+    #[test]
+    fn a_peek_pushes_the_lines_below_it_down_and_escape_brings_them_back() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Paste("alpha\nbeta\ngamma\ndelta\n".into())]);
+        let drawn = |editors: &mut Editors, events: Vec<Event>| {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 600.0))), events, focused: true, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| editors.ui(ui, &Theme::dark(), &settings, &Git::new(), &mut vec![]));
+            out.textures_delta.clear();
+            fn find(shape: &egui::Shape) -> Option<f32> {
+                match shape {
+                    egui::Shape::Text(text) if text.galley.text() == "gamma" => Some(text.pos.y),
+                    egui::Shape::Vec(list) => list.iter().find_map(find),
+                    _ => None,
+                }
+            }
+            out.shapes.iter().find_map(|clipped| find(&clipped.shape)).expect("the line after the peek is drawn")
+        };
+        let before = drawn(&mut editors, vec![]);
+        let place = lsp::Location { path: "x.rs".into(), start: (0, 0), end: (0, 1), label: String::new() };
+        editors.intel.queued.push(Queued::Peek(1, 7, "References", vec![place]));
+        drawn(&mut editors, vec![]);
+        let row_h = ctx.fonts_mut(|f| f.row_height(&FontId::monospace(settings.font_size)));
+        let pushed = drawn(&mut editors, vec![]);
+        assert!(pushed >= before + 4.0 * (row_h * 1.25).round(), "{before} -> {pushed}");
+        assert_eq!(drawn(&mut editors, vec![key(Key::ArrowDown, Default::default())]), pushed);
+        assert_eq!(editors.with_active(|_, tab| tab.sels.iter().map(|s| (s.anchor, s.head)).collect::<Vec<_>>()).unwrap(), vec![(23, 23)]);
+        drawn(&mut editors, vec![key(Key::Escape, Default::default())]);
+        assert!(editors.intel.peek.is_none());
+        assert_eq!(drawn(&mut editors, vec![]), before);
+    }
+
+    #[test]
+    fn a_peek_zone_follows_edits_above_it_and_closes_when_its_line_is_deleted() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Paste("zero\none\ntwo\nthree\n".into())]);
+        let place = lsp::Location { path: "x.rs".into(), start: (0, 0), end: (0, 1), label: String::new() };
+        editors.intel.queued.push(Queued::Peek(1, 5, "References", vec![place]));
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        let zone_after = |e: &mut Editors| e.with_active(|_, tab| tab.rows.1.windows(2).position(|w| w[1] - w[0] > 1)).flatten();
+        assert_eq!(zone_after(&mut editors), Some(1));
+
+        editors.with_active(|buf, tab| buf.apply(&mut tab.sels, vec![(0, 0, "new\n".into())], Kind::Other, After::Map));
+        frame(&ctx, &mut editors, vec![]);
+        assert_eq!((zone_after(&mut editors), editors.intel.peek.as_ref().map(|p| p.pos)), (Some(2), Some(9)));
+        editors.with_active(|buf, tab| buf.apply(&mut tab.sels, vec![(13, 13, "x".into())], Kind::Other, After::Map));
+        frame(&ctx, &mut editors, vec![]);
+        assert_eq!(zone_after(&mut editors), Some(2));
+
+        editors.with_active(|buf, tab| buf.apply(&mut tab.sels, vec![(9, 13, String::new())], Kind::Other, After::Map));
+        frame(&ctx, &mut editors, vec![]);
+        assert!(editors.intel.peek.is_none());
+        assert_eq!(zone_after(&mut editors), None);
     }
 }
