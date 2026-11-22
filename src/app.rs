@@ -1026,11 +1026,60 @@ pub fn note(ui: &mut Ui, theme: &Theme, text: &str) {
     });
 }
 
-pub(crate) fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol], usize)>, active: bool, loading: bool, open: &mut bool, cmds: &mut Vec<Command>) {
+fn outline_order(symbols: &[lsp::Symbol], sort: u8) -> Vec<usize> {
+    let key = |i: usize| {
+        let s = &symbols[i];
+        match sort {
+            1 => (0, s.name.to_lowercase(), i),
+            2 => (s.kind, s.name.to_lowercase(), i),
+            _ => (0, String::new(), i),
+        }
+    };
+    let mut stack = vec![];
+    let paths: Vec<Vec<_>> = symbols
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            stack.truncate(s.depth);
+            stack.push(i);
+            stack.iter().map(|&j| key(j)).collect()
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..symbols.len()).collect();
+    order.sort_by(|a, b| paths[*a].cmp(&paths[*b]));
+    order
+}
+
+pub(crate) fn outline(
+    ui: &mut Ui,
+    theme: &Theme,
+    symbols: Option<(&[lsp::Symbol], usize)>,
+    active: bool,
+    loading: bool,
+    session: &mut Session,
+    cmds: &mut Vec<Command>,
+) {
     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-    let rect = ui::section(ui, theme, "OUTLINE", open).on_hover_text("Symbols of the active file, from its language server").rect;
+    let rect = ui::section(ui, theme, "OUTLINE", &mut session.outline).on_hover_text("Symbols of the active file, from its language server").rect;
+    if session.outline {
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_center_size(pos2(rect.right() - 14.0, rect.center().y), vec2(20.0, 20.0))));
+        child.spacing_mut().button_padding = vec2(3.0, 2.0);
+        child
+            .menu_button(RichText::new(ui::icons::SORT_ASCENDING).size(13.0).color(theme.text_dim), |ui| {
+                ui.set_min_width(160.0);
+                ui::menu_pad(ui);
+                for (value, label) in [(0, "Sort By: Position"), (1, "Sort By: Name"), (2, "Sort By: Kind")] {
+                    if ui.radio(session.outline_sort == value, label).clicked() {
+                        session.outline_sort = value;
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Sort Outline");
+    }
     if loading {
-        ui::spinner(ui, pos2(rect.right() - 14.0, rect.center().y), 5.0, theme.text_dim);
+        ui::spinner(ui, pos2(rect.right() - 36.0, rect.center().y), 5.0, theme.text_dim);
     }
     if ui.available_height() < 1.0 {
         return;
@@ -1043,8 +1092,17 @@ pub(crate) fn outline(ui: &mut Ui, theme: &Theme, symbols: Option<(&[lsp::Symbol
         };
     };
     let current = symbols.iter().rposition(|s| s.line <= line && line <= s.end_line);
+    let order = outline_order(symbols, session.outline_sort);
+    let followed = Id::new("outline_followed");
+    let seen = current.map(|c| (c, symbols.len()));
+    let reveal = current.filter(|_| ui.data(|d| d.get_temp(followed)) != seen);
+    ui.data_mut(|d| d.insert_temp(followed, seen));
     ScrollArea::vertical().id_salt("outline").auto_shrink(false).show_rows(ui, 22.0, symbols.len(), |ui, range| {
-        for (index, symbol) in symbols.iter().enumerate().skip(range.start).take(range.len()) {
+        if let Some(row) = reveal.and_then(|c| order.iter().position(|&i| i == c)) {
+            let top = ui.cursor().top() + (row as f32 - range.start as f32) * 22.0;
+            ui.scroll_to_rect(egui::Rect::from_min_size(pos2(ui.cursor().left(), top), vec2(1.0, 22.0)), None);
+        }
+        for (index, symbol) in order[range.clone()].iter().map(|&i| (i, &symbols[i])) {
             let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
             ui::row_bg(ui, theme, r, row.id, row.hovered(), current == Some(index));
             ui::tree_item(ui, &row, &symbol.name, current == Some(index), symbol.depth, None);
@@ -1086,6 +1144,15 @@ fn resize_edges(ctx: &egui::Context, window: egui::Rect) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sorts_outline_siblings_inside_their_parents() {
+        let symbol = |name: &str, kind, depth| crate::lsp::Symbol { name: name.into(), kind, line: 0, col: 0, end_line: 0, depth, container: String::new(), path: None };
+        let symbols = [symbol("Zed", 23, 0), symbol("run", 6, 1), symbol("Alpha", 8, 1), symbol("beta", 12, 0), symbol("Ace", 5, 0)];
+        assert_eq!(super::outline_order(&symbols, 0), [0, 1, 2, 3, 4]);
+        assert_eq!(super::outline_order(&symbols, 1), [4, 3, 0, 2, 1]);
+        assert_eq!(super::outline_order(&symbols, 2), [4, 3, 0, 1, 2]);
+    }
+
     #[test]
     fn auto_save_follows_the_mode() {
         let save = |mode: &str, was, now| super::auto_save(mode, || true, was, now);

@@ -179,7 +179,8 @@ file extension.
 - **Format Document** (`Shift+Alt+F`) and **Format Selection**
   (`Ctrl+K Ctrl+F`), with optional format on save and on paste.
 - **Symbols:** `Ctrl+T` searches the workspace, the **Outline** section under
-  the explorer lists the active file, and the breadcrumbs above the text show
+  the explorer lists the active file (it follows the caret and sorts by
+  position, name or kind), and the breadcrumbs above the text show
   the path and the enclosing symbols.
 - **Timeline:** the section under the outline lists the commits that changed
   the active file and the versions kept each time you saved it (**local

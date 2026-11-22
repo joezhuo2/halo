@@ -753,7 +753,7 @@ impl Halo {
 
     fn outline_view(&mut self, ui: &mut Ui) {
         let (active, loading) = (!self.editors.is_empty(), self.editors.outline_loading());
-        crate::app::outline(ui, &self.theme, self.editors.outline(), active, loading, &mut self.session.outline, &mut self.cmds);
+        crate::app::outline(ui, &self.theme, self.editors.outline(), active, loading, &mut self.session, &mut self.cmds);
     }
 
     fn explorer_view(&mut self, ui: &mut Ui, active: Option<&std::path::Path>) {
@@ -785,7 +785,7 @@ impl Halo {
                 *dragging = Some(view);
             }
             match view {
-                Outline => crate::app::outline(ui, theme, editors.outline(), !editors.is_empty(), editors.outline_loading(), &mut session.outline, cmds),
+                Outline => crate::app::outline(ui, theme, editors.outline(), !editors.is_empty(), editors.outline_loading(), session, cmds),
                 _ => timeline.ui(ui, theme, active, &mut session.timeline, cmds),
             }
         });
