@@ -1281,7 +1281,7 @@ impl Document {
         out
     }
 
-    pub fn select_next_occurrence(&self, sels: &mut Vec<Sel>) -> Option<usize> {
+    pub fn select_next_occurrence(&self, sels: &mut Vec<Sel>, skip: bool) -> Option<usize> {
         if sels.iter().any(Sel::is_empty) {
             for s in sels.iter_mut().filter(|s| s.is_empty()) {
                 let (start, end) = self.word_at(s.head);
@@ -1293,6 +1293,9 @@ impl Document {
         let last = *sels.last()?;
         let needle = self.text_of(last.start(), last.end());
         let matches = self.find_all(&Pattern::new(&needle, true, false, false).ok()?, None);
+        if skip {
+            sels.pop();
+        }
         let taken = |m: &(usize, usize)| sels.iter().any(|s| s.start() == m.0 && s.end() == m.1);
         let next = matches.iter().find(|m| m.0 >= last.end() && !taken(m)).or_else(|| matches.iter().find(|m| !taken(m)))?;
         sels.push(Sel::new(next.0, next.1));
@@ -1563,10 +1566,16 @@ mod tests {
         assert_eq!(["foo", "Foo", "FOO"].map(|found| plain.replacement(found, "bar", true)), ["bar", "Bar", "BAR"]);
         assert_eq!(plain.replacement("Foo", "$1", false), "$1");
         let mut sels = vec![Sel::caret(5)];
-        f.select_next_occurrence(&mut sels);
-        f.select_next_occurrence(&mut sels);
-        f.select_next_occurrence(&mut sels);
+        f.select_next_occurrence(&mut sels, false);
+        f.select_next_occurrence(&mut sels, false);
+        f.select_next_occurrence(&mut sels, false);
         assert_eq!(sels.iter().map(|s| s.start()).collect::<Vec<_>>(), [4, 8, 13]);
+        let mut sels = vec![Sel::new(4, 7), Sel::new(8, 11)];
+        f.select_next_occurrence(&mut sels, true);
+        assert_eq!(sels.iter().map(|s| s.start()).collect::<Vec<_>>(), [4, 13]);
+        let mut sels = vec![Sel::new(13, 16)];
+        f.select_next_occurrence(&mut sels, true);
+        assert_eq!(sels.iter().map(|s| (s.start(), s.end())).collect::<Vec<_>>(), [(4, 7)]);
     }
 
     #[test]

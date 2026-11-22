@@ -1052,7 +1052,7 @@ impl Editors {
                     tab.sels = vec![Sel::caret(pos)];
                 });
             }
-            Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveLineUp
+            Undo | Redo | Cut | Copy | ToggleComment | SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | MoveLineUp
             | EmmetExpand | SelectAllOccurrences | ExpandSelection | ShrinkSelection | CursorUndo | ToggleBlockComment | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow => {
                 let cmd = cmd.clone();
                 let ctx = ctx.clone();
@@ -1118,7 +1118,7 @@ impl Editors {
                         JoinLines => drop(buf.join_lines(sels)),
                         InsertLineAbove | InsertLineBelow => drop(buf.insert_line(sels, cmd == InsertLineAbove)),
                         _ => {
-                            buf.select_next_occurrence(sels);
+                            buf.select_next_occurrence(sels, cmd == MoveSelectionToNextFindMatch);
                         }
                     }
                 });

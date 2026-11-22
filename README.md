@@ -74,7 +74,8 @@ language you want diagnostics and completion in. Each is optional.
 
 ### Editor
 
-- **Multi-cursor editing:** `Ctrl+D` adds the next occurrence, `Ctrl+Alt+Up`
+- **Multi-cursor editing:** `Ctrl+D` adds the next occurrence and
+  `Ctrl+K Ctrl+D` skips the last one added for the next, `Ctrl+Alt+Up`
   and `Ctrl+Alt+Down` add cursors above and below, and `Shift+Alt+I` puts a
   cursor at the end of every selected line.
 - **Selections:** `Alt+Click` adds a cursor, `Shift+Alt+drag` selects a box,

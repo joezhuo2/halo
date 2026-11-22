@@ -81,6 +81,7 @@ pub enum Command {
     AddCursorBelow,
     AddCursorsToLineEnds,
     SelectNextOccurrence,
+    MoveSelectionToNextFindMatch,
     SelectAllOccurrences,
     ExpandSelection,
     ShrinkSelection,
@@ -478,6 +479,7 @@ fn defaults() -> Vec<Binding> {
         e(NONE, Key::F2, RenameSymbol),
         k(C, Key::Num0, FoldAll),
         k(C, Key::J, UnfoldAll),
+        k(C, Key::D, MoveSelectionToNextFindMatch),
         e(Modifiers::ALT, Key::ArrowUp, MoveLineUp),
         e(Modifiers::ALT, Key::ArrowDown, MoveLineDown),
         e(sa, Key::ArrowUp, CopyLineUp),
@@ -594,8 +596,8 @@ pub fn all() -> Vec<Command> {
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
-        SelectAll, AddCursorAbove, AddCursorBelow, AddCursorsToLineEnds, SelectNextOccurrence, SelectAllOccurrences, ExpandSelection, ShrinkSelection, CursorUndo,
-        ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
+        SelectAll, AddCursorAbove, AddCursorBelow, AddCursorsToLineEnds, SelectNextOccurrence, MoveSelectionToNextFindMatch, SelectAllOccurrences, ExpandSelection, ShrinkSelection,
+        CursorUndo, ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
         SplitEditorDown, SplitEditorLeft, SplitEditorUp, LayoutSingle, LayoutTwoColumns, LayoutThreeColumns, LayoutTwoRows, LayoutThreeRows,
         LayoutGrid, LayoutTwoRowsRight, LayoutTwoColumnsBottom, ToggleMaximizeGroup, ResetGroupSizes, FocusGroupLeft, FocusGroupRight,
         FocusGroupUp, FocusGroupDown, MoveEditorLeft, MoveEditorRight, MoveEditorUp, MoveEditorDown, CloseGroup, MoveEditorToNewWindow,
@@ -790,8 +792,8 @@ impl Command {
             Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
             | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection => "Edit",
-            SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | SelectAllOccurrences | ExpandSelection
-            | ShrinkSelection | CursorUndo => "Selection",
+            SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | SelectAllOccurrences
+            | ExpandSelection | ShrinkSelection | CursorUndo => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
             | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | FilterExplorer | ToggleFileNesting
             | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
@@ -899,6 +901,7 @@ impl Command {
             AddCursorBelow => "Add Cursor Below",
             AddCursorsToLineEnds => "Add Cursors to Line Ends",
             SelectNextOccurrence => "Add Next Occurrence",
+            MoveSelectionToNextFindMatch => "Move Last Selection to Next Find Match",
             SelectAllOccurrences => "Select All Occurrences",
             ExpandSelection => "Expand Selection",
             ShrinkSelection => "Shrink Selection",
