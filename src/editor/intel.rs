@@ -255,6 +255,10 @@ fn problem_blocks(lsp: &Lsp, path: &Path, start: Pos, end: Pos) -> Vec<(u8, Stri
     touching.map(|d| (d.severity + 1, if d.source.is_empty() { d.message.clone() } else { format!("{}  {}", d.message, d.source) })).collect()
 }
 
+pub(super) fn problem_at(problems: &[lsp::Diagnostic], at: Pos) -> bool {
+    problems.iter().any(|d| d.severity <= 3 && d.start <= at && (at < d.end || at == d.start))
+}
+
 fn hover_links(text: &str) -> (String, Vec<(usize, usize, String)>) {
     let (mut out, mut found, mut rest) = (String::new(), vec![], text);
     while let Some(open) = rest.find('[') {
@@ -1082,9 +1086,12 @@ impl Editors {
         }
         let Some(hover) = self.intel.hover.as_mut().filter(|h| (h.group, h.doc) == (g, id) && !h.asked && now - h.since >= 0.4) else { return };
         hover.asked = true;
-        let Some(path) = buf.path.clone().filter(|_| lang.attached) else { return };
+        let Some(path) = buf.path.clone() else { return };
         let (start, end) = (to_lsp(buf, hover.word.0), to_lsp(buf, hover.word.1));
         hover.blocks = problem_blocks(&self.lsp, &path, start, end);
+        if !lang.attached {
+            return;
+        }
         let word = hover.word;
         sync(&mut self.lsp, buf, lang, ctx);
         if let Some(request) = self.lsp.request(&path, "textDocument/hover", lsp::at(&path, start)) {
@@ -1454,6 +1461,14 @@ mod tests {
         let spans: Vec<(String, &str)> = found.iter().map(|(from, to, url)| (text.chars().skip(*from).take(to - from).collect(), url.as_str())).collect();
         assert_eq!(spans, vec![("the dócs".into(), "https://a.io/x"), ("https://b.io".into(), "https://b.io"), ("https://c.io".into(), "https://c.io")]);
         assert!(hover_links("plain [text]").1.is_empty());
+    }
+
+    #[test]
+    fn finds_the_problem_under_a_position() {
+        let problem = |start, end, severity| lsp::Diagnostic { start, end, severity, message: String::new(), source: String::new(), raw: Value::Null };
+        let problems = [problem((0, 0), (0, 0), 1), problem((1, 4), (2, 2), 2), problem((3, 0), (3, 9), 4)];
+        assert!([(0, 0), (1, 4), (1, 30), (2, 1)].into_iter().all(|at| problem_at(&problems, at)));
+        assert!(![(0, 1), (1, 3), (2, 2), (3, 2)].into_iter().any(|at| problem_at(&problems, at)));
     }
 
     fn run(ctx: &egui::Context, editors: &mut Editors, settings: &Settings, events: Vec<Event>, t: f64) {

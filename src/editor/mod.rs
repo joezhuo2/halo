@@ -2108,6 +2108,7 @@ impl Editors {
         let lens_font = FontId::proportional((settings.font_size * 0.88).round());
         let (mut activated, mut touched, mut pressed_text) = (false, false, false);
         let (mut caret_at, mut hover_at, mut peek_y, mut over_word, mut lens_open) = (None, None, None, None, None);
+        let mut over_problem = None;
         let mut toggle_fold = None;
         let folded: &[(usize, usize)] = if diffed { &[] } else { folds };
         let changes = path.as_deref().and_then(|p| git.line_changes(p)).filter(|_| !diffed && !buf.large);
@@ -2312,6 +2313,11 @@ impl Editors {
                             let inside = pos.x - text_x <= row.pieces[piece.min(row.pieces.len() - 1)].galley.size().x;
                             if inside && a < b && buf_ref.rope.get_char(a).is_some_and(is_word) {
                                 over_word = Some((a, b));
+                            }
+                            let column = p - buf_ref.line_start(line);
+                            let under = if column > 0 && row.x(piece, column) > pos.x - text_x { p - 1 } else { p };
+                            if inside && intel::problem_at(problems, intel::to_lsp(buf_ref, under)) {
+                                over_problem = Some((under, under + 1));
                             }
                         }
                     }
@@ -2788,7 +2794,7 @@ impl Editors {
             let title = if impls { "Implementations" } else { "References" };
             self.intel.queued.push(Queued::Peek(doc_id, from_lsp(buf, (symbol.line, symbol.col)), title, found.clone()));
         }
-        self.track_hover(over_word, g, doc_id, buf, lang, now, &ctx);
+        self.track_hover(over_word.or(over_problem), g, doc_id, buf, lang, now, &ctx);
         crate::debug::hover_ui(&ctx, theme, &mut self.marks, (g, doc_id), over_word.map(|(a, b)| buf.text_of(a, b)), now);
         self.hover_ui(&ctx, theme, &font, g, doc_id, hover_at, line_h);
         if is_active {
