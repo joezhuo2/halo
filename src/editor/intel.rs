@@ -253,6 +253,17 @@ fn local_items(buf: &Document, words: bool) -> Vec<Completion> {
     items
 }
 
+fn md_suggest(suggest: &mut Option<Suggest>, root: Option<&Path>, id: u64, buf: &Document, head: usize, typed: Option<char>) -> bool {
+    let Some((start, target)) = super::md_links::target(buf, head) else { return false };
+    if typed.is_none_or(|c| matches!(c, '(' | '/' | '#')) {
+        let items = super::md_links::complete(buf, root, &target);
+        *suggest = (!items.is_empty()).then(|| Suggest { doc: id, start, items, shown: vec![], selected: 0, prefix: None, incomplete: false, dot: true, reveal: true });
+    } else if !suggest.as_ref().is_some_and(|p| p.doc == id && p.start == start) {
+        *suggest = None;
+    }
+    true
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
 }
@@ -477,6 +488,7 @@ impl Editors {
                 self.finish_save(doc);
             }
         }
+        self.validate_links(settings.markdown_validate, now, ctx);
         for doc in self.docs.values_mut() {
             sync(&mut self.lsp, &doc.buf, &mut doc.lang, ctx);
         }
@@ -899,6 +911,9 @@ impl Editors {
         let Some(doc) = self.docs.get_mut(&id) else { return false };
         sync(&mut self.lsp, &doc.buf, &mut doc.lang, ctx);
         let buf = &doc.buf;
+        if *cmd == TriggerSuggest && !doc.lang.attached && md_suggest(&mut self.intel.suggest, self.root.as_deref(), id, buf, sel.head, None) {
+            return true;
+        }
         let Some(path) = buf.path.clone().filter(|_| doc.lang.attached) else {
             self.banner = notice("No language server is running for this file. Servers are listed under Languages in Settings.".into());
             return true;
@@ -972,6 +987,9 @@ impl Editors {
     pub(super) fn typed(&mut self, c: char, id: u64, buf: &Document, lang: &mut Lang, tab: &Tab, prose: bool, ctx: &egui::Context) {
         self.intel.hover = None;
         let head = tab.sels[0].head;
+        if !lang.attached && md_suggest(&mut self.intel.suggest, self.root.as_deref(), id, buf, head, Some(c)) {
+            return;
+        }
         let Some(path) = buf.path.clone().filter(|_| lang.attached) else {
             let start = buf.word_at(head).0.min(head);
             if !is_word(c) || prose || tab.snippet.is_some() {
@@ -1090,6 +1108,9 @@ impl Editors {
                 tab.snippet = snippet::Session::begin(buf, &mut tab.sels, start, stops);
             }
             tab.reveal = Some(tab.sels[0].head);
+            if item.kind == 19 && item.text.ends_with('/') {
+                md_suggest(&mut self.intel.suggest, self.root.as_deref(), popup.doc, buf, tab.sels[0].head, None);
+            }
         }
     }
 
@@ -1170,7 +1191,9 @@ impl Editors {
         if let Some(popup) = self.intel.suggest.as_mut().filter(|p| p.doc == id) {
             let valid = tab.sels.len() == 1 && tab.sels[0].is_empty() && head >= popup.start && buf.line_of(popup.start) == buf.line_of(head);
             let prefix = if valid { buf.text_of(popup.start, head) } else { String::new() };
-            if valid && prefix.chars().all(is_word) && (popup.dot || !prefix.is_empty()) {
+            let loose = popup.items.first().is_some_and(|item| matches!(item.kind, 17..=19));
+            let fits = |c: char| is_word(c) || (loose && !c.is_whitespace() && !"/#()<>\"'`".contains(c));
+            if valid && prefix.chars().all(fits) && (popup.dot || !prefix.is_empty()) {
                 if popup.prefix.as_deref() != Some(prefix.as_str()) {
                     let lower = prefix.to_lowercase();
                     let rank = |item: &Completion| if prefix.is_empty() { Some(0) } else { crate::search::score(&prefix, &item.filter) };
@@ -1696,5 +1719,54 @@ mod tests {
         let (before, after, first, shown, focused) = accept_with_tab(vec![include]);
         assert!(after > before && focused, "{before} {after}");
         assert_eq!(first, shown);
+    }
+
+    #[test]
+    fn markdown_links_complete_paths_and_report_broken_ones() {
+        let dir = std::env::temp_dir().join(format!("halo-md-intel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("docs/guide.md"), "# Guide
+").unwrap();
+        let readme = dir.join("README.md");
+        std::fs::write(&readme, "[gone](nope.md)
+").unwrap();
+        let (ctx, settings) = (egui::Context::default(), Settings { lsp: false, ..Settings::default() });
+        let mut editors = Editors::new();
+        editors.set_root(Some(dir.clone()));
+        editors.open(&readme);
+        editors.finish_loads();
+        let mut t = 1.0;
+        let mut frames = |editors: &mut Editors, events: Vec<Event>| {
+            for frame in 0..3 {
+                t += 0.016;
+                run(&ctx, editors, &settings, if frame == 0 { events.clone() } else { vec![] }, t);
+            }
+        };
+        for _ in 0..300 {
+            frames(&mut editors, vec![]);
+            if !editors.lsp.diagnostics(&readme).is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let problems: Vec<String> = editors.lsp.diagnostics(&readme).iter().map(|d| format!("{} {:?}", d.source, d.start)).collect();
+        assert_eq!(problems, ["markdown (0, 7)"]);
+        let id = editors.groups[0].tabs[0].doc;
+        let end = editors.docs[&id].buf.len();
+        editors.groups[0].tabs[0].sels = vec![Sel::caret(end)];
+        frames(&mut editors, "[a](".chars().map(|c| Event::Text(c.into())).collect());
+        let labels = |editors: &Editors| editors.intel.suggest.as_ref().map(|s| s.shown.iter().map(|i| s.items[*i].label.clone()).collect::<Vec<_>>());
+        assert_eq!(labels(&editors), Some(vec!["docs".to_owned(), "README.md".to_owned()]));
+        let key = |key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        frames(&mut editors, vec![key(Key::Tab)]);
+        assert_eq!(labels(&editors), Some(vec!["guide.md".to_owned()]));
+        frames(&mut editors, vec![key(Key::Tab)]);
+        frames(&mut editors, vec![Event::Text("#".into())]);
+        assert_eq!(labels(&editors), Some(vec!["guide".to_owned()]));
+        frames(&mut editors, vec![key(Key::Enter)]);
+        let buf = &editors.docs[&id].buf;
+        assert!(buf.text_of(0, buf.len()).contains("[a](docs/guide.md#guide"), "{}", buf.text_of(0, buf.len()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
