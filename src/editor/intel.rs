@@ -1,6 +1,6 @@
 use super::buffer::{After, Document, Kind, Sel, is_word};
 use super::load::Place;
-use super::{Editors, Tab, links, notice, snippet};
+use super::{Editors, Tab, decor, links, notice, snippet};
 use crate::command::Command;
 use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
 use crate::settings::Settings;
@@ -38,6 +38,7 @@ pub(super) struct Lang {
     pub tokens: HashMap<usize, Vec<(usize, usize, u8)>>,
     pub hints: Vec<Hint>,
     pub hinted: (u64, usize, usize),
+    pub colors: Option<Vec<lsp::ColorInfo>>,
     pub visible: (usize, usize),
     pub marked: Option<(u64, usize)>,
     pub marks: Vec<(usize, usize)>,
@@ -52,6 +53,9 @@ impl Lang {
             symbol.end_line = lsp::shift(symbol.end_line, line, delta).unwrap_or(line).max(symbol.line);
         }
         self.hints.retain_mut(|hint| hint.line != line && lsp::shift(hint.line, line, delta).map(|moved| hint.line = moved).is_some());
+        if let Some(colors) = &mut self.colors {
+            colors.retain_mut(|c| c.start.0 != line && lsp::shift(c.start.0, line, delta).map(|moved| (c.end.0, c.start.0) = (c.end.0 - c.start.0 + moved, moved)).is_some());
+        }
         if delta == 0 {
             self.tokens.remove(&line);
         } else {
@@ -71,6 +75,8 @@ pub(super) struct Piece {
 pub(super) struct Row {
     pub len: usize,
     pub pieces: Vec<Piece>,
+    pub swatches: Vec<decor::Swatch>,
+    pub odd: Vec<(usize, char, Option<char>)>,
 }
 
 impl Row {
@@ -183,7 +189,7 @@ pub(super) fn squiggle(painter: &egui::Painter, from: f32, to: f32, y: f32, colo
     painter.add(Shape::line(points, Stroke::new(1.0, color)));
 }
 
-fn popup_frame(theme: &Theme) -> Frame {
+pub(super) fn popup_frame(theme: &Theme) -> Frame {
     Frame::new().fill(theme.raised).stroke(Stroke::new(1.0, theme.border)).corner_radius(CornerRadius::same(4))
 }
 
@@ -332,7 +338,7 @@ fn hierarchy_title(call: bool, outgoing: bool) -> &'static str {
     }
 }
 
-enum Want {
+pub(super) enum Want {
     Completion { doc: u64, start: usize, dot: bool },
     Signature { doc: u64 },
     Hover { doc: u64, word: (usize, usize) },
@@ -344,6 +350,8 @@ enum Want {
     Symbols { doc: u64, version: u64 },
     Tokens { doc: u64, version: u64 },
     Hints { doc: u64, version: u64 },
+    Colors { doc: u64, version: u64 },
+    Present { doc: u64, version: u64 },
     Marks { doc: u64, version: u64, head: usize },
     Prepare { doc: u64, pos: usize, call: bool, outgoing: bool },
     Hierarchy { doc: u64, pos: usize, call: bool, outgoing: bool },
@@ -407,7 +415,7 @@ struct Actions {
 
 #[derive(Default)]
 pub(super) struct Intel {
-    wants: Vec<(u64, Want)>,
+    pub wants: Vec<(u64, Want)>,
     epoch: u64,
     suggest: Option<Suggest>,
     signature: Option<(u64, Signature)>,
@@ -424,6 +432,8 @@ pub(super) struct Intel {
     last_rects: Vec<Rect>,
     pub queued: Vec<Queued>,
     pub unit: String,
+    pub picker: Option<decor::Picker>,
+    pub pick_caret: bool,
 }
 
 impl Intel {
@@ -546,6 +556,11 @@ impl Editors {
             {
                 self.intel.wants.push((request, Want::Tokens { doc: id, version }));
             }
+            if settings.color_decorators
+                && let Some(request) = self.lsp.request(path, "textDocument/documentColor", target.clone())
+            {
+                self.intel.wants.push((request, Want::Colors { doc: id, version }));
+            }
         }
         let (first, last) = lang.visible;
         if settings.inlay_hints && last > first && !(lang.hinted.0 == version && lang.hinted.1 <= first && lang.hinted.2 >= last) {
@@ -633,6 +648,12 @@ impl Editors {
                     d.lang.hints = lsp::hints(&value);
                 }
             }
+            Want::Colors { doc, version } => {
+                if let Some(d) = self.docs.get_mut(&doc).filter(|d| !failed && d.buf.version == version) {
+                    d.lang.colors = Some(lsp::colors(&value));
+                }
+            }
+            Want::Present { doc, version } => self.presented(doc, version, &value),
             Want::Marks { doc, version, head } => {
                 let Some(d) = self.docs.get_mut(&doc).filter(|d| !failed && d.buf.version == version && d.lang.marked == Some((version, head))) else { return };
                 let marks = lsp::highlights(&value).into_iter().map(|(a, b)| (from_lsp(&d.buf, a), from_lsp(&d.buf, b))).filter(|(a, b)| a < b).collect();
