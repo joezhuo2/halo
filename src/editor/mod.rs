@@ -19,6 +19,7 @@ mod merge;
 mod merge_view;
 mod open_tabs;
 pub use open_tabs::OpenTab;
+mod review;
 mod search_editor;
 mod snippet;
 mod linked;
@@ -300,6 +301,7 @@ pub struct Editors {
     pub history: crate::history::Recorder,
     disk_jobs: Vec<(u64, bool)>,
     diffs: diff_view::Diffs,
+    review: review::Review,
     merges: merge_view::Merges,
     large_bytes: u64,
     previews: Vec<(usize, u64, markdown::Out)>,
@@ -658,6 +660,7 @@ impl Editors {
             history: Default::default(),
             disk_jobs: vec![],
             diffs: Default::default(),
+            review: Default::default(),
             merges: Default::default(),
             large_bytes: 20 << 20,
             previews: vec![],
@@ -1082,7 +1085,7 @@ impl Editors {
             }
             return true;
         }
-        if self.merge_exec(cmd, ctx) || self.diff_exec(cmd, ctx) {
+        if self.merge_exec(cmd, ctx) || self.diff_exec(cmd, ctx) || self.review_exec(cmd) {
             self.last_input = ctx.input(|i| i.time);
             return true;
         }
