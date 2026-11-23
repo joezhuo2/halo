@@ -6,7 +6,7 @@ use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use eframe::egui::text::{CCursor, LayoutJob, TextFormat};
+use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Area, Color32, CornerRadius, Event, FontId, Frame, Galley, Id, Key, Layout, Order, Pos2, Rect, RichText,
     ScrollArea, Sense, Shape, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, pos2, vec2,
@@ -84,13 +84,13 @@ impl Row {
 
     pub fn x(&self, piece: usize, col: usize) -> f32 {
         let p = &self.pieces[piece];
-        p.galley.pos_from_cursor(CCursor::new(display(&p.hints, col.saturating_sub(p.start)))).min.x
+        super::typography::x(&p.galley, display(&p.hints, col.saturating_sub(p.start)))
     }
 
     pub fn hit(&self, piece: usize, x: f32) -> usize {
         let piece = piece.min(self.pieces.len() - 1);
         let p = &self.pieces[piece];
-        let shown = usize::from(p.galley.cursor_from_pos(vec2(x, 0.0)).index);
+        let shown = super::typography::hit(&p.galley, x);
         let last = if piece + 1 < self.pieces.len() { self.end(piece) - 1 } else { self.len };
         (p.start + undisplay(&p.hints, shown)).min(last)
     }
@@ -152,6 +152,17 @@ fn tone(name: &str) -> u8 {
         "enumMember" | "constParameter" | "const" | "static" => 3,
         _ => 0,
     }
+}
+
+pub(super) fn semantic_colors(text: &str, tokens: &[(usize, usize, u8)], theme: &Theme) -> Vec<(usize, usize, Color32)> {
+    let mut over = vec![];
+    for &(col, len, tone) in tokens {
+        let (from, to) = (lsp::utf16_to_byte(text, col), lsp::utf16_to_byte(text, col.saturating_add(len)));
+        if from < to && over.last().is_none_or(|last: &(usize, usize, Color32)| last.1 <= from) {
+            over.push((from, to, tone_color(theme, tone)));
+        }
+    }
+    over
 }
 
 pub(super) fn tone_color(theme: &Theme, tone: u8) -> Color32 {
@@ -1283,7 +1294,7 @@ impl Editors {
         }
     }
 
-    pub(super) fn peek_ui(&mut self, ui: &mut Ui, theme: &Theme, font: &FontId, area: Rect, below: Option<f32>, id: u64) {
+    pub(super) fn peek_ui(&mut self, ui: &mut Ui, theme: &Theme, (font, style): (&FontId, super::typography::FontStyle), area: Rect, below: Option<f32>, id: u64) {
         let context = self.config.peek_context_lines.max(1);
         let Some(peek) = self.intel.peek.as_mut().filter(|p| p.doc == id) else { return };
         let row_h = (font.size * 1.35).round();
@@ -1338,7 +1349,8 @@ impl Editors {
                 }
                 let shown_text: String = text.chars().take(300).collect::<String>().replace('\t', "    ");
                 clip.text(pos2(preview.left() + 44.0, y + row_h / 2.0), Align2::RIGHT_CENTER, line + 1, font.clone(), theme.text_dim);
-                clip.text(pos2(preview.left() + 56.0, y + row_h / 2.0), Align2::LEFT_CENTER, shown_text, font.clone(), theme.text);
+                let galley = clip.layout_job(style.apply(LayoutJob::simple_singleline(shown_text, font.clone(), theme.text)));
+                clip.galley(pos2(preview.left() + 56.0, y + (row_h - galley.size().y) / 2.0), galley, theme.text);
             }
             if opened.double_clicked() {
                 jump = Some(peek.selected);

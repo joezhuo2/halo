@@ -127,11 +127,13 @@ impl Halo {
             Some(Cut), Some(Copy), Some(Paste), None,
             Some(Find), Some(Replace), None,
             Some(ToggleComment), None,
+            Some(DeleteWordPartLeft), Some(DeleteWordPartRight), None,
             Some(RenameSymbol), Some(QuickFix), Some(OrganizeImports), Some(FormatDocument), Some(FormatSelection),
         ]);
         self.menu(ui, "Selection", &[
             Some(SelectAll), None,
             Some(AddCursorAbove), Some(AddCursorBelow), Some(AddCursorsToLineEnds), Some(SelectNextOccurrence), None,
+            Some(CursorWordPartLeftSelect), Some(CursorWordPartRightSelect),
             Some(ToggleColumnSelection),
         ]);
         self.menu_with(ui, "View", &[
@@ -151,6 +153,7 @@ impl Halo {
             Some(GoToFile), Some(GoToSymbol), Some(GoToWorkspaceSymbol), Some(GoToLine), Some(GoToBracket), Some(FindInFiles), Some(ShowCommands), None,
             Some(GoToDefinition), Some(GoToDeclaration), Some(GoToTypeDefinition), Some(GoToImplementation), Some(FindReferences),
             Some(ShowCallHierarchy), Some(ShowTypeHierarchy), None,
+            Some(CursorWordPartLeft), Some(CursorWordPartRight),
             Some(GoBack), Some(GoToLastEditLocation), Some(NextEditor), Some(PrevEditor), None,
             Some(NextChange), Some(PrevChange),
         ]);

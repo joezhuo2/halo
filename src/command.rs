@@ -94,6 +94,12 @@ pub enum Command {
     SelectNextOccurrence,
     MoveSelectionToNextFindMatch,
     SelectAllOccurrences,
+    CursorWordPartLeft,
+    CursorWordPartRight,
+    CursorWordPartLeftSelect,
+    CursorWordPartRightSelect,
+    DeleteWordPartLeft,
+    DeleteWordPartRight,
     ExpandSelection,
     ShrinkSelection,
     SelectToBracket,
@@ -512,6 +518,8 @@ fn defaults() -> Vec<Binding> {
         e(sa, Key::ArrowUp, CopyLineUp),
         e(sa, Key::ArrowDown, CopyLineDown),
         e(sa, Key::A, ToggleBlockComment),
+        e(ca, Key::Backspace, DeleteWordPartLeft),
+        e(ca, Key::Delete, DeleteWordPartRight),
         e(sa, Key::ArrowRight, ExpandSelection),
         e(sa, Key::ArrowLeft, ShrinkSelection),
         e(sa, Key::I, AddCursorsToLineEnds),
@@ -634,8 +642,9 @@ pub fn all() -> Vec<Command> {
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
         SortLinesAscending, SortLinesDescending, RemoveDuplicateLines, ReverseLines, TransformToUppercase, TransformToLowercase,
         TransformToTitlecase, TransformToSnakecase, TransformToCamelcase, TransformToKebabcase,
-        RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
+        RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection, DeleteWordPartLeft, DeleteWordPartRight,
         SelectAll, AddCursorAbove, AddCursorBelow, AddCursorsToLineEnds, SelectNextOccurrence, MoveSelectionToNextFindMatch, SelectAllOccurrences, ExpandSelection, ShrinkSelection,
+        CursorWordPartLeftSelect, CursorWordPartRightSelect,
         SelectToBracket, CursorUndo, ToggleColumnSelection, CursorColumnSelectLeft, CursorColumnSelectRight, CursorColumnSelectUp,
         CursorColumnSelectDown, ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
         SplitEditorDown, SplitEditorLeft, SplitEditorUp, LayoutSingle, LayoutTwoColumns, LayoutThreeColumns, LayoutTwoRows, LayoutThreeRows,
@@ -648,7 +657,7 @@ pub fn all() -> Vec<Command> {
         AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations,
         GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation, ReopenClosed,
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
-        GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
+        GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy, CursorWordPartLeft, CursorWordPartRight,
         ShowHover, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut,
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
@@ -728,7 +737,8 @@ fn build(mut bindings: Vec<Binding>, user: &[Entry]) -> (Vec<Binding>, Vec<Strin
         if bindings.iter().any(|b| b.command == *command && same_keys(b) && b.when == when) {
             continue;
         }
-        let scope = if editor.contains(command) { Scope::Editor } else { Scope::Global };
+        let word_part = matches!(command, Command::CursorWordPartLeft | Command::CursorWordPartRight | Command::CursorWordPartLeftSelect | Command::CursorWordPartRightSelect);
+        let scope = if editor.contains(command) || word_part { Scope::Editor } else { Scope::Global };
         bindings.push(Binding { command: command.clone(), shortcut: keys[0], chord: keys.get(1).copied(), scope, when, user: Some(index), cond });
     }
     let weight = |b: &Binding| {
@@ -833,8 +843,9 @@ impl Command {
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
             | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection
             | SortLinesAscending | SortLinesDescending | RemoveDuplicateLines | ReverseLines | TransformToUppercase | TransformToLowercase
-            | TransformToTitlecase | TransformToSnakecase | TransformToCamelcase | TransformToKebabcase => "Edit",
+            | TransformToTitlecase | TransformToSnakecase | TransformToCamelcase | TransformToKebabcase | DeleteWordPartLeft | DeleteWordPartRight => "Edit",
             SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | SelectAllOccurrences
+            | CursorWordPartLeftSelect | CursorWordPartRightSelect
             | ExpandSelection | ShrinkSelection | SelectToBracket | CursorUndo | ToggleColumnSelection | CursorColumnSelectLeft
             | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
@@ -847,7 +858,7 @@ impl Command {
             | ToggleSidebarPosition | ToggleSecondarySidebar | MovePanelLeft | MovePanelRight | MovePanelBottom | MovePanelTop
             | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter | AlignPanelJustify | AlignPanelLeft | AlignPanelRight
             | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations => "View",
-            GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
+            GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | CursorWordPartLeft | CursorWordPartRight | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | GoToLastEditLocation | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
             ShowHover | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
@@ -957,6 +968,12 @@ impl Command {
             SelectNextOccurrence => "Add Next Occurrence",
             MoveSelectionToNextFindMatch => "Move Last Selection to Next Find Match",
             SelectAllOccurrences => "Select All Occurrences",
+            CursorWordPartLeft => "Move Word Part Left",
+            CursorWordPartRight => "Move Word Part Right",
+            CursorWordPartLeftSelect => "Select Word Part Left",
+            CursorWordPartRightSelect => "Select Word Part Right",
+            DeleteWordPartLeft => "Delete Word Part Left",
+            DeleteWordPartRight => "Delete Word Part Right",
             ExpandSelection => "Expand Selection",
             ShrinkSelection => "Shrink Selection",
             SelectToBracket => "Select to Bracket",

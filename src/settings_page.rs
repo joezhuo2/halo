@@ -53,6 +53,10 @@ const THEMES: &[(&str, &str)] = &[("dark", "Dark"), ("light", "Light"), ("hc-dar
 
 pub const SETTINGS: &[Meta] = &[
     m("font_family", 0, ED, "Font Family", "The font of the editor and the terminal.", Kind::Custom),
+    m("font_ligatures", 0, ED, "Font Ligatures", "Use programming ligatures when the editor font supports them.", Kind::Toggle),
+    m("letter_spacing", 0, ED, "Letter Spacing", "Extra space between editor characters in pixels.", Kind::Float(-5.0, 20.0)),
+    m("cursor_smooth_caret_animation", 0, ED, "Smooth Caret Animation", "Animate caret movement. Explicit animates navigation only.", Kind::Choice(&[("off", "Off"), ("explicit", "Explicit"), ("on", "On")])),
+    m("copy_with_syntax_highlighting", 0, ED, "Copy With Syntax Highlighting", "Include syntax colours when copying text on Windows.", Kind::Toggle),
     m("font_size", 0, ED, "Font Size", "The font size in pixels.", Kind::Float(8.0, 32.0)),
     m("tab_size", 0, ED, "Tab Size", "The number of spaces a tab is equal to.", Kind::Int(1, 8)),
     m("large_mb", 0, ED, "Large File Size (MB)", "Files above this size open without highlighting, language servers, minimap, git gutter, blame, word wrap and local history.", Kind::Int(1, 250)),
