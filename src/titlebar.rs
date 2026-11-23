@@ -171,6 +171,9 @@ impl Halo {
             for cmd in [ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration] {
                 self.menu_item(ui, cmd);
             }
+            for cmd in [OpenDisassembly, OpenMemory] {
+                self.menu_item(ui, cmd);
+            }
             ui.separator();
             for cmd in [RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RunAllTestsWithCoverage, CancelTestRun] {
                 self.menu_item(ui, cmd);
