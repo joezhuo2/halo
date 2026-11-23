@@ -162,7 +162,9 @@ language you want diagnostics and completion in. Each is optional.
 - **Diff editor:** changes open side by side, and the working tree side is
   the live file, so you can edit it there. `Alt+F5` and `Shift+Alt+F5` step
   through changes. Stage, unstage or revert a single hunk or the selected
-  lines. Click a change mark in the gutter to peek at the change.
+  lines. Click a change mark in the gutter to peek at the change. `F7` and
+  `Shift+F7` open the **accessible diff viewer**, which lists one change at
+  a time, line by line, for screen readers.
 - **Compare** the active file with another file, the clipboard or its saved
   version.
 - **Markdown preview** (`Ctrl+Shift+V`, or `Ctrl+K V` to the side) follows
@@ -359,6 +361,10 @@ what it searches:
   buttons, and the caret line of the editor and terminal as text.
 - **High Contrast Dark** and **High Contrast Light** themes, which follow
   Windows high contrast mode.
+- **Audio cues** (Windows): short sounds when the cursor reaches a line with
+  an error, warning, breakpoint or fold, and for inserted and removed lines
+  in the accessible diff viewer. They play while a screen reader is in use,
+  or always with the `accessibility.signals.*.sound` settings set to on.
 - **Reduce motion** stops animations. `F6` and `Shift+F6` move between the
   editor, side bar, panel and status bar, and `Alt+F1` lists the keys for
   the part that has focus.
@@ -440,7 +446,8 @@ The sun or moon at the right end of the status bar also switches the theme.
 - Debug lenses work for single cargo tests; other runnables fall back to
   Run.
 - The Markdown preview does not render HTML tags.
-- Copy with syntax highlighting and pasting images are Windows only.
+- Copy with syntax highlighting, pasting images and audio cues are Windows
+  only.
 - Call and type hierarchy list one level at a time.
 - New grammars and file associations load when Halo starts.
 - Debugging and testing need the adapter or test tool on `PATH`; one debug
