@@ -41,6 +41,16 @@ pub struct Edit {
     pub text: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FoldKind {
+    Comment,
+    Imports,
+    Region,
+    Other,
+}
+
+pub type FoldRange = (usize, usize, FoldKind);
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Symbol {
     pub name: String,
@@ -78,6 +88,15 @@ pub struct Hint {
     pub line: usize,
     pub col: usize,
     pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodeLens {
+    pub line: usize,
+    pub title: String,
+    pub command: String,
+    pub args: Value,
+    pub raw: Value,
 }
 
 pub fn key(path: &Path) -> String {
@@ -223,13 +242,16 @@ pub fn completion_icon(kind: u8) -> &'static str {
         9 => icons::PACKAGE,
         13 | 20 => icons::LIST_BULLETS,
         14 => icons::KEY,
+        17 => icons::FILE,
+        18 => icons::HASH,
+        19 => icons::FOLDER,
         21 => icons::HASH,
         25 => icons::TEXT_T,
         _ => icons::BRACKETS_CURLY,
     }
 }
 
-fn pos(value: &Value) -> Pos {
+pub fn pos(value: &Value) -> Pos {
     (value["line"].as_u64().unwrap_or(0) as usize, value["character"].as_u64().unwrap_or(0) as usize)
 }
 
@@ -263,6 +285,31 @@ pub fn highlights(value: &Value) -> Vec<(Pos, Pos)> {
     list(value).iter().map(|item| range(&item["range"])).collect()
 }
 
+pub fn folding_ranges(value: &Value) -> Option<Vec<FoldRange>> {
+    let kind = |item: &Value| match item["kind"].as_str() {
+        Some("comment") => FoldKind::Comment,
+        Some("imports") => FoldKind::Imports,
+        Some("region") => FoldKind::Region,
+        _ => FoldKind::Other,
+    };
+    let line = |item: &Value, key: &str| item[key].as_u64().map(|l| l as usize);
+    Some(value.as_array()?.iter().filter_map(|item| Some((line(item, "startLine")?, line(item, "endLine")?, kind(item)))).collect())
+}
+
+pub fn selection_ranges(value: &Value) -> Vec<Vec<(Pos, Pos)>> {
+    list(value)
+        .iter()
+        .map(|mut item| {
+            let mut chain = vec![];
+            while item.is_object() {
+                chain.push(range(&item["range"]));
+                item = &item["parent"];
+            }
+            chain
+        })
+        .collect()
+}
+
 pub fn hierarchy(value: &Value) -> Vec<Location> {
     list(value)
         .iter()
@@ -284,6 +331,13 @@ pub fn edits(value: &Value) -> Vec<Edit> {
             Edit { start, end, text: edit["newText"].as_str().unwrap_or_default().replace("\r\n", "\n") }
         })
         .collect()
+}
+
+pub type Linked = (Vec<(Pos, Pos)>, Option<String>);
+
+pub fn linked_ranges(value: &Value) -> Option<Linked> {
+    let ranges: Vec<(Pos, Pos)> = value["ranges"].as_array()?.iter().map(range).collect();
+    (ranges.len() > 1).then(|| (ranges, value["wordPattern"].as_str().map(str::to_owned)))
 }
 
 pub fn workspace_edit(value: &Value) -> Vec<(PathBuf, Vec<Edit>)> {
@@ -457,9 +511,67 @@ pub fn hints(value: &Value) -> Vec<Hint> {
     out
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorInfo {
+    pub start: Pos,
+    pub end: Pos,
+    pub rgba: [f32; 4],
+}
+
+pub fn colors(value: &Value) -> Vec<ColorInfo> {
+    let mut out: Vec<ColorInfo> = list(value)
+        .iter()
+        .map(|item| {
+            let (start, end) = range(&item["range"]);
+            let channel = |key: &str| item["color"][key].as_f64().unwrap_or(1.0).clamp(0.0, 1.0) as f32;
+            ColorInfo { start, end, rgba: [channel("red"), channel("green"), channel("blue"), channel("alpha")] }
+        })
+        .collect();
+    out.sort_by_key(|c| c.start);
+    out
+}
+
+pub fn presentations(value: &Value) -> Vec<String> {
+    list(value).iter().filter_map(|item| item["textEdit"]["newText"].as_str().or(item["label"].as_str()).map(str::to_owned)).collect()
+}
+
 pub fn actions(value: &Value) -> Vec<(String, Value)> {
     let titled = |item: &Value| Some((item["title"].as_str()?.to_owned(), item.clone()));
     value.as_array().into_iter().flatten().filter_map(titled).collect()
+}
+
+pub fn quick_fix(actions: &[(String, Value)]) -> bool {
+    actions.iter().any(|(_, action)| action["isPreferred"] == true || action["kind"].as_str().is_some_and(|kind| kind.starts_with("quickfix")))
+}
+
+pub fn code_lens(item: &Value) -> CodeLens {
+    let (command, text) = (&item["command"], |value: &Value| value.as_str().unwrap_or_default().to_owned());
+    CodeLens { line: pos(&item["range"]["start"]).0, title: text(&command["title"]), command: text(&command["command"]), args: command["arguments"].clone(), raw: item.clone() }
+}
+
+pub fn code_lenses(value: &Value) -> Vec<CodeLens> {
+    let mut out: Vec<CodeLens> = list(value).iter().map(code_lens).collect();
+    out.sort_by_key(|lens| lens.line);
+    out
+}
+
+pub fn runnable(value: &Value) -> Option<(String, Option<PathBuf>, Option<String>)> {
+    let args = &value["args"];
+    let words = |key: &str| -> Vec<String> { args[key].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect() };
+    let (cargo, run) = ([words("cargoArgs"), words("cargoExtraArgs")].concat(), words("executableArgs"));
+    if value["kind"] != "cargo" || cargo.is_empty() {
+        return None;
+    }
+    let mut line = vec![args["overrideCargo"].as_str().unwrap_or("cargo").to_owned()];
+    line.extend(cargo.iter().cloned());
+    if !run.is_empty() {
+        line.push("--".into());
+        line.extend(run.iter().cloned());
+    }
+    let line: Vec<String> = line.iter().map(|word| crate::tasks::quote(word)).collect();
+    let cwd = args["cwd"].as_str().or(args["workspaceRoot"].as_str()).map(PathBuf::from);
+    let exact = cargo[0] == "test" && run.iter().any(|word| word == "--exact");
+    Some((line.join(" "), cwd, run.first().filter(|name| exact && !name.starts_with('-')).cloned()))
 }
 
 fn diagnostic(value: &Value) -> Diagnostic {
@@ -604,10 +716,16 @@ fn initialize(id: u64, root: &Path, folders: &[(PathBuf, String)]) -> Value {
         "rename": {},
         "formatting": {},
         "rangeFormatting": {},
+        "onTypeFormatting": {},
+        "linkedEditingRange": {},
         "semanticTokens": tokens,
         "inlayHint": {},
+        "colorProvider": {},
         "callHierarchy": {},
         "typeHierarchy": {},
+        "codeLens": {},
+        "foldingRange": {"lineFoldingOnly": true, "foldingRangeKind": {"valueSet": ["comment", "imports", "region"]}},
+        "selectionRange": {},
     });
     let workspace = json!({
         "applyEdit": true,
@@ -615,6 +733,7 @@ fn initialize(id: u64, root: &Path, folders: &[(PathBuf, String)]) -> Value {
         "workspaceFolders": true,
         "workspaceEdit": {"documentChanges": false},
         "symbol": {},
+        "executeCommand": {},
     });
     let capabilities = json!({
         "general": {"positionEncodings": ["utf-16"]},
@@ -649,10 +768,16 @@ fn capability(method: &str) -> Option<&'static str> {
         "textDocument/rename" => "renameProvider",
         "textDocument/formatting" => "documentFormattingProvider",
         "textDocument/rangeFormatting" => "documentRangeFormattingProvider",
+        "textDocument/onTypeFormatting" => "documentOnTypeFormattingProvider",
+        "textDocument/linkedEditingRange" => "linkedEditingRangeProvider",
         "textDocument/semanticTokens/full" => "semanticTokensProvider",
         "textDocument/inlayHint" => "inlayHintProvider",
+        "textDocument/documentColor" | "textDocument/colorPresentation" => "colorProvider",
+        "textDocument/codeLens" => "codeLensProvider",
         "textDocument/prepareCallHierarchy" => "callHierarchyProvider",
         "textDocument/prepareTypeHierarchy" => "typeHierarchyProvider",
+        "textDocument/foldingRange" => "foldingRangeProvider",
+        "textDocument/selectionRange" => "selectionRangeProvider",
         "workspace/symbol" => "workspaceSymbolProvider",
         _ => return None,
     })
@@ -912,12 +1037,20 @@ impl Lsp {
     }
 
     pub fn close(&mut self, path: &Path) {
+        self.problems.remove(&key(path));
         let Some(index) = self.index_of(path) else { return };
         let server = &mut self.servers[index];
         if let Some((target, _)) = server.open.remove(&key(path)) {
             server.notify("textDocument/didClose", json!({"textDocument": {"uri": target}}));
         }
-        self.problems.remove(&key(path));
+    }
+
+    pub fn publish(&mut self, path: PathBuf, server: &str, items: Vec<Diagnostic>) {
+        if !items.is_empty() {
+            self.problems.insert(key(&path), FileProblems { path, server: server.to_owned(), items });
+        } else if self.problems.get(&key(&path)).is_some_and(|p| p.server == server) {
+            self.problems.remove(&key(&path));
+        }
     }
 
     pub fn request(&mut self, path: &Path, method: &str, params: Value) -> Option<u64> {
@@ -943,8 +1076,13 @@ impl Lsp {
 
     pub fn triggers(&self, path: &Path, provider: &str) -> Vec<char> {
         let Some(index) = self.index_of(path) else { return vec![] };
-        let list = self.servers[index].caps[provider]["triggerCharacters"].as_array();
-        list.into_iter().flatten().filter_map(|c| c.as_str()?.chars().next()).collect()
+        let caps = &self.servers[index].caps[provider];
+        let lists = ["triggerCharacters", "moreTriggerCharacter"].into_iter().flat_map(|key| caps[key].as_array().into_iter().flatten());
+        std::iter::once(&caps["firstTriggerCharacter"]).chain(lists).filter_map(|c| c.as_str()?.chars().next()).collect()
+    }
+
+    pub fn provider(&self, path: &Path, name: &str) -> Value {
+        self.index_of(path).map_or(Value::Null, |index| self.servers[index].caps[name].clone())
     }
 
     pub fn token_types(&self, path: &Path) -> Vec<String> {
@@ -1178,6 +1316,11 @@ mod tests {
         let edit = workspace_edit(&json!({"documentChanges": [{"textDocument": {"uri": target}, "edits": [{"range": span, "newText": "z"}]}]}));
         assert_eq!(edit[0].1[0].text, "z");
 
+        let tag = json!({"start": {"line": 3, "character": 2}, "end": {"line": 3, "character": 5}});
+        assert_eq!(linked_ranges(&json!({"ranges": [span, tag], "wordPattern": "[a-z]+"})), Some((vec![((2, 4), (2, 7)), ((3, 2), (3, 5))], Some("[a-z]+".into()))));
+        assert_eq!(linked_ranges(&json!({"ranges": [span]})), None);
+        assert_eq!(linked_ranges(&Value::Null), None);
+
         let (items, incomplete) = completions(&json!({"isIncomplete": true, "items": [
             {"label": "push", "kind": 2, "detail": "fn(T)", "insertText": "push($1)", "insertTextFormat": 2},
             {"label": "len", "textEdit": {"range": span, "newText": "len()"}, "additionalTextEdits": [{"range": span, "newText": "use x;"}]},
@@ -1208,11 +1351,61 @@ mod tests {
         let found = hints(&json!([{"position": {"line": 4, "character": 9}, "label": [{"value": ": "}, {"value": "u8"}], "paddingLeft": true},
             {"position": {"line": 1, "character": 2}, "label": "x:", "paddingRight": true}]));
         assert_eq!(found, vec![Hint { line: 1, col: 2, label: "x: ".into() }, Hint { line: 4, col: 9, label: " : u8".into() }]);
+        let rgba = |r, g, b, a| json!({"red": r, "green": g, "blue": b, "alpha": a});
+        let found = colors(&json!([{"range": span, "color": rgba(0.0, 0.5, 1.0, 1.0)}, {"range": {"start": {"line": 0, "character": 1}, "end": {"line": 0, "character": 5}}, "color": rgba(1.0, 0.0, 0.0, 0.25)}]));
+        assert_eq!(found, vec![ColorInfo { start: (0, 1), end: (0, 5), rgba: [1.0, 0.0, 0.0, 0.25] }, ColorInfo { start: (2, 4), end: (2, 7), rgba: [0.0, 0.5, 1.0, 1.0] }]);
+        assert!(colors(&Value::Null).is_empty());
+        let shown = presentations(&json!([{"label": "rgb(255, 0, 0)"}, {"label": "#ff0000", "textEdit": {"range": span, "newText": "#f00"}}]));
+        assert_eq!(shown, vec!["rgb(255, 0, 0)".to_owned(), "#f00".into()]);
         let item = diagnostic(&json!({"range": span, "severity": 2, "code": "E1", "source": "rustc", "message": "unused"}));
         assert_eq!((item.severity, item.source.as_str(), item.start), (2, "rustc(E1)", (2, 4)));
         assert_eq!(hierarchy(&json!([{"from": {"name": "caller", "uri": target, "selectionRange": span}, "fromRanges": []}]))[0].label, "caller");
         assert_eq!(highlights(&json!([{"range": span, "kind": 3}, {"range": span}])), vec![((2, 4), (2, 7)); 2]);
         assert!(highlights(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn parses_code_lenses_runnables_and_quick_fixes() {
+        let at = |line| json!({"start": {"line": line, "character": 0}, "end": {"line": line, "character": 3}});
+        let run = json!({"label": "test t", "kind": "cargo", "args": {"workspaceRoot": "/w", "cwd": "/w/crate", "cargoArgs": ["test", "--package", "a b"], "executableArgs": ["tests::t", "--exact", "--show-output"]}});
+        let found = code_lenses(&json!([
+            {"range": at(7), "data": {"impls": 1}},
+            {"range": at(2), "command": {"title": "Run Test", "command": "rust-analyzer.runSingle", "arguments": [run]}},
+        ]));
+        assert_eq!(found.iter().map(|l| (l.line, l.title.as_str(), l.command.as_str())).collect::<Vec<_>>(), vec![(2, "Run Test", "rust-analyzer.runSingle"), (7, "", "")]);
+        assert_eq!((found[1].args.clone(), found[1].raw["data"]["impls"].as_u64()), (Value::Null, Some(1)));
+        assert!(code_lenses(&Value::Null).is_empty());
+        let resolved = code_lens(&json!({"range": at(7), "command": {"title": "2 implementations", "command": "rust-analyzer.showReferences", "arguments": ["u", {"line": 7, "character": 0}, []]}}));
+        assert_eq!((resolved.title.as_str(), pos(&resolved.args[1])), ("2 implementations", (7, 0)));
+
+        let (line, cwd, test) = runnable(&found[0].args[0]).unwrap();
+        assert_eq!(line, "cargo test --package \"a b\" -- tests::t --exact --show-output");
+        assert_eq!((cwd, test.as_deref()), (Some(PathBuf::from("/w/crate")), Some("tests::t")));
+        let bin = json!({"kind": "cargo", "args": {"workspaceRoot": "/w", "cargoArgs": ["run", "--bin", "a"], "executableArgs": [], "overrideCargo": "cross"}});
+        assert_eq!(runnable(&bin), Some(("cross run --bin a".into(), Some(PathBuf::from("/w")), None)));
+        let module = json!({"kind": "cargo", "args": {"cargoArgs": ["test"], "executableArgs": ["tests", "--show-output"]}});
+        assert_eq!(runnable(&module).unwrap().2, None);
+        assert_eq!(runnable(&json!({"kind": "shell", "args": {"program": "x"}})), None);
+
+        let action = |kind: &str, preferred: bool| ("a".to_owned(), json!({"title": "a", "kind": kind, "isPreferred": preferred}));
+        assert!(quick_fix(&[action("refactor", false), action("quickfix", false)]));
+        assert!(quick_fix(&[action("quickfix.rust", false)]) && quick_fix(&[action("refactor.extract", true)]));
+        assert!(!quick_fix(&[action("refactor.inline", false), action("source", false), ("c".into(), json!({"title": "c", "command": "x"}))]));
+    }
+
+    #[test]
+    fn parses_folding_and_selection_ranges() {
+        let folds = json!([{"startLine": 0, "endLine": 4, "kind": "imports"}, {"startLine": 2, "startCharacter": 3, "endLine": 3}, {"startLine": 5, "endLine": 9, "kind": "comment"},
+            {"startLine": 7, "endLine": 8, "kind": "region"}, {"endLine": 1}]);
+        let found = folding_ranges(&folds).unwrap();
+        assert_eq!(found, vec![(0, 4, FoldKind::Imports), (2, 3, FoldKind::Other), (5, 9, FoldKind::Comment), (7, 8, FoldKind::Region)]);
+        assert_eq!(folding_ranges(&Value::Null), None);
+        let at = |line, from, to| json!({"start": {"line": line, "character": from}, "end": {"line": line, "character": to}});
+        let reply = json!([{"range": at(1, 4, 7), "parent": {"range": at(1, 0, 12), "parent": {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 3, "character": 1}}}}},
+            {"range": at(5, 2, 2)}]);
+        let chains = selection_ranges(&reply);
+        assert_eq!(chains, vec![vec![((1, 4), (1, 7)), ((1, 0), (1, 12)), ((0, 0), (3, 1))], vec![((5, 2), (5, 2))]]);
+        assert!(selection_ranges(&Value::Null).is_empty());
     }
 
     #[test]

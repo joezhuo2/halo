@@ -3,12 +3,12 @@ use super::diff;
 use super::diff_view::hatch;
 use super::highlight::Highlighter;
 use super::merge::{self, Merge, Row, State};
-use super::{Doc, Editors, MAX_COLS, Tab, job, notice};
+use super::{Doc, Editors, MAX_COLS, Tab, job, notice, typography};
 use crate::command::{self, Command};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use eframe::egui::text::{CCursor, TextFormat};
+use eframe::egui::text::TextFormat;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Painter, Rect, RichText, Stroke, Ui, UiBuilder, pos2, vec2};
 use ropey::Rope;
 use std::collections::HashMap;
@@ -387,6 +387,7 @@ impl Editors {
         let font = FontId::monospace(settings.font_size);
         let number_font = FontId::monospace(settings.font_size - 1.0);
         let char_w = ui.ctx().fonts_mut(|f| f.glyph_width(&font, 'm'));
+        let style = typography::FontStyle::new(settings, char_w);
         let (line_h, scroll) = (m.line_h, m.scroll);
         let first = (scroll / line_h).floor().max(0.0) as usize;
         let mut first_row = vec![None; m.model.chunks.len()];
@@ -413,7 +414,7 @@ impl Editors {
                 };
                 let chunk = &m.model.chunks[row.chunk];
                 let text: String = side[line].trim_end_matches('\n').chars().take(MAX_COLS).collect();
-                let galley = painter.layout_job(job(&text, 0..text.len(), p.hl.get(line), &font, theme.text, &[], &[], &TextFormat::default()));
+                let galley = painter.layout_job(style.apply(job(&text, 0..text.len(), p.hl.get(line), &font, theme.text, &[], &[], &TextFormat::default())));
                 let alpha = match chunk.kind {
                     merge::Kind::Conflict if chunk.state == State::Base => Some(0.14),
                     merge::Kind::Conflict => Some(0.06),
@@ -425,7 +426,7 @@ impl Editors {
                     let color = side_color(theme, *pane);
                     painter.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(color, alpha));
                     for r in m.marks.get(&(*pane, line)).into_iter().flatten() {
-                        let at = |col: usize| rect.left() + gutter + galley.pos_from_cursor(CCursor::new(col)).min.x;
+                        let at = |col: usize| rect.left() + gutter + typography::x(&galley, col);
                         painter.rect_filled(Rect::from_x_y_ranges(at(r.start)..=at(r.end), band.y_range()), CornerRadius::ZERO, ui::with_alpha(color, alpha * 2.2));
                     }
                 }

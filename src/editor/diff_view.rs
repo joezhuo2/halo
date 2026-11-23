@@ -1,13 +1,13 @@
 use super::buffer::{After, Document, Kind, Sel};
 use super::diff::{self, Hunk};
 use super::highlight::Highlighter;
-use super::{Doc, Editors, MAX_COLS, Tab, job, notice};
+use super::{Doc, Editors, MAX_COLS, Tab, job, notice, typography};
 use crate::command::{self, Command};
 use crate::git::LineChanges;
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use eframe::egui::text::{CCursor, LayoutJob, TextFormat};
+use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, CornerRadius, Event, FontId, Id, Key, Layout, Painter, Rect, RichText, Sense, Stroke, StrokeKind, Ui,
     UiBuilder, pos2, vec2,
@@ -312,7 +312,7 @@ pub(super) struct Diffs {
     bases: HashMap<u64, Option<Base>>,
     gutter: HashMap<u64, LineChanges>,
     waiting: Option<(u64, Wait)>,
-    peek: Option<(u64, usize)>,
+    peek: Option<(u64, usize, usize)>,
     at: Option<usize>,
     refresh: bool,
 }
@@ -396,19 +396,20 @@ impl Diffs {
         });
     }
 
-    fn anchor(&mut self, doc: u64, buf: &Document) -> Option<usize> {
-        let (_, index) = self.peek.filter(|p| p.0 == doc)?;
+    fn anchor(&mut self, doc: u64, buf: &Document, g: usize) -> Option<(usize, usize, usize)> {
+        let (_, index, _) = self.peek.filter(|p| p.0 == doc && p.2 == g)?;
         let base = self.bases.get_mut(&doc)?.as_mut()?;
         base.sync(buf);
         let hunk = base.model.hunks.get(index)?;
-        Some(if hunk.right.is_empty() { hunk.right.start.saturating_sub(1) } else { hunk.right.end - 1 })
+        let line = if hunk.right.is_empty() { hunk.right.start.saturating_sub(1) } else { hunk.right.end - 1 };
+        Some((line, hunk.left.len() + hunk.right.len(), index))
     }
 
-    fn show_peek(&mut self, doc: u64, buf: &Document, line: usize) -> Option<usize> {
+    fn show_peek(&mut self, doc: u64, buf: &Document, line: usize, g: usize) -> Option<usize> {
         let base = self.bases.get_mut(&doc)?.as_mut()?;
         base.sync(buf);
         let index = diff::hunk_at(&base.model.hunks, line).or_else(|| diff::step(&base.model.hunks, line, true))?;
-        self.peek = Some((doc, index));
+        self.peek = Some((doc, index, g));
         Some(buf.line_start(base.model.hunks[index].right.start))
     }
 }
@@ -430,7 +431,7 @@ pub(super) fn hatch(painter: &Painter, rect: Rect, theme: &Theme) {
 
 fn marks(painter: &Painter, galley: &egui::Galley, x: f32, row: Rect, ranges: Option<&Vec<Range<usize>>>, color: egui::Color32) {
     for r in ranges.into_iter().flatten() {
-        let at = |col: usize| x + galley.pos_from_cursor(CCursor::new(col)).min.x;
+        let at = |col: usize| x + typography::x(galley, col);
         painter.rect_filled(Rect::from_x_y_ranges(at(r.start)..=at(r.end), row.y_range()), CornerRadius::ZERO, color);
     }
 }
@@ -466,6 +467,7 @@ pub(super) fn paint_pads(
     clip: Rect,
     (text_x, number_x): (f32, f32),
     font: &FontId,
+    style: typography::FontStyle,
     line_h: f32,
 ) {
     let number_font = FontId::monospace(font.size - 1.0);
@@ -485,7 +487,7 @@ pub(super) fn paint_pads(
             painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.2));
             ui::contrast_border(painter, theme, row, theme.deleted);
             let text = line_text(&d.rope, l);
-            let galley = painter.layout_job(job(&text, 0..text.len(), d.hl.get(l), font, theme.text, &[], &[], &TextFormat::default()));
+            let galley = painter.layout_job(style.apply(job(&text, 0..text.len(), d.hl.get(l), font, theme.text, &[], &[], &TextFormat::default())));
             marks(painter, &galley, text_x, row, d.model.left.get(&l), ui::with_alpha(theme.deleted, 0.45));
             painter.text(pos2(number_x, row.center().y), Align2::RIGHT_CENTER, l + 1, number_font.clone(), ui::with_alpha(theme.deleted, 0.9));
             painter.galley(pos2(text_x, row.top() + (line_h - galley.size().y) / 2.0), galley, theme.text);
@@ -493,7 +495,10 @@ pub(super) fn paint_pads(
     }
 }
 
-fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, right_len: usize, font: &FontId, char_w: f32) {
+fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, right_len: usize, settings: &Settings) {
+    let font = &FontId::monospace(settings.font_size);
+    let char_w = ui.ctx().fonts_mut(|f| f.glyph_width(font, 'm'));
+    let style = typography::FontStyle::new(settings, char_w);
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     painter.rect_filled(rect, CornerRadius::ZERO, theme.bg);
     let total = d.rope.len_lines();
@@ -518,7 +523,7 @@ fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, right_len: us
             continue;
         };
         let text = line_text(&d.rope, line);
-        let galley = painter.layout_job(job(&text, 0..text.len(), d.hl.get(line), font, theme.text, &[], &[], &TextFormat::default()));
+        let galley = painter.layout_job(style.apply(job(&text, 0..text.len(), d.hl.get(line), font, theme.text, &[], &[], &TextFormat::default())));
         if found.changed {
             painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.2));
             ui::contrast_border(&painter, theme, row, theme.deleted);
@@ -559,7 +564,7 @@ impl Editors {
                     if let Some((_, wait)) = self.diffs.waiting.take_if(|w| w.0 == doc) {
                         match wait {
                             Wait::Peek(line) => {
-                                let shown = self.docs.get(&doc).and_then(|d| self.diffs.show_peek(doc, &d.buf, line));
+                                let shown = self.docs.get(&doc).and_then(|d| self.diffs.show_peek(doc, &d.buf, line, self.active));
                                 if let (Some(pos), Some((g, t))) = (shown, self.active_tab()) {
                                     self.groups[g].tabs[t].reveal = Some(pos);
                                 }
@@ -716,12 +721,10 @@ impl Editors {
         let area = body.with_min_y(body.top() + BAR).with_max_y(body.bottom() - dock(d, body));
         let starts = &tab.rows.1;
         let Some(rows) = starts.last().map(|r| *r as usize) else { return };
-        let font = FontId::monospace(settings.font_size);
-        let char_w = ui.ctx().fonts_mut(|f| f.glyph_width(&font, 'm'));
         let id = Id::new(("diff_view", &d.title));
         if !d.inline {
             let left = area.with_max_x(area.center().x - GAP / 2.0);
-            paint_left(ui, theme, d, left, starts.len() - 1, &font, char_w);
+            paint_left(ui, theme, d, left, starts.len() - 1, settings);
             let gap = Rect::from_min_max(pos2(left.right(), area.top()), pos2(area.center().x + GAP / 2.0, area.bottom()));
             ui.painter().rect_filled(gap, CornerRadius::ZERO, theme.bg);
             ui.painter().vline(gap.center().x, gap.y_range(), Stroke::new(1.0, theme.border));
@@ -915,12 +918,12 @@ impl Editors {
         self.want_focus |= close || jump;
     }
 
-    pub(super) fn change_anchor(&mut self, doc: u64, buf: &Document) -> Option<usize> {
-        self.diffs.anchor(doc, buf)
+    pub(super) fn change_anchor(&mut self, doc: u64, buf: &Document, g: usize) -> Option<(usize, usize, usize)> {
+        self.diffs.anchor(doc, buf, g)
     }
 
     pub(super) fn peek_escape(&mut self, events: &mut Vec<Event>, doc: u64) {
-        if self.diffs.peek.is_none_or(|p| p.0 != doc) {
+        if self.diffs.peek.is_none_or(|p| p.0 != doc || p.2 != self.active) {
             return;
         }
         let before = events.len();
@@ -943,7 +946,7 @@ impl Editors {
 
     pub(super) fn open_change_peek(&mut self, doc: u64, buf: &Document, tab: &mut Tab, line: usize, ctx: &egui::Context) {
         if self.diffs.fresh(doc) {
-            if let Some(pos) = self.diffs.show_peek(doc, buf, line) {
+            if let Some(pos) = self.diffs.show_peek(doc, buf, line, self.active) {
                 tab.reveal = Some(pos);
             }
             return;
@@ -955,8 +958,8 @@ impl Editors {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn change_peek_ui(&mut self, ui: &mut Ui, theme: &Theme, font: &FontId, area: Rect, below: Option<f32>, doc: u64, buf: &Document, pending: &mut Vec<Command>) {
-        let Some((_, index)) = self.diffs.peek.filter(|p| p.0 == doc) else { return };
+    pub(super) fn change_peek_ui(&mut self, ui: &mut Ui, theme: &Theme, font: &FontId, style: typography::FontStyle, zone: Rect, doc: u64, buf: &Document, pending: &mut Vec<Command>) {
+        let Some((_, index, _)) = self.diffs.peek.filter(|p| p.0 == doc) else { return };
         let Some(base) = self.diffs.bases.get_mut(&doc).and_then(Option::as_mut) else { return };
         base.sync(buf);
         let count = base.model.hunks.len();
@@ -965,10 +968,7 @@ impl Editors {
             return;
         };
         let row_h = (font.size * 1.35).round();
-        let lines = hunk.left.len() + hunk.right.len();
-        let height = (34.0 + lines as f32 * row_h).min(260.0).min((area.height() - 30.0).max(80.0));
-        let top = below.filter(|y| *y > area.top()).unwrap_or(area.top()).min(area.bottom() - height).max(area.top());
-        let rect = Rect::from_min_size(pos2(area.left() + 6.0, top), vec2(area.width() - 14.0, height));
+        let rect = Rect::from_min_max(zone.min + vec2(6.0, 2.0), zone.max - vec2(8.0, 2.0));
         ui.interact(rect, Id::new(("change_peek", doc)), Sense::click());
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect(rect, CornerRadius::same(3), theme.panel, Stroke::new(1.0, theme.accent), StrokeKind::Inside);
@@ -1012,7 +1012,7 @@ impl Editors {
             let color = if removed { theme.deleted } else { theme.added };
             painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(color, 0.13));
             let shown: String = text.chars().take(MAX_COLS).collect();
-            let galley = painter.layout_job(LayoutJob::simple_singleline(shown, font.clone(), theme.text));
+            let galley = painter.layout_job(style.apply(LayoutJob::simple_singleline(shown, font.clone(), theme.text)));
             marks(&painter, &galley, text_x, row, ranges, ui::with_alpha(color, 0.3));
             painter.text(pos2(body.left() + 14.0, row.center().y), Align2::CENTER_CENTER, if removed { "-" } else { "+" }, font.clone(), color);
             painter.galley(pos2(text_x, row.top() + (row_h - galley.size().y) / 2.0), galley, theme.text);
@@ -1117,7 +1117,7 @@ impl Editors {
             }
             tab.reveal = Some(pos);
             if !in_diff && matches!(cmd, ShowNextChange | ShowPrevChange) {
-                self.diffs.peek = Some((doc_id, index));
+                self.diffs.peek = Some((doc_id, index, self.active));
             }
             return;
         }
@@ -1267,7 +1267,7 @@ mod tests {
             base.at = Instant::now() - Duration::from_secs(60);
         }
         assert!(click_bar(&ctx, &mut editors, id, 1), "the peek must open in the click frame");
-        assert_eq!(editors.diffs.peek, Some((id, 0)));
+        assert_eq!(editors.diffs.peek, Some((id, 0, 0)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1504,7 +1504,7 @@ mod tests {
         editors.exec(&Command::GoTo(1, 1), &settings, &ctx);
         editors.exec(&Command::ShowNextChange, &settings, &ctx);
         settle(&ctx, &mut editors, "the change peek", |e| e.diffs.peek.is_some());
-        assert_eq!(editors.diffs.peek, Some((plain, 0)));
+        assert_eq!(editors.diffs.peek, Some((plain, 0, 0)));
         frame(&ctx, &mut editors, vec![Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }]);
         assert!(editors.diffs.peek.is_none());
         editors.exec(&Command::GoTo(2, 1), &settings, &ctx);

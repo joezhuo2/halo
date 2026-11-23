@@ -10,12 +10,12 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 
 const ROW: f32 = 22.0;
-const MAX_HITS: usize = 5000;
+pub(crate) const MAX_HITS: usize = 5000;
 
 #[derive(Clone, Debug, PartialEq)]
-struct Hit {
-    line: usize,
-    col: usize,
+pub(crate) struct Hit {
+    pub(crate) line: usize,
+    pub(crate) col: usize,
     text: String,
     mark: (usize, usize),
 }
@@ -26,14 +26,14 @@ struct FileHits {
     open: bool,
 }
 
-#[derive(Clone, Default, PartialEq)]
-struct Query {
-    text: String,
-    case: bool,
-    word: bool,
-    regex: bool,
-    include: String,
-    exclude: String,
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Query {
+    pub(crate) text: String,
+    pub(crate) case: bool,
+    pub(crate) word: bool,
+    pub(crate) regex: bool,
+    pub(crate) include: String,
+    pub(crate) exclude: String,
 }
 
 #[derive(Default)]
@@ -48,6 +48,7 @@ pub struct FindPanel {
     note: String,
     rx: Option<Receiver<Vec<FileHits>>>,
     confirm: Option<Option<usize>>,
+    focused: Option<u64>,
 }
 
 fn glob(text: &str) -> Option<Regex> {
@@ -104,9 +105,15 @@ fn scan(text: &str, pattern: &Pattern, limit: usize) -> Vec<Hit> {
 
 // shortcut: files are read from disk, so unsaved edits are not searched, upgrade to reading open buffers if that matters
 fn search(roots: &[(PathBuf, String)], query: &Query) -> Vec<FileHits> {
-    let Ok(pattern) = Pattern::new(&query.text, query.case, query.word, query.regex) else { return vec![] };
+    let mut out = vec![];
+    each_file(roots, query, |path, _, hits| out.push(FileHits { path, hits, open: true }));
+    out
+}
+
+pub(crate) fn each_file(roots: &[(PathBuf, String)], query: &Query, mut found: impl FnMut(String, &str, Vec<Hit>)) {
+    let Ok(pattern) = Pattern::new(&query.text, query.case, query.word, query.regex) else { return };
     let (include, exclude) = (globs(&query.include), globs(&query.exclude));
-    let (mut out, mut total) = (vec![], 0);
+    let mut total = 0;
     let files = roots.iter().flat_map(|(root, prefix)| crate::search::list_files(root).into_iter().map(move |p| (root.join(&p), format!("{prefix}{p}"))));
     for (full, path) in files {
         if (!include.is_empty() && !listed(&include, &path)) || listed(&exclude, &path) {
@@ -116,16 +123,16 @@ fn search(roots: &[(PathBuf, String)], query: &Query) -> Vec<FileHits> {
         if bytes.len() > 4 * 1024 * 1024 || bytes.iter().take(8192).any(|b| *b == 0) {
             continue;
         }
-        let hits = scan(&String::from_utf8_lossy(&bytes).replace("\r\n", "\n"), &pattern, MAX_HITS - total);
+        let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+        let hits = scan(&text, &pattern, MAX_HITS - total);
         if !hits.is_empty() {
             total += hits.len();
-            out.push(FileHits { path, hits, open: true });
+            found(path, &text, hits);
         }
         if total >= MAX_HITS {
             break;
         }
     }
-    out
 }
 
 impl FindPanel {
@@ -154,15 +161,12 @@ impl FindPanel {
         self.rx = Some(rx);
     }
 
-    fn report(&self) -> String {
-        let mut out = format!("{} for \"{}\"\n", self.note, self.searched.text);
-        for file in &self.results {
-            out += &format!("\n{}\n", file.path);
-            for hit in &file.hits {
-                out += &format!("  {}: {}\n", hit.line, hit.text);
-            }
-        }
-        out
+    pub fn editor_query(&self, results: bool) -> Query {
+        if results && !self.results.is_empty() { self.searched.clone() } else { self.query.clone() }
+    }
+
+    pub fn has_focus(&self, ctx: &egui::Context) -> bool {
+        self.focused.is_some_and(|pass| pass + 1 >= ctx.cumulative_pass_nr())
     }
 
     fn run_replace(&mut self, target: Option<usize>, roots: &[(PathBuf, String)], editors: &mut Editors, cmds: &mut Vec<Command>, ctx: &egui::Context) {
@@ -205,15 +209,17 @@ impl FindPanel {
             ui.spacing_mut().item_spacing = vec2(2.0, 5.0);
             let width = ui.available_width() - 16.0;
             let enter = ui.input(|i| i.key_pressed(Key::Enter));
-            let field = |ui: &mut Ui, text: &mut String, hint: &str, focus: bool| {
+            let (pass, mut focused) = (ui.ctx().cumulative_pass_nr(), None);
+            let mut field = |ui: &mut Ui, text: &mut String, hint: &str, focus: bool| {
                 let resp = ui.add(TextEdit::singleline(text).margin(ui::FIELD).desired_width(width).hint_text(hint));
+                focused = focused.or(resp.has_focus().then_some(pass));
                 if focus || (resp.lost_focus() && enter) {
                     resp.request_focus();
                 }
                 resp.lost_focus() && enter
             };
             go |= field(ui, &mut self.query.text, "Search", std::mem::take(&mut self.focus));
-            let (mut open, mut collapse, mut clear) = (false, false, false);
+            let (mut open, mut new, mut collapse, mut clear) = (false, false, false, false);
             ui.horizontal(|ui| {
                 let q = &mut self.query;
                 for (icon, value, tip) in [
@@ -231,6 +237,7 @@ impl FindPanel {
                     clear = ui::icon_button(ui, theme, icons::X, 22.0, false, "Clear Results").clicked();
                     collapse = ui::icon_button(ui, theme, icons::ARROWS_IN_LINE_VERTICAL, 22.0, false, "Collapse All").clicked();
                     open = ui::icon_button(ui, theme, icons::ARROW_SQUARE_OUT, 22.0, false, "Open Results in Editor").clicked();
+                    new = ui::icon_button(ui, theme, icons::FILE_PLUS, 22.0, false, "New Search Editor").clicked();
                 });
             });
             if self.replace {
@@ -246,6 +253,7 @@ impl FindPanel {
             }
             go |= field(ui, &mut self.query.include, "Files to include, like src, *.rs", false);
             go |= field(ui, &mut self.query.exclude, "Files to exclude", false);
+            self.focused = focused;
             if self.rx.is_none() {
                 ui.label(RichText::new(&self.note).size(12.0).color(theme.text_dim));
             }
@@ -256,8 +264,8 @@ impl FindPanel {
             if collapse {
                 self.results.iter_mut().for_each(|file| file.open = false);
             }
-            if open && !self.results.is_empty() {
-                editors.open_text(&format!("Search: {}", self.searched.text), &self.report(), None);
+            if open || new {
+                cmds.push(if open { Command::OpenSearchEditor } else { Command::NewSearchEditor });
             }
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             ScrollArea::vertical().id_salt("find_results").auto_shrink(false).show(ui, |ui| {

@@ -84,6 +84,8 @@ pub enum Motion {
     Down,
     WordLeft,
     WordRight,
+    WordPartLeft,
+    WordPartRight,
     Home,
     End,
     DocStart,
@@ -344,15 +346,19 @@ pub fn camel_case(text: &str) -> String {
     out
 }
 
+pub fn column_width(c: char) -> usize {
+    match c {
+        '\t' => 4,
+        c if c as u32 >= 0x1100 => 2,
+        _ => 1,
+    }
+}
+
 pub fn wrap(text: impl Iterator<Item = char>, cols: usize, mut cut: impl FnMut(usize)) {
     let (mut width, mut soft) = (0, None::<(usize, usize)>);
     for (i, c) in text.enumerate() {
         // shortcut: widths are guessed (tab 4, CJK 2), upgrade to measured glyphs if rows overflow
-        let w = match c {
-            '\t' => 4,
-            c if c as u32 >= 0x1100 => 2,
-            _ => 1,
-        };
+        let w = column_width(c);
         if width + w > cols && width > 0 {
             match soft.take() {
                 Some((at, upto)) if at <= i => {
@@ -553,29 +559,6 @@ impl Document {
         }
         self.indent = Some((spaces, size));
         self.apply(sels, edits, Kind::Other, After::Map)
-    }
-
-    pub fn foldable(&self, line: usize) -> bool {
-        let blank = |l: usize| self.indent_of(l) >= self.line_len(l);
-        !blank(line) && (line + 1..self.lines()).find(|l| !blank(*l)).is_some_and(|next| self.indent_of(next) > self.indent_of(line))
-    }
-
-    // shortcut: folds follow indentation, upgrade to the language server's folding ranges if they are wrong for a language
-    pub fn fold_end(&self, line: usize) -> Option<usize> {
-        if line >= self.lines() || !self.foldable(line) {
-            return None;
-        }
-        let mut end = line;
-        for next in line + 1..self.lines() {
-            if self.indent_of(next) >= self.line_len(next) {
-                continue;
-            }
-            if self.indent_of(next) <= self.indent_of(line) {
-                break;
-            }
-            end = next;
-        }
-        Some(end)
     }
 
     pub fn indent_of(&self, line: usize) -> usize {
@@ -1266,6 +1249,52 @@ impl Document {
         i
     }
 
+    fn word_part(&self, pos: usize, right: bool) -> usize {
+        fn boundary(a: char, b: char, after: Option<char>) -> bool {
+            let class = |c: char| match c {
+                '_' | '-' => 0,
+                c if c.is_alphabetic() => 1,
+                c if c.is_numeric() => 2,
+                c if c.is_whitespace() => 3,
+                _ => 4,
+            };
+            a == '\n' || b == '\n' || class(a) != class(b) || (matches!(a, '_' | '-') && a != b)
+                || (b.is_uppercase() && (a.is_lowercase() || (a.is_uppercase() && after.is_some_and(char::is_lowercase))))
+        }
+        let pos = pos.min(self.len());
+        let mut chars = self.rope.chars_at(pos);
+        if right {
+            let Some(mut a) = chars.next() else { return pos };
+            let mut ahead = chars.peekable();
+            let mut at = pos + 1;
+            while let Some(b) = ahead.next() {
+                if boundary(a, b, ahead.peek().copied()) { break; }
+                at += 1;
+                a = b;
+            }
+            at
+        } else {
+            let Some(mut b) = chars.prev() else { return 0 };
+            let mut after = self.rope.get_char(pos);
+            let mut at = pos - 1;
+            while let Some(a) = chars.prev() {
+                if boundary(a, b, after) { break; }
+                at -= 1;
+                after = Some(b);
+                b = a;
+            }
+            at
+        }
+    }
+
+    pub fn delete_word_part(&mut self, sels: &mut Vec<Sel>, right: bool) -> bool {
+        let edits = sels.iter().map(|s| {
+            let to = if s.is_empty() { self.word_part(s.head, right) } else { s.anchor };
+            (to.min(s.head), to.max(s.head), String::new())
+        }).collect();
+        self.apply(sels, edits, Kind::Other, After::Map)
+    }
+
     pub fn word_at(&self, pos: usize) -> (usize, usize) {
         let len = self.len();
         let (mut start, mut end) = (pos.min(len), pos.min(len));
@@ -1293,6 +1322,7 @@ impl Document {
                 Motion::Right => ((s.head + 1).min(len), None),
                 Motion::WordLeft => (self.word_left(s.head), None),
                 Motion::WordRight => (self.word_right(s.head), None),
+                Motion::WordPartLeft | Motion::WordPartRight => (self.word_part(s.head, matches!(motion, Motion::WordPartRight)), None),
                 Motion::Home => {
                     let start = self.line_start(line);
                     let first = start + self.indent_of(line);
@@ -1408,13 +1438,13 @@ impl Document {
         self.rope.slice(start.min(self.len())..end.min(self.len())).to_string()
     }
 
-    pub fn copy_text(&self, sels: &[Sel]) -> String {
+    pub fn copy_ranges(&self, sels: &[Sel]) -> Vec<std::ops::Range<usize>> {
         if sels.iter().all(Sel::is_empty) {
             let mut lines: Vec<usize> = sels.iter().map(|s| self.line_of(s.head)).collect();
             lines.dedup();
-            return lines.into_iter().map(|l| format!("{}\n", self.line_text(l))).collect();
+            return lines.into_iter().map(|l| self.line_start(l)..self.line_end(l)).chain(std::iter::once(0..0)).collect();
         }
-        sels.iter().filter(|s| !s.is_empty()).map(|s| self.text_of(s.start(), s.end())).collect::<Vec<_>>().join("\n")
+        sels.iter().filter(|s| !s.is_empty()).map(|s| s.start()..s.end()).collect()
     }
 
     pub fn cut(&mut self, sels: &mut Vec<Sel>) -> bool {
@@ -1677,6 +1707,36 @@ mod tests {
         assert_eq!(d.rope.to_string(), "xyab\nxycd\nxyef");
         d.backspace(&mut sels, false, true);
         assert_eq!(d.rope.to_string(), "xab\nxcd\nxef");
+    }
+
+    #[test]
+    fn word_parts_move_in_both_directions() {
+        let parts = ["foo", "Bar", "Baz", " ", "Pascal", "Case", " ", "HTTP", "Server", "_", "one", "-", "two", "42", "λ", "::", "\n", "\n", "X"];
+        let d = doc(&parts.concat());
+        let mut start = 0;
+        for part in parts {
+            let end = start + part.chars().count();
+            for at in start..end { assert_eq!(d.word_part(at, true), end); }
+            for at in start + 1..=end { assert_eq!(d.word_part(at, false), start); }
+            start = end;
+        }
+        assert_eq!(d.word_part(0, false), 0);
+        assert_eq!(d.word_part(start, true), start);
+    }
+
+    #[test]
+    fn deletes_word_parts_as_one_undo_step() {
+        let mut d = doc("oneTwo threeFour");
+        let initial = vec![Sel::caret(0), Sel::caret(6), Sel::caret(16)];
+        let mut sels = initial.clone();
+        d.delete_word_part(&mut sels, false);
+        assert_eq!(d.rope.to_string(), "one three");
+        assert_eq!(sels.iter().map(|s| s.head).collect::<Vec<_>>(), [0, 3, 9]);
+        d.undo(&mut sels);
+        assert!(same(&sels, &initial));
+        d.move_sels(&mut sels, Motion::WordPartLeft, true);
+        d.delete_word_part(&mut sels, true);
+        assert_eq!(d.rope.to_string(), " three");
     }
 
     #[test]
@@ -2060,13 +2120,6 @@ mod tests {
         assert!(load(b"h\xe9llo").is_some());
         assert!(Document::from_bytes(path, b"MZ\0\x01\x02", None, true).is_some());
         assert!(load(&[0xFF, 0xFE, b'h', 0, b'i', 0]).is_some());
-    }
-
-    #[test]
-    fn folds_follow_indentation() {
-        let d = doc("fn a() {\n    if x {\n\n        y();\n    }\n}\n\nfn b() {}\n");
-        assert_eq!((d.fold_end(0), d.fold_end(1), d.fold_end(3), d.fold_end(7)), (Some(4), Some(3), None, None));
-        assert!(d.foldable(0) && !d.foldable(2) && !d.foldable(5));
     }
 
     #[test]

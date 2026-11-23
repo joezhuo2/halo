@@ -1,12 +1,12 @@
 use super::buffer::{After, Document, Kind, Sel, is_word};
 use super::load::Place;
-use super::{Editors, Tab, links, notice, snippet};
+use super::{Editors, Tab, decor, linked, links, notice, snippet};
 use crate::command::Command;
-use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
+use crate::lsp::{self, Completion, FoldRange, Hint, Location, Lsp, Pos, Signature, Symbol};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
-use eframe::egui::text::{CCursor, LayoutJob, TextFormat};
+use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Area, Color32, CornerRadius, Event, FontId, Frame, Galley, Id, Key, Layout, Order, Pos2, Rect, RichText,
     ScrollArea, Sense, Shape, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, pos2, vec2,
@@ -38,9 +38,16 @@ pub(super) struct Lang {
     pub tokens: HashMap<usize, Vec<(usize, usize, u8)>>,
     pub hints: Vec<Hint>,
     pub hinted: (u64, usize, usize),
+    pub colors: Option<Vec<lsp::ColorInfo>>,
     pub visible: (usize, usize),
     pub marked: Option<(u64, usize)>,
     pub marks: Vec<(usize, usize)>,
+    pub code_lens: Vec<(lsp::CodeLens, bool)>,
+    pub lensed: u64,
+    pub lens_gen: u64,
+    pub bulb_at: Option<(u64, usize)>,
+    pub bulb: Option<(bool, Vec<(String, Value)>)>,
+    pub folding: Option<Vec<FoldRange>>,
 }
 
 impl Lang {
@@ -51,7 +58,16 @@ impl Lang {
             symbol.line = lsp::shift(symbol.line, line, delta).unwrap_or(line);
             symbol.end_line = lsp::shift(symbol.end_line, line, delta).unwrap_or(line).max(symbol.line);
         }
+        for (lens, _) in &mut self.code_lens {
+            lens.line = lsp::shift(lens.line, line, delta).unwrap_or(line);
+        }
+        for range in self.folding.iter_mut().flatten() {
+            (range.0, range.1) = (lsp::shift(range.0, line, delta).unwrap_or(line), lsp::shift(range.1, line, delta).unwrap_or(line));
+        }
         self.hints.retain_mut(|hint| hint.line != line && lsp::shift(hint.line, line, delta).map(|moved| hint.line = moved).is_some());
+        if let Some(colors) = &mut self.colors {
+            colors.retain_mut(|c| c.start.0 != line && lsp::shift(c.start.0, line, delta).map(|moved| (c.end.0, c.start.0) = (c.end.0 - c.start.0 + moved, moved)).is_some());
+        }
         if delta == 0 {
             self.tokens.remove(&line);
         } else {
@@ -71,6 +87,8 @@ pub(super) struct Piece {
 pub(super) struct Row {
     pub len: usize,
     pub pieces: Vec<Piece>,
+    pub swatches: Vec<decor::Swatch>,
+    pub odd: Vec<(usize, char, Option<char>)>,
 }
 
 impl Row {
@@ -84,13 +102,13 @@ impl Row {
 
     pub fn x(&self, piece: usize, col: usize) -> f32 {
         let p = &self.pieces[piece];
-        p.galley.pos_from_cursor(CCursor::new(display(&p.hints, col.saturating_sub(p.start)))).min.x
+        super::typography::x(&p.galley, display(&p.hints, col.saturating_sub(p.start)))
     }
 
     pub fn hit(&self, piece: usize, x: f32) -> usize {
         let piece = piece.min(self.pieces.len() - 1);
         let p = &self.pieces[piece];
-        let shown = usize::from(p.galley.cursor_from_pos(vec2(x, 0.0)).index);
+        let shown = super::typography::hit(&p.galley, x);
         let last = if piece + 1 < self.pieces.len() { self.end(piece) - 1 } else { self.len };
         (p.start + undisplay(&p.hints, shown)).min(last)
     }
@@ -154,6 +172,17 @@ fn tone(name: &str) -> u8 {
     }
 }
 
+pub(super) fn semantic_colors(text: &str, tokens: &[(usize, usize, u8)], theme: &Theme) -> Vec<(usize, usize, Color32)> {
+    let mut over = vec![];
+    for &(col, len, tone) in tokens {
+        let (from, to) = (lsp::utf16_to_byte(text, col), lsp::utf16_to_byte(text, col.saturating_add(len)));
+        if from < to && over.last().is_none_or(|last: &(usize, usize, Color32)| last.1 <= from) {
+            over.push((from, to, tone_color(theme, tone)));
+        }
+    }
+    over
+}
+
 pub(super) fn tone_color(theme: &Theme, tone: u8) -> Color32 {
     let own = theme.semantic[(tone as usize).clamp(1, 3) - 1];
     own.unwrap_or(match tone {
@@ -183,7 +212,7 @@ pub(super) fn squiggle(painter: &egui::Painter, from: f32, to: f32, y: f32, colo
     painter.add(Shape::line(points, Stroke::new(1.0, color)));
 }
 
-fn popup_frame(theme: &Theme) -> Frame {
+pub(super) fn popup_frame(theme: &Theme) -> Frame {
     Frame::new().fill(theme.raised).stroke(Stroke::new(1.0, theme.border)).corner_radius(CornerRadius::same(4))
 }
 
@@ -251,6 +280,17 @@ fn local_items(buf: &Document, words: bool) -> Vec<Completion> {
         items.extend(found.into_iter().take(3000).map(|word| item(word, word, 1, "")));
     }
     items
+}
+
+fn md_suggest(suggest: &mut Option<Suggest>, root: Option<&Path>, id: u64, buf: &Document, head: usize, typed: Option<char>) -> bool {
+    let Some((start, target)) = super::md_links::target(buf, head) else { return false };
+    if typed.is_none_or(|c| matches!(c, '(' | '/' | '#')) {
+        let items = super::md_links::complete(buf, root, &target);
+        *suggest = (!items.is_empty()).then(|| Suggest { doc: id, start, items, shown: vec![], selected: 0, prefix: None, incomplete: false, dot: true, reveal: true });
+    } else if !suggest.as_ref().is_some_and(|p| p.doc == id && p.start == start) {
+        *suggest = None;
+    }
+    true
 }
 
 fn file_name(path: &Path) -> String {
@@ -332,7 +372,7 @@ fn hierarchy_title(call: bool, outgoing: bool) -> &'static str {
     }
 }
 
-enum Want {
+pub(super) enum Want {
     Completion { doc: u64, start: usize, dot: bool },
     Signature { doc: u64 },
     Hover { doc: u64, word: (usize, usize) },
@@ -344,9 +384,17 @@ enum Want {
     Symbols { doc: u64, version: u64 },
     Tokens { doc: u64, version: u64 },
     Hints { doc: u64, version: u64 },
+    Colors { doc: u64, version: u64 },
+    Present { doc: u64, version: u64 },
     Marks { doc: u64, version: u64, head: usize },
+    Folding { doc: u64, version: u64 },
+    Grow { group: usize, doc: u64, version: u64, sels: Vec<Sel> },
     Prepare { doc: u64, pos: usize, call: bool, outgoing: bool },
     Hierarchy { doc: u64, pos: usize, call: bool, outgoing: bool },
+    CodeLens { doc: u64, version: u64 },
+    Resolve { doc: u64, generation: u64, index: usize },
+    Bulb { doc: u64, version: u64, line: usize },
+    Linked { doc: u64, version: u64, head: usize },
 }
 
 pub(super) enum Queued {
@@ -354,6 +402,20 @@ pub(super) enum Queued {
     Peek(u64, usize, &'static str, Vec<Location>),
     Action(u64, Value),
     Hierarchy(u64, usize, bool, bool),
+    Lens(u64, lsp::CodeLens),
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum LensClick {
+    Own(usize, bool),
+    Server(usize),
+}
+
+const LENS_COMMANDS: [&str; 5] =
+    ["rust-analyzer.runSingle", "rust-analyzer.debugSingle", "rust-analyzer.showReferences", "editor.action.showReferences", "rust-analyzer.gotoLocation"];
+
+pub(super) fn runs_lens(command: &str, offered: &Value) -> bool {
+    LENS_COMMANDS.contains(&command) || offered["commands"].as_array().is_some_and(|list| list.iter().any(|name| name == command))
 }
 
 struct Suggest {
@@ -382,6 +444,8 @@ pub(super) struct Hover {
 pub(super) struct Peek {
     pub doc: u64,
     pub pos: usize,
+    pub group: usize,
+    anchor: (u64, usize),
     title: String,
     items: Vec<Location>,
     selected: usize,
@@ -407,7 +471,7 @@ struct Actions {
 
 #[derive(Default)]
 pub(super) struct Intel {
-    wants: Vec<(u64, Want)>,
+    pub wants: Vec<(u64, Want)>,
     epoch: u64,
     suggest: Option<Suggest>,
     signature: Option<(u64, Signature)>,
@@ -424,6 +488,8 @@ pub(super) struct Intel {
     last_rects: Vec<Rect>,
     pub queued: Vec<Queued>,
     pub unit: String,
+    pub picker: Option<decor::Picker>,
+    pub pick_caret: bool,
 }
 
 impl Intel {
@@ -436,6 +502,10 @@ impl Intel {
         self.signature = None;
         self.actions = None;
         self.hover = None;
+    }
+
+    pub fn show_actions(&mut self, doc: u64, items: Vec<(String, Value)>) {
+        self.actions = Some(Actions { doc, items, selected: 0, reveal: true });
     }
 }
 
@@ -472,11 +542,13 @@ impl Editors {
             self.intel.wants.clear();
             for doc in self.docs.values_mut() {
                 doc.lang = Lang::default();
+                doc.ranges.0 = None;
             }
             if let Some((doc, _)) = self.intel.saving.take() {
                 self.finish_save(doc);
             }
         }
+        self.validate_links(settings.markdown_validate, now, ctx);
         for doc in self.docs.values_mut() {
             sync(&mut self.lsp, &doc.buf, &mut doc.lang, ctx);
         }
@@ -516,12 +588,14 @@ impl Editors {
         if lang.settled != self.lsp.settled {
             lang.settled = self.lsp.settled;
             lang.requested = 0;
+            lang.lensed = 0;
             lang.hinted = (0, 0, 0);
         }
         let version = buf.version;
         let mark = head.filter(|head| on_word(buf, *head)).map(|head| (version, head));
+        let bulb = head.filter(|_| settings.lightbulb).map(|head| (version, buf.line_of(head)));
         if now - self.last_input <= 0.3 || now < lang.retry {
-            if lang.requested != version || now < lang.retry || lang.marked != mark {
+            if lang.requested != version || now < lang.retry || lang.marked != mark || lang.bulb_at != bulb {
                 ctx.request_repaint_after(Duration::from_millis(350));
             }
             return;
@@ -535,16 +609,36 @@ impl Editors {
                 self.intel.wants.push((request, Want::Marks { doc: id, version, head }));
             }
         }
+        if lang.bulb_at != bulb {
+            (lang.bulb_at, lang.bulb) = (bulb, None);
+            if let (Some((_, line)), Some(head)) = (bulb, head) {
+                let at = to_lsp(buf, head);
+                let problems: Vec<Value> = self.lsp.diagnostics(path).iter().filter(|d| d.start.0 <= line && d.end.0 >= line).map(|d| d.raw.clone()).collect();
+                let context = json!({"diagnostics": problems, "triggerKind": 2});
+                let params = json!({"textDocument": {"uri": lsp::uri(path)}, "range": lsp::range_json(at, at), "context": context});
+                if let Some(request) = self.lsp.request(path, "textDocument/codeAction", params) {
+                    self.intel.wants.push((request, Want::Bulb { doc: id, version, line }));
+                }
+            }
+        }
         let target = json!({"textDocument": {"uri": lsp::uri(path)}});
         if lang.requested != version {
             lang.requested = version;
             if let Some(request) = self.lsp.request(path, "textDocument/documentSymbol", target.clone()) {
                 self.intel.wants.push((request, Want::Symbols { doc: id, version }));
             }
+            if let Some(request) = self.lsp.request(path, "textDocument/foldingRange", target.clone()) {
+                self.intel.wants.push((request, Want::Folding { doc: id, version }));
+            }
             if settings.semantic_highlighting
                 && let Some(request) = self.lsp.request(path, "textDocument/semanticTokens/full", target.clone())
             {
                 self.intel.wants.push((request, Want::Tokens { doc: id, version }));
+            }
+            if settings.color_decorators
+                && let Some(request) = self.lsp.request(path, "textDocument/documentColor", target.clone())
+            {
+                self.intel.wants.push((request, Want::Colors { doc: id, version }));
             }
         }
         let (first, last) = lang.visible;
@@ -560,7 +654,26 @@ impl Editors {
         if !settings.code_lens {
             return;
         }
+        if lang.lensed != version {
+            lang.lensed = version;
+            if let Some(request) = self.lsp.request(path, "textDocument/codeLens", target.clone()) {
+                self.intel.wants.push((request, Want::CodeLens { doc: id, version }));
+            }
+        }
         let mut budget = 12;
+        let (resolves, generation) = (self.lsp.provider(path, "codeLensProvider")["resolveProvider"] == true, lang.lens_gen);
+        let unresolved = |lens: &(lsp::CodeLens, bool)| resolves && !lens.1 && lens.0.raw["command"].is_null() && lens.0.line + 2 >= first && lens.0.line <= last;
+        for (index, (lens, asked)) in lang.code_lens.iter_mut().enumerate().filter(|(_, lens)| unresolved(lens)) {
+            if budget == 0 {
+                ctx.request_repaint();
+                break;
+            }
+            budget -= 1;
+            *asked = true;
+            if let Some(request) = self.lsp.request(path, "codeLens/resolve", lens.raw.clone()) {
+                self.intel.wants.push((request, Want::Resolve { doc: id, generation, index }));
+            }
+        }
         for lens in lang.lens.iter_mut().filter(|lens| !lens.asked) {
             let Some(symbol) = lang.symbols.get(lens.symbol).filter(|s| s.line + 2 >= first && s.line <= last) else { continue };
             if budget == 0 {
@@ -633,10 +746,33 @@ impl Editors {
                     d.lang.hints = lsp::hints(&value);
                 }
             }
+            Want::Colors { doc, version } => {
+                if let Some(d) = self.docs.get_mut(&doc).filter(|d| !failed && d.buf.version == version) {
+                    d.lang.colors = Some(lsp::colors(&value));
+                }
+            }
+            Want::Present { doc, version } => self.presented(doc, version, &value),
             Want::Marks { doc, version, head } => {
                 let Some(d) = self.docs.get_mut(&doc).filter(|d| !failed && d.buf.version == version && d.lang.marked == Some((version, head))) else { return };
                 let marks = lsp::highlights(&value).into_iter().map(|(a, b)| (from_lsp(&d.buf, a), from_lsp(&d.buf, b))).filter(|(a, b)| a < b).collect();
                 d.lang.marks = marks;
+            }
+            Want::Folding { doc, version } => {
+                let Some(d) = self.docs.get_mut(&doc).filter(|d| !failed && d.buf.version == version) else { return };
+                d.lang.folding = lsp::folding_ranges(&value);
+                d.ranges.0 = None;
+            }
+            Want::Grow { group, doc, version, sels } => {
+                let Some(d) = self.docs.get(&doc).filter(|d| d.buf.version == version) else { return };
+                let same = |t: &&mut Tab| t.doc == doc && super::buffer::same(&t.sels, &sels);
+                let Some(tab) = self.groups.get_mut(group).and_then(|g| g.tabs.iter_mut().find(same)) else { return };
+                let chains = lsp::selection_ranges(&value);
+                let wider = sels.iter().enumerate().map(|(at, s)| {
+                    let spans = chains.get(at).into_iter().flatten().map(|(a, b)| (from_lsp(&d.buf, *a), from_lsp(&d.buf, *b)));
+                    let larger = spans.filter(|(a, b)| *a <= s.start() && *b >= s.end() && b - a > s.end() - s.start()).min_by_key(|(a, b)| b - a);
+                    larger.map_or_else(|| d.buf.grow(*s), |(a, b)| Sel::new(a, b))
+                });
+                super::grow(tab, wider.collect());
             }
             Want::Lens { doc, generation, symbol, impls } => {
                 let Some(d) = self.docs.get_mut(&doc).filter(|d| d.lang.generation == generation) else { return };
@@ -698,6 +834,17 @@ impl Editors {
                     self.finish_save(doc);
                 }
             }
+            Want::Linked { doc, version, head } => {
+                let Some(d) = self.docs.get(&doc).filter(|d| d.buf.version == version) else { return };
+                let found = match lsp::linked_ranges(&value) {
+                    Some((ranges, word)) => Some((ranges.iter().map(|r| (from_lsp(&d.buf, r.0), from_lsp(&d.buf, r.1))).collect::<Vec<_>>(), word)),
+                    None => linked::builtin(&d.buf, head).map(|ranges| (ranges, None)),
+                };
+                let Some((ranges, word)) = found else { return };
+                for tab in self.groups.iter_mut().flat_map(|g| &mut g.tabs).filter(|t| t.doc == doc && t.sels.len() == 1 && t.sels[0].head == head) {
+                    tab.link.set(&d.buf, ranges.clone(), word.as_deref());
+                }
+            }
             Want::Prepare { doc, pos, call, outgoing } => {
                 let item = value.as_array().and_then(|items| items.first());
                 let path = self.docs.get(&doc).and_then(|d| d.buf.path.clone());
@@ -718,6 +865,42 @@ impl Editors {
             Want::Hierarchy { doc, pos, call, outgoing } => {
                 self.open_peek(doc, pos, hierarchy_title(call, outgoing), lsp::hierarchy(&value), Some((call, outgoing)));
             }
+            Want::CodeLens { doc, version } => {
+                let Some(d) = self.docs.get_mut(&doc) else { return };
+                if failed {
+                    d.lang.lensed = 0;
+                    d.lang.retry = now + 1.0;
+                }
+                if failed || d.buf.version != version {
+                    return;
+                }
+                let mut old = std::mem::take(&mut d.lang.code_lens);
+                let mut found = lsp::code_lenses(&value);
+                for lens in found.iter_mut().filter(|lens| lens.raw["command"].is_null()) {
+                    if let Some(at) = old.iter().position(|o| o.0.line == lens.line && o.0.raw["command"].is_null() && !o.0.title.is_empty()) {
+                        let kept = old.remove(at).0;
+                        (lens.title, lens.command, lens.args) = (kept.title, kept.command, kept.args);
+                    }
+                }
+                d.lang.code_lens = found.into_iter().map(|lens| (lens, false)).collect();
+                d.lang.lens_gen += 1;
+            }
+            Want::Resolve { doc, generation, index } => {
+                let Some(d) = self.docs.get_mut(&doc).filter(|d| d.lang.lens_gen == generation) else { return };
+                let Some((lens, asked)) = d.lang.code_lens.get_mut(index) else { return };
+                if failed {
+                    *asked = false;
+                    d.lang.retry = now + 1.0;
+                } else {
+                    let found = lsp::code_lens(&value);
+                    (lens.title, lens.command, lens.args) = (found.title, found.command, found.args);
+                }
+            }
+            Want::Bulb { doc, version, line } => {
+                let Some(d) = self.docs.get_mut(&doc).filter(|d| d.lang.bulb_at == Some((version, line))) else { return };
+                let found = lsp::actions(&value);
+                d.lang.bulb = (!found.is_empty()).then(|| (lsp::quick_fix(&found), found));
+            }
         }
     }
 
@@ -737,7 +920,35 @@ impl Editors {
             let text = lines.get(item.start.0).map(|line| line.trim()).unwrap_or_default();
             item.label = if item.label.is_empty() { text.to_owned() } else { format!("{}   {text}", item.label) };
         }
-        self.intel.peek = Some(Peek { doc, pos, title: title.to_owned(), items, selected: 0, files, hierarchy, reveal: true, scroll: 0 });
+        let anchor = self.docs.get(&doc).map_or((0, 0), |d| {
+            let line = d.buf.line_of(pos.min(d.buf.len()));
+            (d.buf.version, d.buf.line_start(line) + d.buf.line_len(line))
+        });
+        let group = self.active;
+        self.intel.peek = Some(Peek { doc, pos, group, anchor, title: title.to_owned(), items, selected: 0, files, hierarchy, reveal: true, scroll: 0 });
+    }
+
+    pub(super) fn peek_line(&mut self, g: usize, doc: u64, buf: &Document) -> Option<usize> {
+        let peek = self.intel.peek.as_mut().filter(|p| p.doc == doc && p.group == g)?;
+        let (version, at) = peek.anchor;
+        if version != buf.version {
+            let line = match (buf.mapped(version, at), buf.mapped(version, 0)) {
+                (Some(moved), _) => {
+                    peek.pos = buf.mapped(version, peek.pos).unwrap_or(moved);
+                    buf.line_of(moved)
+                }
+                (None, Some(_)) => {
+                    self.intel.peek = None;
+                    return None;
+                }
+                (None, None) => {
+                    peek.pos = peek.pos.min(buf.len());
+                    buf.line_of(at.min(buf.len()))
+                }
+            };
+            peek.anchor = (buf.version, buf.line_start(line) + buf.line_len(line));
+        }
+        Some(buf.line_of(peek.anchor.1))
     }
 
     pub(super) fn find_doc(&self, path: &Path) -> Option<u64> {
@@ -838,6 +1049,45 @@ impl Editors {
                 Queued::Peek(doc, pos, title, items) => self.open_peek(doc, pos, title, items, None),
                 Queued::Action(doc, action) => self.run_action(doc, action),
                 Queued::Hierarchy(doc, pos, call, outgoing) => self.prepare(doc, pos, call, outgoing),
+                Queued::Lens(doc, lens) => self.run_lens(doc, lens),
+            }
+        }
+    }
+
+    fn run_lens(&mut self, doc: u64, lens: lsp::CodeLens) {
+        let args = &lens.args;
+        match lens.command.as_str() {
+            "rust-analyzer.runSingle" | "rust-analyzer.debugSingle" => {
+                let Some((line, cwd, test)) = lsp::runnable(&args[0]) else {
+                    return ui::notify_info(format!("{} is not a cargo command, so Halo cannot run it.", lens.title.trim()));
+                };
+                let debug = lens.command.ends_with("debugSingle");
+                match test.filter(|_| debug) {
+                    Some(id) => self.tests.clicked = Some((crate::test_parse::Kind::Rust, id, true)),
+                    None => {
+                        if debug {
+                            ui::notify_info("Halo can debug single cargo tests only, so this runs without the debugger.");
+                        }
+                        self.tests.run = Some((line, cwd));
+                    }
+                }
+            }
+            "rust-analyzer.showReferences" | "editor.action.showReferences" => {
+                let target = args[0].as_str().and_then(lsp::path_of).and_then(|path| self.find_doc(&path)).unwrap_or(doc);
+                let Some(d) = self.docs.get(&target) else { return };
+                let pos = from_lsp(&d.buf, lsp::pos(&args[1]));
+                let title = if lens.title.contains("implementation") { "Implementations" } else { "References" };
+                self.open_peek(target, pos, title, lsp::locations(&args[2]), None);
+            }
+            "rust-analyzer.gotoLocation" => {
+                if let Some(found) = lsp::locations(&args[0]).into_iter().next() {
+                    self.jump(&found.path, found.start, true);
+                }
+            }
+            name => {
+                if let Some(path) = self.docs.get(&doc).and_then(|d| d.buf.path.clone()) {
+                    self.lsp.request(&path, "workspace/executeCommand", json!({"command": name, "arguments": args}));
+                }
             }
         }
     }
@@ -874,6 +1124,31 @@ impl Editors {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn format_on_type(&mut self, c: char, id: u64, buf: &Document, lang: &mut Lang, head: usize, settings: &Settings, ctx: &egui::Context) {
+        let Some(path) = buf.path.clone().filter(|p| lang.attached && self.lsp.triggers(p, "documentOnTypeFormattingProvider").contains(&c)) else { return };
+        sync(&mut self.lsp, buf, lang, ctx);
+        let mut params = lsp::at(&path, to_lsp(buf, head));
+        params["ch"] = json!(c.to_string());
+        params["options"] = json!({"tabSize": settings.tab_size, "insertSpaces": settings.insert_spaces});
+        if let Some(request) = self.lsp.request(&path, "textDocument/onTypeFormatting", params) {
+            self.intel.wants.push((request, Want::Format { doc: id, version: buf.version, save: false }));
+        }
+    }
+
+    pub(super) fn ask_linked(&mut self, id: u64, buf: &Document, lang: &mut Lang, tab: &mut Tab, head: usize, ctx: &egui::Context) {
+        if let Some(path) = buf.path.clone().filter(|_| lang.attached) {
+            sync(&mut self.lsp, buf, lang, ctx);
+            if let Some(request) = self.lsp.request(&path, "textDocument/linkedEditingRange", lsp::at(&path, to_lsp(buf, head))) {
+                self.intel.wants.push((request, Want::Linked { doc: id, version: buf.version, head }));
+                return;
+            }
+        }
+        if let Some(ranges) = linked::builtin(buf, head) {
+            tab.link.set(buf, ranges, None);
+        }
+    }
+
     pub(super) fn intel_exec(&mut self, cmd: &Command, settings: &Settings, ctx: &egui::Context) -> bool {
         use Command::*;
         if matches!(cmd, GoBack | GoForward) {
@@ -885,6 +1160,20 @@ impl Editors {
                 self.show_path(&path);
                 self.with_active(|_, tab| tab.sels = vec![Sel::caret(pos)]);
             }
+            return true;
+        }
+        if *cmd == ExpandSelection
+            && let Some((g, t)) = self.active_tab()
+            && let tab = &self.groups[g].tabs[t]
+            && let Some(doc) = self.docs.get_mut(&tab.doc)
+            && let Some(path) = doc.buf.path.clone().filter(|_| doc.lang.attached)
+        {
+            sync(&mut self.lsp, &doc.buf, &mut doc.lang, ctx);
+            let at = |s: &Sel| to_lsp(&doc.buf, s.head);
+            let positions: Vec<Value> = tab.sels.iter().map(at).map(|(line, character)| json!({"line": line, "character": character})).collect();
+            let params = json!({"textDocument": {"uri": lsp::uri(&path)}, "positions": positions});
+            let Some(request) = self.lsp.request(&path, "textDocument/selectionRange", params) else { return false };
+            self.intel.wants.push((request, Want::Grow { group: g, doc: tab.doc, version: doc.buf.version, sels: tab.sels.clone() }));
             return true;
         }
         let known = matches!(
@@ -899,6 +1188,9 @@ impl Editors {
         let Some(doc) = self.docs.get_mut(&id) else { return false };
         sync(&mut self.lsp, &doc.buf, &mut doc.lang, ctx);
         let buf = &doc.buf;
+        if *cmd == TriggerSuggest && !doc.lang.attached && md_suggest(&mut self.intel.suggest, self.root.as_deref(), id, buf, sel.head, None) {
+            return true;
+        }
         let Some(path) = buf.path.clone().filter(|_| doc.lang.attached) else {
             self.banner = notice("No language server is running for this file. Servers are listed under Languages in Settings.".into());
             return true;
@@ -972,6 +1264,9 @@ impl Editors {
     pub(super) fn typed(&mut self, c: char, id: u64, buf: &Document, lang: &mut Lang, tab: &Tab, prose: bool, ctx: &egui::Context) {
         self.intel.hover = None;
         let head = tab.sels[0].head;
+        if !lang.attached && md_suggest(&mut self.intel.suggest, self.root.as_deref(), id, buf, head, Some(c)) {
+            return;
+        }
         let Some(path) = buf.path.clone().filter(|_| lang.attached) else {
             let start = buf.word_at(head).0.min(head);
             if !is_word(c) || prose || tab.snippet.is_some() {
@@ -1047,7 +1342,7 @@ impl Editors {
             } else if *key == Key::Escape && (intel.signature.is_some() || intel.hover.is_some()) {
                 intel.signature = None;
                 intel.hover = None;
-            } else if let Some(peek) = intel.peek.as_mut().filter(|p| p.doc == id && *key != Key::Tab) {
+            } else if let Some(peek) = intel.peek.as_mut().filter(|p| p.doc == id && p.group == self.active && *key != Key::Tab) {
                 match key {
                     Key::Escape => {}
                     Key::Enter => intel.queued.extend(peek.items.get(peek.selected).map(|item| Queued::Jump(item.path.clone(), item.start))),
@@ -1090,6 +1385,9 @@ impl Editors {
                 tab.snippet = snippet::Session::begin(buf, &mut tab.sels, start, stops);
             }
             tab.reveal = Some(tab.sels[0].head);
+            if item.kind == 19 && item.text.ends_with('/') {
+                md_suggest(&mut self.intel.suggest, self.root.as_deref(), popup.doc, buf, tab.sels[0].head, None);
+            }
         }
     }
 
@@ -1170,7 +1468,9 @@ impl Editors {
         if let Some(popup) = self.intel.suggest.as_mut().filter(|p| p.doc == id) {
             let valid = tab.sels.len() == 1 && tab.sels[0].is_empty() && head >= popup.start && buf.line_of(popup.start) == buf.line_of(head);
             let prefix = if valid { buf.text_of(popup.start, head) } else { String::new() };
-            if valid && prefix.chars().all(is_word) && (popup.dot || !prefix.is_empty()) {
+            let loose = popup.items.first().is_some_and(|item| matches!(item.kind, 17..=19));
+            let fits = |c: char| is_word(c) || (loose && !c.is_whitespace() && !"/#()<>\"'`".contains(c));
+            if valid && prefix.chars().all(fits) && (popup.dot || !prefix.is_empty()) {
                 if popup.prefix.as_deref() != Some(prefix.as_str()) {
                     let lower = prefix.to_lowercase();
                     let rank = |item: &Completion| if prefix.is_empty() { Some(0) } else { crate::search::score(&prefix, &item.filter) };
@@ -1283,13 +1583,11 @@ impl Editors {
         }
     }
 
-    pub(super) fn peek_ui(&mut self, ui: &mut Ui, theme: &Theme, font: &FontId, area: Rect, below: Option<f32>, id: u64) {
+    pub(super) fn peek_ui(&mut self, ui: &mut Ui, theme: &Theme, (font, style): (&FontId, super::typography::FontStyle), zone: Rect, id: u64) {
         let context = self.config.peek_context_lines.max(1);
         let Some(peek) = self.intel.peek.as_mut().filter(|p| p.doc == id) else { return };
         let row_h = (font.size * 1.35).round();
-        let height = (26.0 + row_h * (context * 2 + 1) as f32 + 2.0).min(area.height() - 30.0).max(80.0);
-        let top = below.filter(|y| *y > area.top()).unwrap_or(area.top()).min(area.bottom() - height).max(area.top());
-        let rect = Rect::from_min_size(pos2(area.left() + 6.0, top), vec2(area.width() - 14.0, height));
+        let rect = Rect::from_min_max(zone.min + vec2(6.0, 2.0), zone.max - vec2(8.0, 2.0));
         ui.interact(rect, Id::new(("peek", id)), Sense::click());
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect(rect, CornerRadius::same(3), theme.panel, Stroke::new(1.0, theme.accent), StrokeKind::Inside);
@@ -1338,7 +1636,8 @@ impl Editors {
                 }
                 let shown_text: String = text.chars().take(300).collect::<String>().replace('\t', "    ");
                 clip.text(pos2(preview.left() + 44.0, y + row_h / 2.0), Align2::RIGHT_CENTER, line + 1, font.clone(), theme.text_dim);
-                clip.text(pos2(preview.left() + 56.0, y + row_h / 2.0), Align2::LEFT_CENTER, shown_text, font.clone(), theme.text);
+                let galley = clip.layout_job(style.apply(LayoutJob::simple_singleline(shown_text, font.clone(), theme.text)));
+                clip.galley(pos2(preview.left() + 56.0, y + (row_h - galley.size().y) / 2.0), galley, theme.text);
             }
             if opened.double_clicked() {
                 jump = Some(peek.selected);
@@ -1565,6 +1864,30 @@ mod tests {
     }
 
     #[test]
+    fn grows_selections_from_the_server_chain_while_they_stand_still() {
+        let (ctx, settings) = (egui::Context::default(), Settings::default());
+        let mut editors = editor_with_lines(&ctx, &settings);
+        let group = editors.active;
+        let at = editors.groups[group].active;
+        let tab = &mut editors.groups[group].tabs[at];
+        tab.sels = vec![Sel::caret(6)];
+        let (id, caret) = (tab.doc, tab.sels.clone());
+        let version = editors.docs[&id].buf.version;
+        let chain = json!([{"range": lsp::range_json((0, 6), (0, 6)), "parent": {"range": lsp::range_json((0, 4), (0, 21)), "parent": {"range": lsp::range_json((0, 0), (0, 26))}}}]);
+        let spans = |e: &Editors| e.active_tab().map(|(g, t)| e.groups[g].tabs[t].sels.iter().map(|s| (s.start(), s.end())).collect::<Vec<_>>()).unwrap();
+        editors.reply(Want::Grow { group, doc: id, version, sels: caret.clone() }, Some(chain.clone()), 0.0);
+        assert_eq!(spans(&editors), vec![(4, 21)]);
+        editors.reply(Want::Grow { group, doc: id, version, sels: caret }, Some(chain), 0.0);
+        assert_eq!(spans(&editors), vec![(4, 21)]);
+        let word = vec![Sel::new(4, 21)];
+        editors.reply(Want::Grow { group, doc: id, version, sels: word }, None, 0.0);
+        assert!(spans(&editors)[0].1 - spans(&editors)[0].0 > 17);
+        editors.exec(&Command::ShrinkSelection, &settings, &ctx);
+        editors.exec(&Command::ShrinkSelection, &settings, &ctx);
+        assert_eq!(spans(&editors), vec![(6, 6)]);
+    }
+
+    #[test]
     fn edits_reach_the_language_server_in_the_frame_they_are_typed() {
         let (ctx, settings) = (egui::Context::default(), Settings { lsp: false, ..Settings::default() });
         let path = std::env::temp_dir().join(format!("halo-sync-test-{}.cpp", std::process::id()));
@@ -1691,10 +2014,174 @@ mod tests {
     }
 
     #[test]
+    fn server_lenses_replace_own_counts_run_on_click_and_the_lightbulb_opens_actions() {
+        let (ctx, settings) = (egui::Context::default(), Settings::default());
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        run(&ctx, &mut editors, &settings, vec![], 1.0);
+        run(&ctx, &mut editors, &settings, vec![Event::Paste("fn a() {}\nfn b() {}\n".into())], 1.0);
+        let id = editors.groups[0].tabs[0].doc;
+        editors.groups[0].tabs[0].sels = vec![Sel::caret(0)];
+        let place = Location { path: "x.rs".into(), start: (0, 0), end: (0, 1), label: String::new() };
+        let runnable = json!({"kind": "cargo", "args": {"cargoArgs": ["test"], "executableArgs": ["t", "--exact"]}});
+        let lens = |command: &str, title: &str, args: Value| {
+            let raw = json!({"range": lsp::range_json((0, 0), (0, 2)), "command": {"title": title, "command": command, "arguments": args}});
+            (lsp::code_lens(&raw), false)
+        };
+        let d = editors.docs.get_mut(&id).unwrap();
+        let version = d.buf.version;
+        let lang = &mut d.lang;
+        lang.attached = true;
+        lang.symbols = vec![Symbol { name: "a".into(), kind: 12, line: 0, col: 3, end_line: 0, depth: 0, container: String::new(), path: None }];
+        lang.lens = vec![Lens { symbol: 0, refs: Some(vec![place]), impls: None, asked: true }];
+        lang.code_lens = vec![lens("rust-analyzer.runSingle", "Run Test", json!([runnable])), lens("rust-analyzer.showReferences", "3 references", json!([null, {"line": 0, "character": 3}, []]))];
+        lang.bulb_at = Some((version, 0));
+        lang.bulb = Some((true, vec![("Fix it".into(), json!({"title": "Fix it", "kind": "quickfix"}))]));
+        run(&ctx, &mut editors, &settings, vec![], 1.5);
+        let mut t = 2.0;
+        let mut click = |editors: &mut Editors, pos: Pos2| {
+            for pressed in [None, Some(true), Some(false)] {
+                t += 0.05;
+                let events = match pressed {
+                    None => vec![Event::PointerMoved(pos)],
+                    Some(pressed) => vec![Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }],
+                };
+                run(&ctx, editors, &settings, events, t);
+            }
+        };
+        let font = FontId::monospace(settings.font_size);
+        let (char_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
+        let line_h = (row_h * 1.25).round();
+        let top = super::super::TAB_H + 22.0;
+        click(&mut editors, pos2(8.0 * char_w + 6.0 + 4.0, top + 0.5 * line_h));
+        assert_eq!(editors.tests.run, Some(("cargo test -- t --exact".into(), None)), "the first lens is the server's Run, not Halo's own count");
+        assert!(editors.intel.peek.is_none());
+
+        assert!(editors.intel.actions.is_none());
+        click(&mut editors, pos2(char_w * 1.1 + 2.0, top + 1.5 * line_h));
+        assert_eq!(editors.intel.actions.as_ref().map(|a| (a.doc, a.items.len())), Some((id, 1)));
+        editors.docs.get_mut(&id).unwrap().buf.version += 1;
+        editors.intel.actions = None;
+        click(&mut editors, pos2(char_w * 1.1 + 2.0, top + 1.5 * line_h));
+        assert!(editors.intel.actions.is_none(), "the lightbulb is gone once the document changed");
+
+        assert!(runs_lens("x.fix", &json!({"commands": ["x.fix"]})) && runs_lens("rust-analyzer.gotoLocation", &Value::Null));
+        assert!(!runs_lens("x.other", &json!({"commands": ["x.fix"]})) && !runs_lens("", &Value::Null));
+    }
+
+    #[test]
     fn a_line_inserted_above_the_view_keeps_the_same_text_on_top() {
         let include = lsp::Edit { start: (0, 0), end: (0, 0), text: "#include <cstddef>\n".into() };
         let (before, after, first, shown, focused) = accept_with_tab(vec![include]);
         assert!(after > before && focused, "{before} {after}");
         assert_eq!(first, shown);
+    }
+
+    #[test]
+    fn server_snippet_completions_land_on_tab_stops_with_mirrors() {
+        let accept = |text: &str, start: usize, head: usize, item: Value| {
+            let mut editors = Editors::new();
+            editors.intel.unit = "    ".into();
+            let mut buf = Document::from_text(text, "t".into());
+            let mut tab = Tab { sels: vec![Sel::caret(head)], ..Default::default() };
+            let items = lsp::completions(&json!([item])).0;
+            editors.intel.suggest = Some(Suggest { doc: 0, start, items, shown: vec![0], selected: 0, prefix: None, incomplete: false, dot: false, reveal: true });
+            editors.accept_suggestion(&mut buf, &mut tab);
+            (buf, tab)
+        };
+        let span = |a: usize, b: usize| json!({"start": {"line": 1, "character": a}, "end": {"line": 1, "character": b}});
+        let edit = json!({"insert": span(4, 5), "replace": span(4, 5), "newText": "fn ${1:name}($2) {\n\t$0\n}"});
+        let top = json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "use a;\n"}]);
+        let (mut buf, mut tab) = accept("mod m {\n    f\n}", 12, 13, json!({"label": "fn", "insertTextFormat": 2, "textEdit": edit, "additionalTextEdits": top}));
+        assert_eq!(buf.rope.to_string(), "use a;\nmod m {\n    fn name() {\n        \n    }\n}");
+        assert_eq!((tab.sels[0].start(), tab.sels[0].end(), tab.sels.len()), (22, 26, 1));
+        buf.insert_text(&mut tab.sels, "g");
+        buf.insert_text(&mut tab.sels, "o");
+        snippet::track(&mut tab.snippet, buf.len(), &tab.sels);
+        assert!(snippet::step(&mut tab.snippet, &mut tab.sels, true));
+        assert_eq!(tab.sels[0].head, 25);
+        assert!(snippet::step(&mut tab.snippet, &mut tab.sels, true));
+        assert_eq!((tab.sels[0].head, tab.snippet.is_none()), (37, true));
+
+        let (mut buf, mut tab) = accept("", 0, 0, json!({"label": "for", "insertTextFormat": 2, "insertText": "for (let ${1:i} = 0; $1 < ${2:n}; $1++) {}"}));
+        assert_eq!(tab.sels.iter().map(|s| (s.start(), s.end())).collect::<Vec<_>>(), vec![(9, 10), (16, 17), (23, 24)]);
+        buf.insert_text(&mut tab.sels, "k");
+        buf.insert_text(&mut tab.sels, "j");
+        snippet::track(&mut tab.snippet, buf.len(), &tab.sels);
+        assert_eq!(buf.rope.to_string(), "for (let kj = 0; kj < n; kj++) {}");
+        assert!(snippet::step(&mut tab.snippet, &mut tab.sels, true));
+        assert_eq!(buf.rope.slice(tab.sels[0].start()..tab.sels[0].end()).to_string(), "n");
+
+        let (buf, tab) = accept("v.p", 2, 3, json!({"label": "push", "insertTextFormat": 2, "insertText": "push($0)"}));
+        assert_eq!((buf.rope.to_string().as_str(), tab.sels[0].head, tab.snippet.is_none()), ("v.push()", 7, true));
+    }
+
+    #[test]
+    fn on_type_formatting_applies_only_to_the_version_it_was_asked_for() {
+        let (ctx, settings) = (egui::Context::default(), Settings { lsp: false, ..Settings::default() });
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        run(&ctx, &mut editors, &settings, vec![], 1.0);
+        run(&ctx, &mut editors, &settings, vec![], 1.0);
+        let id = editors.groups[0].tabs[0].doc;
+        let old = editors.docs[&id].buf.version;
+        run(&ctx, &mut editors, &settings, vec![Event::Paste("a;\n".into())], 1.0);
+        let version = editors.docs[&id].buf.version;
+        let edits = json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "  "}]);
+        editors.reply(Want::Format { doc: id, version: old, save: false }, Some(edits.clone()), 0.0);
+        assert_eq!(editors.docs[&id].buf.rope.to_string(), "a;\n");
+        editors.reply(Want::Format { doc: id, version, save: false }, Some(edits), 0.0);
+        assert_eq!(editors.docs[&id].buf.rope.to_string(), "  a;\n");
+        editors.exec(&Command::Undo, &settings, &ctx);
+        assert_eq!(editors.docs[&id].buf.rope.to_string(), "a;\n");
+    }
+
+    #[test]
+    fn markdown_links_complete_paths_and_report_broken_ones() {
+        let dir = std::env::temp_dir().join(format!("halo-md-intel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("docs/guide.md"), "# Guide
+").unwrap();
+        let readme = dir.join("README.md");
+        std::fs::write(&readme, "[gone](nope.md)
+").unwrap();
+        let (ctx, settings) = (egui::Context::default(), Settings { lsp: false, ..Settings::default() });
+        let mut editors = Editors::new();
+        editors.set_root(Some(dir.clone()));
+        editors.open(&readme);
+        editors.finish_loads();
+        let mut t = 1.0;
+        let mut frames = |editors: &mut Editors, events: Vec<Event>| {
+            for frame in 0..3 {
+                t += 0.016;
+                run(&ctx, editors, &settings, if frame == 0 { events.clone() } else { vec![] }, t);
+            }
+        };
+        for _ in 0..300 {
+            frames(&mut editors, vec![]);
+            if !editors.lsp.diagnostics(&readme).is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let problems: Vec<String> = editors.lsp.diagnostics(&readme).iter().map(|d| format!("{} {:?}", d.source, d.start)).collect();
+        assert_eq!(problems, ["markdown (0, 7)"]);
+        let id = editors.groups[0].tabs[0].doc;
+        let end = editors.docs[&id].buf.len();
+        editors.groups[0].tabs[0].sels = vec![Sel::caret(end)];
+        frames(&mut editors, "[a](".chars().map(|c| Event::Text(c.into())).collect());
+        let labels = |editors: &Editors| editors.intel.suggest.as_ref().map(|s| s.shown.iter().map(|i| s.items[*i].label.clone()).collect::<Vec<_>>());
+        assert_eq!(labels(&editors), Some(vec!["docs".to_owned(), "README.md".to_owned()]));
+        let key = |key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        frames(&mut editors, vec![key(Key::Tab)]);
+        assert_eq!(labels(&editors), Some(vec!["guide.md".to_owned()]));
+        frames(&mut editors, vec![key(Key::Tab)]);
+        frames(&mut editors, vec![Event::Text("#".into())]);
+        assert_eq!(labels(&editors), Some(vec!["guide".to_owned()]));
+        frames(&mut editors, vec![key(Key::Enter)]);
+        let buf = &editors.docs[&id].buf;
+        assert!(buf.text_of(0, buf.len()).contains("[a](docs/guide.md#guide"), "{}", buf.text_of(0, buf.len()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

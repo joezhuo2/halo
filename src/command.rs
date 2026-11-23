@@ -86,6 +86,10 @@ pub enum Command {
     Unfold,
     FoldAll,
     UnfoldAll,
+    FoldLevel(u8),
+    FoldRecursively,
+    UnfoldRecursively,
+    FoldAllBlockComments,
 
     SelectAll,
     AddCursorAbove,
@@ -94,6 +98,12 @@ pub enum Command {
     SelectNextOccurrence,
     MoveSelectionToNextFindMatch,
     SelectAllOccurrences,
+    CursorWordPartLeft,
+    CursorWordPartRight,
+    CursorWordPartLeftSelect,
+    CursorWordPartRightSelect,
+    DeleteWordPartLeft,
+    DeleteWordPartRight,
     ExpandSelection,
     ShrinkSelection,
     SelectToBracket,
@@ -173,6 +183,13 @@ pub enum Command {
     GoToFile,
     ShowCommands,
     FindInFiles,
+    NewSearchEditor,
+    OpenSearchEditor,
+    RerunSearchEditorSearch,
+    ToggleSearchEditorContextLines,
+    ToggleSearchEditorCaseSensitive,
+    ToggleSearchEditorWholeWord,
+    ToggleSearchEditorRegex,
     GoToSymbol,
     GoToLine,
     GoToBracket,
@@ -221,6 +238,7 @@ pub enum Command {
     ShowCallHierarchy,
     ShowTypeHierarchy,
     ShowHover,
+    ShowColorPicker,
     TriggerSuggest,
     TriggerParameterHints,
     RenameSymbol,
@@ -509,6 +527,16 @@ fn defaults() -> Vec<Binding> {
         e(NONE, Key::F2, RenameSymbol),
         k(C, Key::Num0, FoldAll),
         k(C, Key::J, UnfoldAll),
+        k(C, Key::Num1, FoldLevel(1)),
+        k(C, Key::Num2, FoldLevel(2)),
+        k(C, Key::Num3, FoldLevel(3)),
+        k(C, Key::Num4, FoldLevel(4)),
+        k(C, Key::Num5, FoldLevel(5)),
+        k(C, Key::Num6, FoldLevel(6)),
+        k(C, Key::Num7, FoldLevel(7)),
+        k(C, Key::OpenBracket, FoldRecursively),
+        k(C, Key::CloseBracket, UnfoldRecursively),
+        k(C, Key::Slash, FoldAllBlockComments),
         k(C, Key::D, MoveSelectionToNextFindMatch),
         k(C, Key::Q, GoToLastEditLocation),
         e(Modifiers::ALT, Key::ArrowUp, MoveLineUp),
@@ -516,6 +544,8 @@ fn defaults() -> Vec<Binding> {
         e(sa, Key::ArrowUp, CopyLineUp),
         e(sa, Key::ArrowDown, CopyLineDown),
         e(sa, Key::A, ToggleBlockComment),
+        e(ca, Key::Backspace, DeleteWordPartLeft),
+        e(ca, Key::Delete, DeleteWordPartRight),
         e(sa, Key::ArrowRight, ExpandSelection),
         e(sa, Key::ArrowLeft, ShrinkSelection),
         e(sa, Key::I, AddCursorsToLineEnds),
@@ -599,6 +629,12 @@ fn defaults() -> Vec<Binding> {
         e(C, Key::G, GoToLine),
         e(C, Key::D, SelectNextOccurrence),
         e(C, Key::Slash, ToggleComment),
+        g(Modifiers::ALT, Key::Enter, OpenSearchEditor),
+        e(cs, Key::R, RerunSearchEditorSearch),
+        e(Modifiers::ALT, Key::L, ToggleSearchEditorContextLines),
+        e(Modifiers::ALT, Key::C, ToggleSearchEditorCaseSensitive),
+        e(Modifiers::ALT, Key::W, ToggleSearchEditorWholeWord),
+        e(Modifiers::ALT, Key::R, ToggleSearchEditorRegex),
     ];
     let shell = crate::when::parse(SEND_TO_SHELL).ok().map(Arc::new);
     for b in list.iter_mut().filter(|b| b.scope == Scope::Global && b.shortcut.modifiers == C) {
@@ -628,7 +664,32 @@ fn defaults() -> Vec<Binding> {
         b.when = if matches!(b.command, AccessibleDiffViewerNext | AccessibleDiffViewerPrev) { "inDiffEditor" } else { "!inDiffEditor" }.to_owned();
         b.cond = crate::when::parse(&b.when).ok().map(Arc::new);
     }
+    for b in list.iter_mut().filter(|b| b.command.label().starts_with("Search Editor:")) {
+        b.when = if b.command == OpenSearchEditor { "searchViewletFocus" } else { "inSearchEditor" }.to_owned();
+        b.cond = crate::when::parse(&b.when).ok().map(Arc::new);
+    }
+    for b in list.iter_mut().filter(|b| b.command == MarkdownPreview) {
+        (b.when, b.cond) = ("editorLangId == markdown".to_owned(), crate::when::parse("editorLangId == markdown").ok().map(Arc::new));
+    }
     list
+}
+
+static PASTED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn consume(i: &mut egui::InputState, shortcut: &KeyboardShortcut) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    if shortcut.logical_key != Key::V || !shortcut.modifiers.command {
+        return i.consume_shortcut(shortcut);
+    }
+    if i.modifiers.matches_exact(shortcut.modifiers) && let Some(at) = i.events.iter().position(|e| matches!(e, egui::Event::Paste(_))) {
+        i.events.remove(at);
+        PASTED_AT.store(i.time.to_bits(), Relaxed);
+        return true;
+    }
+    let release = i.events.iter().position(|e| matches!(e, egui::Event::Key { key: Key::V, pressed: false, modifiers, .. } if modifiers.matches_exact(shortcut.modifiers)));
+    let Some(at) = release.filter(|_| i.time - f64::from_bits(PASTED_AT.load(Relaxed)) > 2.0) else { return false };
+    i.events.remove(at);
+    true
 }
 
 pub fn all() -> Vec<Command> {
@@ -640,10 +701,13 @@ pub fn all() -> Vec<Command> {
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
+        FoldRecursively, UnfoldRecursively, FoldAllBlockComments, FoldLevel(1), FoldLevel(2), FoldLevel(3), FoldLevel(4), FoldLevel(5),
+        FoldLevel(6), FoldLevel(7),
         SortLinesAscending, SortLinesDescending, RemoveDuplicateLines, ReverseLines, TransformToUppercase, TransformToLowercase,
         TransformToTitlecase, TransformToSnakecase, TransformToCamelcase, TransformToKebabcase,
-        RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection,
+        RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection, DeleteWordPartLeft, DeleteWordPartRight,
         SelectAll, AddCursorAbove, AddCursorBelow, AddCursorsToLineEnds, SelectNextOccurrence, MoveSelectionToNextFindMatch, SelectAllOccurrences, ExpandSelection, ShrinkSelection,
+        CursorWordPartLeftSelect, CursorWordPartRightSelect,
         SelectToBracket, CursorUndo, ToggleColumnSelection, CursorColumnSelectLeft, CursorColumnSelectRight, CursorColumnSelectUp,
         CursorColumnSelectDown, ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap,
         SplitEditorDown, SplitEditorLeft, SplitEditorUp, LayoutSingle, LayoutTwoColumns, LayoutThreeColumns, LayoutTwoRows, LayoutThreeRows,
@@ -654,10 +718,11 @@ pub fn all() -> Vec<Command> {
         MarkdownPreview, MarkdownPreviewSide, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
         MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
         AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations,
-        GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation, ReopenClosed,
+        GoToFile, ShowCommands, FindInFiles, NewSearchEditor, OpenSearchEditor, RerunSearchEditorSearch, ToggleSearchEditorContextLines,
+        ToggleSearchEditorCaseSensitive, ToggleSearchEditorWholeWord, ToggleSearchEditorRegex, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation, ReopenClosed,
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, AccessibleDiffViewerNext, AccessibleDiffViewerPrev, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
-        GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
-        ShowHover, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
+        GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy, CursorWordPartLeft, CursorWordPartRight,
+        ShowHover, ShowColorPicker, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut,
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
@@ -736,7 +801,8 @@ fn build(mut bindings: Vec<Binding>, user: &[Entry]) -> (Vec<Binding>, Vec<Strin
         if bindings.iter().any(|b| b.command == *command && same_keys(b) && b.when == when) {
             continue;
         }
-        let scope = if editor.contains(command) { Scope::Editor } else { Scope::Global };
+        let word_part = matches!(command, Command::CursorWordPartLeft | Command::CursorWordPartRight | Command::CursorWordPartLeftSelect | Command::CursorWordPartRightSelect);
+        let scope = if editor.contains(command) || word_part { Scope::Editor } else { Scope::Global };
         bindings.push(Binding { command: command.clone(), shortcut: keys[0], chord: keys.get(1).copied(), scope, when, user: Some(index), cond });
     }
     let weight = |b: &Binding| {
@@ -824,6 +890,12 @@ impl Command {
         if let Self::Git(op) | Self::GitAt(op, _) = self {
             return format!("git{op:?}");
         }
+        match self {
+            Self::NewSearchEditor => return "search.action.openNewEditor".into(),
+            Self::OpenSearchEditor => return "search.action.openInEditor".into(),
+            Self::FoldLevel(level) => return format!("foldLevel{level}"),
+            _ => {}
+        }
         let name = format!("{self:?}");
         name[..1].to_lowercase() + &name[1..]
     }
@@ -839,10 +911,12 @@ impl Command {
             | NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => "File",
             Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
-            | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection
+            | Unfold | FoldAll | UnfoldAll | FoldLevel(_) | FoldRecursively | UnfoldRecursively | FoldAllBlockComments
+            | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection
             | SortLinesAscending | SortLinesDescending | RemoveDuplicateLines | ReverseLines | TransformToUppercase | TransformToLowercase
-            | TransformToTitlecase | TransformToSnakecase | TransformToCamelcase | TransformToKebabcase => "Edit",
+            | TransformToTitlecase | TransformToSnakecase | TransformToCamelcase | TransformToKebabcase | DeleteWordPartLeft | DeleteWordPartRight => "Edit",
             SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | SelectAllOccurrences
+            | CursorWordPartLeftSelect | CursorWordPartRightSelect
             | ExpandSelection | ShrinkSelection | SelectToBracket | CursorUndo | ToggleColumnSelection | CursorColumnSelectLeft
             | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
@@ -855,10 +929,12 @@ impl Command {
             | ToggleSidebarPosition | ToggleSecondarySidebar | MovePanelLeft | MovePanelRight | MovePanelBottom | MovePanelTop
             | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter | AlignPanelJustify | AlignPanelLeft | AlignPanelRight
             | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations => "View",
-            GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
+            GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | CursorWordPartLeft | CursorWordPartRight | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | GoToLastEditLocation | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | AccessibleDiffViewerNext | AccessibleDiffViewerPrev | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
-            ShowHover | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
+            NewSearchEditor | OpenSearchEditor | RerunSearchEditorSearch | ToggleSearchEditorContextLines | ToggleSearchEditorCaseSensitive
+            | ToggleSearchEditorWholeWord | ToggleSearchEditorRegex => "Go",
+            ShowHover | ShowColorPicker | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_)
             | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
@@ -958,6 +1034,12 @@ impl Command {
             Unfold => "Unfold",
             FoldAll => "Fold All",
             UnfoldAll => "Unfold All",
+            FoldLevel(level) => {
+                ["Fold Level 1", "Fold Level 2", "Fold Level 3", "Fold Level 4", "Fold Level 5", "Fold Level 6", "Fold Level 7"][(*level as usize).clamp(1, 7) - 1]
+            }
+            FoldRecursively => "Fold Recursively",
+            UnfoldRecursively => "Unfold Recursively",
+            FoldAllBlockComments => "Fold All Block Comments",
             SelectAll => "Select All",
             AddCursorAbove => "Add Cursor Above",
             AddCursorBelow => "Add Cursor Below",
@@ -965,6 +1047,12 @@ impl Command {
             SelectNextOccurrence => "Add Next Occurrence",
             MoveSelectionToNextFindMatch => "Move Last Selection to Next Find Match",
             SelectAllOccurrences => "Select All Occurrences",
+            CursorWordPartLeft => "Move Word Part Left",
+            CursorWordPartRight => "Move Word Part Right",
+            CursorWordPartLeftSelect => "Select Word Part Left",
+            CursorWordPartRightSelect => "Select Word Part Right",
+            DeleteWordPartLeft => "Delete Word Part Left",
+            DeleteWordPartRight => "Delete Word Part Right",
             ExpandSelection => "Expand Selection",
             ShrinkSelection => "Shrink Selection",
             SelectToBracket => "Select to Bracket",
@@ -1042,6 +1130,13 @@ impl Command {
             GoToFile => "Go to File...",
             ShowCommands => "Show All Commands",
             FindInFiles => "Find in Files",
+            NewSearchEditor => "Search Editor: New Search Editor",
+            OpenSearchEditor => "Search Editor: Open Results in Editor",
+            RerunSearchEditorSearch => "Search Editor: Search Again",
+            ToggleSearchEditorContextLines => "Search Editor: Toggle Context Lines",
+            ToggleSearchEditorCaseSensitive => "Search Editor: Toggle Match Case",
+            ToggleSearchEditorWholeWord => "Search Editor: Toggle Match Whole Word",
+            ToggleSearchEditorRegex => "Search Editor: Toggle Use Regular Expression",
             GoToSymbol => "Go to Symbol in Editor...",
             GoToLine => "Go to Line...",
             GoToBracket => "Go to Bracket",
@@ -1088,6 +1183,7 @@ impl Command {
             ShowCallHierarchy => "Show Call Hierarchy",
             ShowTypeHierarchy => "Show Type Hierarchy",
             ShowHover => "Show Hover",
+            ShowColorPicker => "Show Color Picker",
             TriggerSuggest => "Trigger Suggest",
             TriggerParameterHints => "Trigger Parameter Hints",
             RenameSymbol => "Rename Symbol",
@@ -1267,5 +1363,24 @@ mod tests {
         let recent = built.iter().find(|b| b.command == Command::OpenRecent).unwrap();
         assert_eq!(recent.shortcut, parse_key("ctrl+r").unwrap());
         assert!(recent.active(focus(false, false).as_object().unwrap()) && !recent.active(focus(true, false).as_object().unwrap()));
+    }
+
+    #[test]
+    fn ctrl_shift_v_fires_once_with_or_without_clipboard_text() {
+        let ctx = egui::Context::default();
+        let shortcut = parse_key("ctrl+shift+v").unwrap();
+        let mods = Modifiers { ctrl: true, shift: true, command: true, ..Default::default() };
+        let release = egui::Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: mods };
+        let fired = |time: f64, mut events: Vec<egui::Event>| {
+            let mut out = (false, 0);
+            events.insert(0, egui::Event::ModifiersChanged(mods));
+            let input = egui::RawInput { time: Some(time), events, ..Default::default() };
+            ctx.run_ui(input, |ui| out = ui.input_mut(|i| (consume(i, &shortcut), i.events.iter().filter(|e| matches!(e, egui::Event::Paste(_))).count()))).textures_delta.clear();
+            out
+        };
+        assert_eq!(fired(10.0, vec![egui::Event::Paste("text".into())]), (true, 0));
+        assert_eq!(fired(10.1, vec![release.clone()]), (false, 0));
+        assert_eq!(fired(20.0, vec![release]), (true, 0));
+        assert_eq!(fired(20.1, vec![]), (false, 0));
     }
 }

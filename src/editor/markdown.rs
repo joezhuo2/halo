@@ -6,7 +6,7 @@ use super::layout::Dir;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use eframe::egui::text::{LayoutJob, TextFormat};
-use eframe::egui::{self, Align, Color32, CornerRadius, FontId, Layout, Rect, RichText, ScrollArea, Sense, Stroke, TextureHandle, TextureOptions, Ui, UiBuilder, pos2, vec2};
+use eframe::egui::{self, Align, Color32, CornerRadius, FontId, Layout, Rect, RichText, ScrollArea, Sense, Shape, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, UiBuilder, Vec2, pos2, vec2};
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ropey::Rope;
 use std::collections::HashMap;
@@ -15,6 +15,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
 const DEBOUNCE: f64 = 0.2;
+const CELL: Vec2 = vec2(12.0, 6.0);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Style {
@@ -262,7 +263,7 @@ pub enum Link {
     None,
 }
 
-fn unescape(text: &str) -> String {
+pub(super) fn unescape(text: &str) -> String {
     let bytes = text.as_bytes();
     let (mut out, mut i) = (vec![], 0);
     while i < bytes.len() {
@@ -320,6 +321,17 @@ pub fn y_for_line(marks: &[(usize, f32)], line: f32) -> f32 {
         Some(after) => before.1 + (after.1 - before.1) * (line - before.0 as f32) / (after.0 - before.0) as f32,
         None => before.1,
     }
+}
+
+fn columns(natural: &[f32], width: f32) -> Vec<f32> {
+    let mut order: Vec<usize> = (0..natural.len()).collect();
+    order.sort_by(|a, b| natural[*a].total_cmp(&natural[*b]));
+    let (mut out, mut left) = (natural.to_vec(), width);
+    for (n, &c) in order.iter().enumerate() {
+        out[c] = natural[c].min(left / (order.len() - n) as f32);
+        left -= out[c];
+    }
+    out
 }
 
 pub enum Out {
@@ -425,27 +437,7 @@ impl Paint<'_> {
                 let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
                 ui.painter().rect_filled(line, CornerRadius::ZERO, theme.border);
             }
-            Kind::Table(aligns, head, rows) => {
-                egui::Grid::new(("md_table", block.line)).striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
-                    for (r, row) in std::iter::once(head).chain(rows).enumerate() {
-                        for (c, cell) in row.iter().enumerate() {
-                            let align = match aligns.get(c) {
-                                Some(Alignment::Center) => Align::Center,
-                                Some(Alignment::Right) => Align::Max,
-                                _ => Align::Min,
-                            };
-                            ui.with_layout(Layout::top_down(align), |ui| {
-                                let cell: Vec<Span> = cell.iter().map(|s| match s {
-                                    Span::Text(t, style) => Span::Text(t.clone(), Style { bold: style.bold || r == 0, ..style.clone() }),
-                                    other => other.clone(),
-                                }).collect();
-                                self.paragraph(ui, &cell, block.line);
-                            });
-                        }
-                        ui.end_row();
-                    }
-                });
-            }
+            Kind::Table(aligns, head, rows) => self.table(ui, aligns, head, rows, block.line),
             Kind::Note(label, blocks) => {
                 ui.horizontal_top(|ui| {
                     ui.label(RichText::new(format!("[{label}]")).size(self.size * 0.9).color(theme.accent));
@@ -476,10 +468,82 @@ impl Paint<'_> {
         }
     }
 
-    fn rich(&mut self, ui: &mut Ui, spans: &[Span], size: f32, color: Color32, line: usize) {
+    fn table(&mut self, ui: &mut Ui, aligns: &[Alignment], head: &[Vec<Span>], rows: &[Vec<Vec<Span>>], line: usize) {
+        let theme = self.theme;
+        let bold = |cell: &Vec<Span>| -> Vec<Span> {
+            cell.iter().map(|s| match s {
+                Span::Text(t, style) => Span::Text(t.clone(), Style { bold: true, ..style.clone() }),
+                other => other.clone(),
+            }).collect()
+        };
+        let head: Vec<Vec<Span>> = head.iter().map(bold).collect();
+        let all: Vec<&[Vec<Span>]> = std::iter::once(head.as_slice()).chain(rows.iter().map(Vec::as_slice)).collect();
+        let mut natural = vec![0.0f32; all.iter().map(|r| r.len()).max().unwrap_or(0)];
+        for row in &all {
+            for (c, cell) in row.iter().enumerate() {
+                natural[c] = natural[c].max(self.natural(ui, cell) + 2.0 * CELL.x);
+            }
+        }
+        let widths = columns(&natural, ui.available_width());
+        let (left, start) = (ui.cursor().left(), ui.cursor().top());
+        let (mut top, clip) = (start, ui.clip_rect());
+        for (r, row) in all.iter().enumerate() {
+            let bg = ui.painter().add(Shape::Noop);
+            let (mut x, mut height, mut cells) = (left, self.size, vec![]);
+            for (c, w) in widths.iter().enumerate() {
+                if let Some(cell) = row.get(c) {
+                    let align = match aligns.get(c) {
+                        Some(Alignment::Center) => Align::Center,
+                        Some(Alignment::Right) => Align::Max,
+                        _ => Align::Min,
+                    };
+                    let inner = Rect::from_min_size(pos2(x, top) + CELL, vec2((w - 2.0 * CELL.x).max(1.0), f32::INFINITY));
+                    let mut child = ui.new_child(UiBuilder::new().max_rect(inner).layout(Layout::top_down(align)));
+                    child.set_clip_rect(Rect::from_x_y_ranges(x..=x + w, clip.y_range()).intersect(clip));
+                    self.paragraph(&mut child, cell, line);
+                    height = height.max(child.min_rect().height());
+                }
+                cells.push(x..=x + w);
+                x += w;
+            }
+            let rect = Rect::from_min_size(pos2(left, top), vec2(x - left, height + 2.0 * CELL.y));
+            let fill = match r {
+                0 => theme.panel,
+                r if r % 2 == 0 => ui::mix(theme.bg, theme.panel, 0.5),
+                _ => Color32::TRANSPARENT,
+            };
+            let stroke = Stroke::new(1.0, theme.border);
+            let mut shapes = vec![Shape::rect_filled(rect, CornerRadius::ZERO, fill)];
+            shapes.extend(cells.into_iter().map(|xs| Shape::rect_stroke(Rect::from_x_y_ranges(xs, rect.y_range()), CornerRadius::ZERO, stroke, StrokeKind::Middle)));
+            if r == 0 {
+                shapes.push(Shape::line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(2.0, theme.border)));
+            }
+            ui.painter().set(bg, Shape::Vec(shapes));
+            top = rect.bottom();
+        }
+        ui.allocate_rect(Rect::from_min_max(pos2(left, start), pos2(left + widths.iter().sum::<f32>(), top)), Sense::hover());
+    }
+
+    fn natural(&self, ui: &Ui, spans: &[Span]) -> f32 {
+        let text: Vec<Span> = spans.iter().filter(|s| !matches!(s, Span::Image { .. })).cloned().collect();
+        let images = spans.iter().filter_map(|s| match s {
+            Span::Image { url, .. } => Some(match resolve(self.dir, url) {
+                Link::File(path) => match self.images.get(&path) {
+                    Some(Img::Ready(_, size)) => size[0] as f32,
+                    _ => 32.0,
+                },
+                _ => 0.0,
+            }),
+            _ => None,
+        });
+        let (job, _) = self.job(&text, self.size, self.theme.text, f32::INFINITY);
+        images.fold(ui.painter().layout_job(job).size().x, f32::max)
+    }
+
+    fn job(&self, spans: &[Span], size: f32, color: Color32, width: f32) -> (LayoutJob, Vec<(usize, usize, String)>) {
         let theme = self.theme;
         let mut job = LayoutJob::default();
-        job.wrap.max_width = ui.available_width();
+        job.wrap.max_width = width;
         let (mut links, mut chars) = (vec![], 0);
         for span in spans {
             let (text, style) = match span {
@@ -511,6 +575,11 @@ impl Paint<'_> {
             chars += count;
             job.append(&text, 0.0, format);
         }
+        (job, links)
+    }
+
+    fn rich(&mut self, ui: &mut Ui, spans: &[Span], size: f32, color: Color32, line: usize) {
+        let (job, links) = self.job(spans, size, color, ui.available_width());
         let galley = ui.painter().layout_job(job);
         let (rect, resp) = ui.allocate_exact_size(galley.size(), Sense::click());
         ui.painter().galley(rect.min, galley.clone(), color);
@@ -564,6 +633,22 @@ impl Paint<'_> {
         if resp.double_clicked() {
             self.out.push(Out::Reveal(line));
         }
+        let key = ui.id().with(("md_copy", line));
+        let now = ui.input(|i| i.time);
+        let since = ui.data(|d| d.get_temp::<f64>(key)).map(|t| now - t).filter(|s| *s < 1.5);
+        if let Some(since) = since {
+            ui.ctx().request_repaint_after(Duration::from_secs_f64(1.5 - since));
+        }
+        let button = Rect::from_min_size(pos2(rect.right() - 30.0, rect.top() + 4.0), vec2(26.0, 26.0));
+        ui.scope_builder(UiBuilder::new().max_rect(button).id_salt(key), |ui| {
+            let focused = ui.memory(|m| m.has_focus(ui.next_auto_id()));
+            ui.set_opacity(ui::anim(ui, key.with("shown"), focused || since.is_some() || ui.rect_contains_pointer(rect)));
+            let icon = if since.is_some() { icons::CHECK } else { icons::COPY };
+            if ui::icon_button(ui, theme, icon, 26.0, false, "Copy code").clicked() {
+                ui.ctx().copy_text(text.strip_suffix('\n').unwrap_or(text).to_owned());
+                ui.data_mut(|d| d.insert_temp(key, now));
+            }
+        });
     }
 
     fn image(&mut self, ui: &mut Ui, url: &str, alt: &str, line: usize) {
@@ -843,6 +928,94 @@ mod tests {
         }
         assert!(tab.marks.len() >= 8 && tab.anchors.iter().any(|a| a.0 == "title"));
         assert!(tab.marks.windows(2).all(|w| w[0].1 <= w[1].1));
+    }
+
+    #[test]
+    fn sizes_table_columns_to_content_up_to_a_fair_share() {
+        assert_eq!(columns(&[40.0, 100.0], 500.0), [40.0, 100.0]);
+        assert_eq!(columns(&[40.0, 900.0, 600.0], 500.0), [40.0, 230.0, 230.0]);
+        assert_eq!(columns(&[300.0, 300.0], 200.0), [100.0, 100.0]);
+        assert!(columns(&[], 100.0).is_empty());
+    }
+
+    fn texts(shapes: &[egui::Shape], out: &mut Vec<(String, Rect, usize)>, rects: &mut Vec<Rect>) {
+        for shape in shapes {
+            match shape {
+                egui::Shape::Text(t) => out.push((t.galley.job.text.clone(), t.galley.rect.translate(t.pos.to_vec2()), t.galley.rows.len())),
+                egui::Shape::Rect(r) => rects.push(r.rect),
+                egui::Shape::Vec(inner) => texts(inner, out, rects),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn lays_tables_out_inside_the_preview_at_any_width() {
+        let long = "a long description that keeps going well past any narrow preview width so it has to wrap";
+        let source = format!("| id | description | n |\n|:--|:--|--:|\n| 1 | {long} | **7** |\n| 2 | `short` | 8 |\n");
+        for width in [320.0, 1000.0] {
+            let ctx = egui::Context::default();
+            let (theme, buf, mut tab) = (Theme::dark(), Document::from_text(&source, "a.md".into()), MdTab::default());
+            let preview = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 600.0));
+            let (mut found, mut rects) = (vec![], vec![]);
+            for _ in 0..2 {
+                let input = egui::RawInput { screen_rect: Some(preview), ..Default::default() };
+                let mut out = ctx.run_ui(input, |ui| {
+                    tab.ui(ui, &theme, preview, &buf, 0, 14.0);
+                });
+                out.textures_delta.clear();
+                (found, rects) = (vec![], vec![]);
+                texts(&out.shapes.into_iter().map(|c| c.shape).collect::<Vec<_>>(), &mut found, &mut rects);
+            }
+            for rect in found.iter().map(|f| f.1).chain(rects) {
+                assert!(rect.left() >= preview.left() - 0.5 && rect.right() <= preview.right() + 0.5, "{width}: {rect:?}");
+            }
+            let at = |text: &str| found.iter().find(|f| f.0 == text).unwrap_or_else(|| panic!("{text} in {found:?}"));
+            let (id, desc, n) = (at("id").1.left(), at("description").1.left(), at("n").1.right());
+            assert!(desc - id < n - desc, "{width}: {id} {desc} {n}");
+            assert_eq!(at(long).2 > 1, width < 900.0);
+            assert!(at("7").1.right() > at("n").1.right() - 1.0);
+        }
+    }
+
+    #[test]
+    fn ctrl_shift_v_opens_the_preview_in_markdown_and_pastes_elsewhere() {
+        let dir = std::env::temp_dir().join(format!("halo-md-keys-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (md, rs) = (dir.join("a.md"), dir.join("b.rs"));
+        std::fs::write(&md, "# A\n").unwrap();
+        std::fs::write(&rs, "fn a() {}\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        let theme = Theme::dark();
+        let (git, settings) = (crate::git::Git::new(), crate::settings::Settings::default());
+        let ctrl_shift = egui::Modifiers { ctrl: true, shift: true, command: true, ..Default::default() };
+        let release = egui::Event::Key { key: egui::Key::V, physical_key: Some(egui::Key::V), pressed: false, repeat: false, modifiers: ctrl_shift };
+        let run = |editors: &mut Editors, events: Vec<egui::Event>| {
+            let mut keys = serde_json::Map::new();
+            editors.when_keys(&mut keys);
+            crate::command::set_context(keys);
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 600.0))), focused: true, events, ..Default::default() };
+            let mut cmds = vec![];
+            let mut out = ctx.run_ui(input, |ui| editors.ui(ui, &theme, &settings, &git, &mut cmds));
+            out.textures_delta.clear();
+        };
+        for (path, before) in [(&md, "# A\n"), (&rs, "fn a() {}\n")] {
+            editors.open(path);
+            editors.finish_loads();
+            run(&mut editors, vec![]);
+            run(&mut editors, vec![]);
+            run(&mut editors, vec![egui::Event::ModifiersChanged(ctrl_shift), egui::Event::Paste("pasted".into())]);
+            run(&mut editors, vec![release.clone(), egui::Event::ModifiersChanged(Default::default())]);
+            let doc = editors.find_doc(path).unwrap();
+            let text = editors.docs[&doc].buf.rope.to_string();
+            let markdown = path == &md;
+            assert_eq!(editors.groups.iter().flat_map(|g| &g.tabs).any(|t| t.doc == doc && t.md.is_some()), markdown, "{path:?}");
+            assert_eq!(text == before, markdown, "{path:?} {text:?}");
+        }
+        crate::command::set_context(Default::default());
+        drop(editors);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn frame(ctx: &egui::Context, editors: &mut Editors) {

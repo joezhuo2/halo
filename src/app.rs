@@ -444,6 +444,7 @@ impl Halo {
                 self.reveal(View::Search);
                 self.find.focus();
             }
+            NewSearchEditor | OpenSearchEditor => self.editors.open_search(self.find.editor_query(cmd == OpenSearchEditor), cmd == NewSearchEditor, ctx),
             ShowTesting => self.reveal(View::Testing),
             RunAllTests | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => self.testing_exec(&cmd, ctx),
@@ -667,7 +668,7 @@ impl Halo {
             let Some(first) = self.chord else {
                 for binding in bindings.iter() {
                     let chord = binding.chord.is_some();
-                    if (binding.scope == Scope::Global || (chord && editor)) && binding.active(&keys) && i.consume_shortcut(&binding.shortcut) {
+                    if (binding.scope == Scope::Global || (chord && editor)) && binding.active(&keys) && command::consume(i, &binding.shortcut) {
                         match chord {
                             true => self.chord = Some(binding.shortcut),
                             false => self.cmds.push(binding.command.clone()),
@@ -676,7 +677,7 @@ impl Halo {
                 }
                 return;
             };
-            let second = bindings.iter().filter(|b| b.shortcut == first && b.active(&keys)).find(|b| b.chord.is_some_and(|c| i.consume_shortcut(&c)));
+            let second = bindings.iter().filter(|b| b.shortcut == first && b.active(&keys)).find(|b| b.chord.is_some_and(|c| command::consume(i, &c)));
             if let Some(binding) = second {
                 self.cmds.push(binding.command.clone());
             } else if !i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })) {
@@ -718,6 +719,7 @@ impl Halo {
             ("inputFocus", typing.into()),
             ("textInputFocus", typing.into()),
             ("inQuickOpen", self.search.is_open().into()),
+            ("searchViewletFocus", self.find.has_focus(ctx).into()),
             ("isWindows", cfg!(windows).into()),
             ("isLinux", cfg!(target_os = "linux").into()),
             ("isMac", cfg!(target_os = "macos").into()),
