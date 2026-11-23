@@ -481,7 +481,7 @@ impl Editors {
         for (g, tabs) in saved.groups.iter().enumerate() {
             self.active = g;
             for (path, pinned) in tabs.iter().filter(|t| t.0.is_file()) {
-                let id = self.find_doc(path).unwrap_or_else(|| self.insert_pending(path));
+                let id = self.find_doc(path).unwrap_or_else(|| self.insert_deferred(path));
                 self.add_tab(id, vec![Sel::caret(0)]);
                 self.groups[g].tabs.last_mut().into_iter().for_each(|tab| tab.pinned = *pinned);
             }

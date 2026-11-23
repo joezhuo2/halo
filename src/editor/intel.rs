@@ -779,7 +779,10 @@ impl Editors {
         let active = self.active_tab();
         for (path, edits) in changes {
             let id = match self.find_doc(&path) {
-                Some(id) => id,
+                Some(id) => {
+                    self.load_now(id);
+                    id
+                }
                 None => match Document::load(&path) {
                     Ok(buf) => {
                         let id = self.insert_doc(buf);
