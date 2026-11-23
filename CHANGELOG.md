@@ -6,8 +6,32 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-11-23
+
+Checked with unit tests and headless UI tests, with fake programs standing in
+for the AI CLIs. None of the AI features has been run against a real Claude,
+Codex, Gemini or OpenCode CLI or looked at on screen yet, and the installer's
+new Open with entries have not been installed and tried.
+
 ### Added
 
+- **Inline suggestions:** `Alt+\` asks the AI CLI for a completion at the
+  cursor and shows it as ghost text, with further lines below the cursor
+  line. `Tab` accepts it, `Ctrl+Right` accepts a word, `Esc` dismisses it.
+  Setting: Editor > Inline Suggestions (off by default, since each request
+  uses the CLI's quota).
+- **Next edit suggestions:** `Alt+]` predicts the next edit in the file from
+  your recent ones and shows it in place; `Tab` jumps to it and `Tab` again
+  applies it. Setting: Editor > Next Edit Suggestions (off by default).
+- **Inline chat:** `Ctrl+I` in an editor asks the CLI to rewrite the
+  selected lines, or add code at the cursor, and shows the change as an
+  inline diff to accept (`Ctrl+Enter`), discard (`Esc`) or refine with a
+  follow-up prompt.
+- **Agent Changes** in the AI panel: the files a session added, edited or
+  deleted since it started (untracked files included), each with its diff
+  and Keep or Undo, or Keep All and Undo All. Files you edit yourself during
+  a session are listed too. Commands: Agent Changes: Keep All, Undo All,
+  Show, Reset Baseline.
 - **Gemini and OpenCode in the AI panel:** two more tabs beside Claude and
   Codex that run the `gemini` and `opencode` CLIs, with an Install button
   (`npm install -g`) when the CLI is missing.
@@ -634,7 +658,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.14...HEAD
+[0.1.14]: https://github.com/joezhuo2/halo/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/joezhuo2/halo/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/joezhuo2/halo/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/joezhuo2/halo/compare/v0.1.10...v0.1.11
