@@ -46,6 +46,33 @@ fn closing_rows_are_visual_only_and_reverse_in_place() {
 }
 
 #[test]
+fn refresh_rereads_only_folders_that_changed() {
+    let dir = temp("stamps");
+    std::fs::write(dir.join("a.txt"), "").unwrap();
+    let mut explorer = Explorer::new();
+    explorer.set_roots(vec![dir.clone()], vec![String::new()], None);
+    explorer.build();
+    assert_eq!(names(&explorer), ["a.txt"]);
+    assert!(explorer.stamps.is_empty());
+    let stamp = std::fs::metadata(&dir).unwrap().modified().unwrap();
+    explorer.stamps.insert(dir.clone(), stamp);
+    explorer.children.insert(dir.clone(), vec![]);
+    explorer.refresh();
+    assert!(explorer.children[&dir].is_empty());
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::fs::write(dir.join("b.txt"), "").unwrap();
+    explorer.refresh();
+    assert_eq!(explorer.children[&dir].len(), 2);
+    explorer.stamps.insert(dir.clone(), std::fs::metadata(&dir).unwrap().modified().unwrap());
+    explorer.children.insert(dir.clone(), vec![]);
+    let (ctx, mut cmds) = (egui::Context::default(), vec![]);
+    ctx.run_ui(egui::RawInput::default(), |ui| explorer.apply(Action::Refresh, ui, &mut cmds)).textures_delta.clear();
+    explorer.refresh();
+    assert_eq!((explorer.children[&dir].len(), cmds), (2, vec![Command::RefreshExplorer]));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn sorts_loads_lazily_and_keeps_expansion_on_refresh() {
     let dir = temp("tree");
     std::fs::create_dir_all(dir.join("src/deep")).unwrap();
@@ -114,6 +141,7 @@ fn single_folder_chains_become_one_row() {
     assert_eq!(chain.path, dir.join("a/b/c"));
     assert_eq!(chain.chain, [dir.join("a"), dir.join("a/b"), dir.join("a/b/c")]);
     assert!(explorer.rows[1].chain.is_empty());
+    assert!(!explorer.children.contains_key(&dir.join("x")) && !explorer.children.contains_key(&dir.join("a/b")));
     assert_eq!(explorer.row_of(&dir.join("a/b")), Some(0));
 
     explorer.expand(&dir.join("a/b/c"));

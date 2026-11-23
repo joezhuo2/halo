@@ -18,6 +18,7 @@ pub enum Place {
 
 pub enum Content {
     Text,
+    Deferred,
     Loading { rx: Receiver<Loaded>, at: Option<Place> },
     Binary,
     Huge(u64),
@@ -60,6 +61,13 @@ fn read(path: &Path, force: bool) -> Loaded {
     }
 }
 
+fn pending(path: &Path) -> Content {
+    match image_view::is_image(path) {
+        true => Content::Image(Box::new(ImageView::open(path.to_path_buf()))),
+        false => Content::Loading { rx: spawn(path.to_path_buf(), false), at: None },
+    }
+}
+
 fn notice_page(ui: &mut Ui, theme: &Theme, rect: Rect, text: &str, button: &str) -> bool {
     ui.painter().rect_filled(rect, CornerRadius::ZERO, theme.bg);
     let mut clicked = false;
@@ -88,10 +96,19 @@ impl Editors {
     }
 
     pub(super) fn insert_pending(&mut self, path: &Path) -> u64 {
-        if image_view::is_image(path) {
-            return self.placeholder(path, Content::Image(Box::new(ImageView::open(path.to_path_buf()))));
+        self.placeholder(path, pending(path))
+    }
+
+    pub(super) fn insert_deferred(&mut self, path: &Path) -> u64 {
+        self.placeholder(path, Content::Deferred)
+    }
+
+    fn wake(&mut self, id: u64) {
+        if let Some(doc) = self.docs.get_mut(&id).filter(|d| matches!(d.content, Content::Deferred))
+            && let Some(path) = doc.buf.path.as_deref()
+        {
+            doc.content = pending(path);
         }
-        self.placeholder(path, Content::Loading { rx: spawn(path.to_path_buf(), false), at: None })
     }
 
     pub(super) fn poll_loads(&mut self, ctx: &egui::Context) {
@@ -154,6 +171,7 @@ impl Editors {
     }
 
     pub(super) fn load_now(&mut self, id: u64) {
+        self.wake(id);
         let path = self.docs.get(&id).filter(|d| matches!(d.content, Content::Loading { .. })).and_then(|d| d.buf.path.clone());
         if let Some(buf) = path.and_then(|path| Document::load(&path).ok()) {
             self.arrive(id, buf);
@@ -162,6 +180,7 @@ impl Editors {
 
     pub(super) fn pend_place(&mut self, place: Place) -> bool {
         let Some((g, t)) = self.active_tab() else { return false };
+        self.wake(self.groups[g].tabs[t].doc);
         match self.docs.get_mut(&self.groups[g].tabs[t].doc) {
             Some(Doc { content: Content::Loading { at, .. }, .. }) => {
                 *at = Some(place);
@@ -203,7 +222,12 @@ impl Editors {
                 }
                 false
             }
-            Content::Loading { .. } => {
+            Content::Deferred | Content::Loading { .. } => {
+                if matches!(doc.content, Content::Deferred)
+                    && let Some(path) = doc.buf.path.as_deref()
+                {
+                    doc.content = pending(path);
+                }
                 ui.painter().rect_filled(*body, CornerRadius::ZERO, theme.bg);
                 ui::spinner(ui, body.center(), 10.0, theme.text_dim);
                 true
@@ -389,6 +413,30 @@ mod tests {
         assert!(editors.image_zoom(Some(2.0)));
         frame(&ctx, &mut editors);
         assert!(editors.image_status().unwrap().ends_with("200%"), "{:?}", editors.image_status());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restored_tabs_load_when_first_shown_or_edited() {
+        let dir = dir("deferred");
+        let paths: Vec<PathBuf> = ["a.txt", "b.txt", "c.txt"].iter().map(|n| dir.join(n)).collect();
+        for path in &paths {
+            std::fs::write(path, "alpha beta\n").unwrap();
+        }
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        paths.iter().for_each(|p| editors.open_restored(p));
+        let deferred = |editors: &Editors, p: &Path| matches!(editors.docs[&editors.find_doc(p).unwrap()].content, Content::Deferred);
+        assert!(paths.iter().all(|p| deferred(&editors, p)));
+        frame(&ctx, &mut editors);
+        editors.finish_loads();
+        assert!(!deferred(&editors, &paths[2]) && deferred(&editors, &paths[0]) && deferred(&editors, &paths[1]));
+        assert_eq!(editors.replace_in(&paths[0], &crate::editor::Pattern::new("beta", false, false, false).unwrap(), "gamma", false), Ok(1));
+        assert_eq!(std::fs::read_to_string(&paths[0]).unwrap(), "alpha gamma\n");
+        editors.show_tab(0, 1);
+        frame(&ctx, &mut editors);
+        editors.finish_loads();
+        assert_eq!(editors.docs[&editors.find_doc(&paths[1]).unwrap()].buf.rope.to_string(), "alpha beta\n");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

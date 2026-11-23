@@ -121,6 +121,7 @@ pub struct Explorer {
     roots: Vec<(PathBuf, String)>,
     title: Option<String>,
     children: HashMap<PathBuf, Vec<Entry>>,
+    stamps: HashMap<PathBuf, std::time::SystemTime>,
     expanded: HashSet<PathBuf>,
     rows: Vec<Row>,
     dirty: bool,
@@ -254,6 +255,7 @@ impl Explorer {
             roots: vec![],
             title: None,
             children: HashMap::new(),
+            stamps: HashMap::new(),
             expanded: HashSet::new(),
             rows: vec![],
             dirty: true,
@@ -316,7 +318,7 @@ impl Explorer {
         self.title.is_some() && self.roots.iter().any(|(r, _)| r == path)
     }
 
-    fn read_dir(&self, dir: &Path) -> Vec<Entry> {
+    fn read_dir(&self, dir: &Path, limit: usize) -> Vec<Entry> {
         let Ok(reader) = std::fs::read_dir(dir) else { return vec![] };
         let root = self.root_of(dir).map_or(dir, |r| r.as_path());
         let mut entries: Vec<Entry> = reader
@@ -332,6 +334,7 @@ impl Explorer {
                 let is_dir = if kind.is_symlink() { path.is_dir() } else { kind.is_dir() };
                 Some(Entry { path, name, is_dir })
             })
+            .take(limit)
             .collect();
         sort_entries(&mut entries, &self.sort);
         entries
@@ -339,20 +342,35 @@ impl Explorer {
 
     fn load(&mut self, dir: &Path) {
         if !self.children.contains_key(dir) {
-            let entries = self.read_dir(dir);
-            self.children.insert(dir.to_path_buf(), entries);
+            let modified = std::fs::metadata(dir).and_then(|m| m.modified()).ok();
+            self.reload(dir, modified);
         }
+    }
+
+    fn reload(&mut self, dir: &Path, modified: Option<std::time::SystemTime>) {
+        match modified.filter(|m| m.elapsed().is_ok_and(|age| age.as_secs() >= 2)) {
+            Some(stamp) => self.stamps.insert(dir.to_path_buf(), stamp),
+            None => self.stamps.remove(dir),
+        };
+        let entries = self.read_dir(dir, usize::MAX);
+        self.children.insert(dir.to_path_buf(), entries);
     }
 
     pub fn refresh(&mut self) {
         let loaded: Vec<PathBuf> = self.children.keys().cloned().collect();
         for dir in loaded {
-            if dir.is_dir() {
-                let entries = self.read_dir(&dir);
-                self.children.insert(dir, entries);
-            } else {
-                self.children.remove(&dir);
-                self.expanded.remove(&dir);
+            match std::fs::metadata(&dir) {
+                Ok(meta) if meta.is_dir() => {
+                    let modified = meta.modified().ok();
+                    if self.sort == "modified" || modified.is_none() || self.stamps.get(&dir) != modified.as_ref() {
+                        self.reload(&dir, modified);
+                    }
+                }
+                _ => {
+                    self.children.remove(&dir);
+                    self.stamps.remove(&dir);
+                    self.expanded.remove(&dir);
+                }
             }
         }
         self.flipped.retain(|p| p.parent().is_some_and(|d| self.children.contains_key(d)));
@@ -509,24 +527,26 @@ impl Explorer {
         let entry = &entries[i];
         let editing = self.edit.as_ref().is_some_and(|e| e.kind == EditKind::Rename && e.target == entry.path);
         let (mut last, mut name, mut chain) = (entry.path.clone(), entry.name.clone(), vec![]);
-        while self.compact && entry.is_dir {
-            if self.edit.as_ref().is_some_and(|e| e.kind != EditKind::Rename && e.target == last) {
-                break;
+        if self.compact && entry.is_dir {
+            loop {
+                if self.edit.as_ref().is_some_and(|e| e.kind != EditKind::Rename && e.target == last) {
+                    break;
+                }
+                let entries = self.children.get(&last).map_or_else(|| std::borrow::Cow::Owned(self.read_dir(&last, 2)), std::borrow::Cow::Borrowed);
+                let only = match &entries[..] {
+                    [only] if only.is_dir => only.clone(),
+                    _ => break,
+                };
+                if self.edit.as_ref().is_some_and(|e| e.kind == EditKind::Rename && e.target == only.path) {
+                    break;
+                }
+                if chain.is_empty() {
+                    chain.push(entry.path.clone());
+                }
+                chain.push(only.path.clone());
+                name = format!("{name}/{}", only.name);
+                last = only.path;
             }
-            self.load(&last);
-            let only = match self.children[&last].as_slice() {
-                [only] if only.is_dir => only.clone(),
-                _ => break,
-            };
-            if self.edit.as_ref().is_some_and(|e| e.kind == EditKind::Rename && e.target == only.path) {
-                break;
-            }
-            if chain.is_empty() {
-                chain.push(entry.path.clone());
-            }
-            chain.push(only.path.clone());
-            name = format!("{name}/{}", only.name);
-            last = only.path;
         }
         let (mut kids, mut stack) = (vec![], nested[i].clone());
         while let Some(k) = stack.pop() {
@@ -866,7 +886,10 @@ impl Explorer {
             Action::Copy(text) => ui.ctx().copy_text(text),
             Action::Reveal(path) => reveal(&path),
             Action::Compare(cmd) => cmds.push(cmd),
-            Action::Refresh => cmds.push(Command::RefreshExplorer),
+            Action::Refresh => {
+                self.stamps.clear();
+                cmds.push(Command::RefreshExplorer);
+            }
             Action::CollapseAll => self.toggle_folders(None, ui.input(|i| i.time)),
         }
     }
@@ -1123,6 +1146,7 @@ impl Explorer {
             self.exclude = settings.files_exclude.clone();
             self.compact = settings.compact_folders;
             self.sort = settings.explorer_sort.clone();
+            self.stamps.clear();
             self.refresh();
         }
         if (self.nest, self.nest_expand, &self.patterns) != (settings.file_nesting, settings.file_nesting_expand, &settings.file_nesting_patterns) {

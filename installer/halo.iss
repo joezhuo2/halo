@@ -2,7 +2,7 @@
   #define AppVersion "0.0.0"
 #endif
 #ifndef Exe
-  #define Exe "..\target\release\halo.exe"
+  #define Exe "..\target\release\halo-ide.exe"
 #endif
 
 [Setup]
@@ -21,31 +21,34 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=..\assets\halo.ico
-UninstallDisplayIcon={app}\halo.exe
+UninstallDisplayIcon={app}\halo-ide.exe
 ChangesAssociations=yes
 ChangesEnvironment=yes
 
 [Files]
-Source: "{#Exe}"; DestDir: "{app}"; DestName: "halo.exe"; Flags: ignoreversion
-Source: "halo.cmd"; DestDir: "{app}in"; Flags: ignoreversion
+Source: "{#Exe}"; DestDir: "{app}"; DestName: "halo-ide.exe"; Flags: ignoreversion
+Source: "halo.cmd"; DestDir: "{app}\bin"; Flags: ignoreversion
+
+[InstallDelete]
+Type: files; Name: "{app}\halo.exe"
 
 [Icons]
-Name: "{autoprograms}\Halo"; Filename: "{app}\halo.exe"
+Name: "{autoprograms}\Halo"; Filename: "{app}\halo-ide.exe"
 
 [Registry]
-Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}in"; Check: NeedsPath(ExpandConstant('{app}in'))
+Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}\bin"; Check: NeedsPath(ExpandConstant('{app}\bin'))
 Root: HKA; Subkey: "Software\Classes\*\shell\Halo"; ValueType: string; ValueData: "Open with Halo"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\*\shell\Halo"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\halo.exe"
-Root: HKA; Subkey: "Software\Classes\*\shell\Halo\command"; ValueType: string; ValueData: """{app}\halo.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\*\shell\Halo"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\halo-ide.exe"
+Root: HKA; Subkey: "Software\Classes\*\shell\Halo\command"; ValueType: string; ValueData: """{app}\halo-ide.exe"" ""%1"""
 Root: HKA; Subkey: "Software\Classes\Directory\shell\Halo"; ValueType: string; ValueData: "Open with Halo"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\Directory\shell\Halo"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\halo.exe"
-Root: HKA; Subkey: "Software\Classes\Directory\shell\Halo\command"; ValueType: string; ValueData: """{app}\halo.exe"" ""%V"""
+Root: HKA; Subkey: "Software\Classes\Directory\shell\Halo"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\halo-ide.exe"
+Root: HKA; Subkey: "Software\Classes\Directory\shell\Halo\command"; ValueType: string; ValueData: """{app}\halo-ide.exe"" ""%V"""
 Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\Halo"; ValueType: string; ValueData: "Open with Halo"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\Halo"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\halo.exe"
-Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\Halo\command"; ValueType: string; ValueData: """{app}\halo.exe"" ""%V"""
+Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\Halo"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\halo-ide.exe"
+Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\Halo\command"; ValueType: string; ValueData: """{app}\halo-ide.exe"" ""%V"""
 
 [Run]
-Filename: "{app}\halo.exe"; Description: "Launch Halo"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\halo-ide.exe"; Description: "Launch Halo"; Flags: nowait postinstall skipifsilent
 
 [Code]
 function NeedsPath(Dir: string): Boolean;
@@ -64,7 +67,7 @@ var
 begin
   if (Step = usPostUninstall) and RegQueryStringValue(HKCU, 'Environment', 'Path', Path) then
   begin
-    Dir := ExpandConstant('{app}in');
+    Dir := ExpandConstant('{app}\bin');
     At := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Path) + ';');
     if At > 0 then
     begin

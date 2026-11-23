@@ -607,7 +607,10 @@ impl Editors {
             .find_map(|(g, group)| Some((g, group.tabs.iter().position(|t| t.diff.as_ref().is_some_and(|d| d.title == load.title))?)));
         let doc = match &right {
             None => match self.find_doc(&path) {
-                Some(id) => id,
+                Some(id) => {
+                    self.load_now(id);
+                    id
+                }
                 None => match Document::load(&path) {
                     Ok(buf) => self.insert_doc(buf),
                     Err(error) => {

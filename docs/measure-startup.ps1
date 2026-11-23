@@ -1,5 +1,5 @@
 param(
-    [string]$Exe = "target\release\halo.exe",
+    [string]$Exe = "target\release\halo-ide.exe",
     [string]$Session = "",
     [int]$Runs = 5,
     [int]$IdleSeconds = 10

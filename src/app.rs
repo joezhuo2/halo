@@ -144,7 +144,7 @@ impl Halo {
         }
         for file in files.iter().filter(|f| f.is_file()) {
             if !self.editors.open_paths().contains(file) {
-                self.editors.open_kept(file);
+                self.editors.open_restored(file);
             }
         }
         self.editors.restore(&self.session.backups);

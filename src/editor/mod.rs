@@ -764,6 +764,15 @@ impl Editors {
         self.open_as(path, false);
     }
 
+    pub fn open_restored(&mut self, path: &Path) {
+        if self.find_doc(path).is_some() {
+            return self.open_kept(path);
+        }
+        self.active = self.active.min(self.groups.len() - 1);
+        let id = self.insert_deferred(path);
+        self.place(id, false);
+    }
+
     fn open_as(&mut self, path: &Path, preview: bool) {
         self.active = self.active.min(self.groups.len() - 1);
         if let Some(id) = self.find_doc(path) {
@@ -832,7 +841,7 @@ impl Editors {
             buf.apply(sels, edits, Kind::Other, After::Map);
             found.len()
         };
-        let Some(id) = self.find_doc(path) else {
+        let Some(id) = self.find_doc(path).inspect(|id| self.load_now(*id)) else {
             let mut buf = Document::load(path)?;
             let count = replace(&mut buf, &mut vec![Sel::caret(0)]);
             if count > 0 {
@@ -1277,16 +1286,7 @@ impl Editors {
             while self.groups.len() <= *g {
                 self.split_group(self.groups.len() - 1, layout::Dir::Right);
             }
-            let id = match self.find_doc(path) {
-                Some(id) => id,
-                None => match Document::load(path) {
-                    Ok(buf) => self.insert_doc(buf),
-                    Err(error) => {
-                        self.banner = Some((error, None));
-                        continue;
-                    }
-                },
-            };
+            let id = self.find_doc(path).unwrap_or_else(|| self.insert_deferred(path));
             self.active = *g;
             self.add_tab(id, vec![Sel::caret(0)]);
             self.groups[*g].tabs.last_mut().into_iter().for_each(|tab| tab.pinned = true);

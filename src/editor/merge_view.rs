@@ -299,7 +299,10 @@ impl Editors {
 
     fn place_merge(&mut self, path: &Path, stages: Stages) {
         let id = match self.find_doc(path) {
-            Some(id) => id,
+            Some(id) => {
+                self.load_now(id);
+                id
+            }
             None => match Document::load(path) {
                 Ok(buf) => self.insert_doc(buf),
                 Err(error) => {

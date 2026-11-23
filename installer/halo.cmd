@@ -1,3 +1,3 @@
 @echo off
-"%~dp0..\halo.exe" %*
+"%~dp0..\halo-ide.exe" %*
 exit /b %errorlevel%

@@ -1,7 +1,7 @@
 use std::process::{Command, Output};
 
 fn halo(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_halo")).args(args).output().expect("run halo")
+    Command::new(env!("CARGO_BIN_EXE_halo-ide")).args(args).output().expect("run halo")
 }
 
 #[test]
