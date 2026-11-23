@@ -13,6 +13,7 @@ mod layout;
 mod prefs;
 mod load;
 mod markdown;
+mod md_insert;
 mod md_links;
 mod merge;
 mod merge_view;
@@ -2089,7 +2090,7 @@ impl Editors {
             });
             let keys = command::context();
             for binding in command::bindings().iter().filter(|b| b.scope == Scope::Editor && b.chord.is_none() && b.active(&keys)) {
-                if ui.input_mut(|i| i.consume_shortcut(&binding.shortcut)) {
+                if ui.input_mut(|i| command::consume(i, &binding.shortcut)) {
                     pending.push(binding.command.clone());
                 }
             }
@@ -2100,6 +2101,11 @@ impl Editors {
             self.intel.unit = unit.clone();
             self.popup_keys(&mut events, doc_id, buf, tab);
             self.peek_escape(&mut events, doc_id);
+            let release = |e: &Event| matches!(e, Event::Key { key: Key::V, pressed: false, modifiers, .. } if modifiers.matches_exact(egui::Modifiers::COMMAND));
+            if hl.language == "Markdown" && !diffed && !buf.read_only && events.iter().any(release) {
+                md_insert::paste_image(buf, &mut tab.sels);
+                tab.reveal = tab.sels.last().map(|s| s.head);
+            }
             let (mut typed, mut pasted, mut entered) = (None, None, false);
             for event in &events {
                 if search_editor::enter_reruns(buf, &tab.sels, event) {
@@ -2316,6 +2322,9 @@ impl Editors {
                 area = area.scroll_source(ScrollSource { mouse_wheel: false, ..Default::default() });
             }
         }
+        let dropping = hl.language == "Markdown" && !diffed && !buf.read_only && ctx.input(|i| !i.raw.dropped_files.is_empty());
+        let drop_pos = dropping.then(|| md_insert::drop_pos(&ctx)).flatten().filter(|p| text_rect.contains(*p));
+        let mut drop_at = None;
         let buf_ref: &Document = buf;
         let lang_ref: &Lang = lang;
         let out = ui
@@ -2415,6 +2424,7 @@ impl Editors {
                     };
 
                     let painter = ui.painter().clone();
+                    drop_at = drop_pos.map(|pos| hit(&painter, pos));
                     let pointer = ui.input(|i| i.pointer.interact_pos());
                     let (pressed, mods, down) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers, i.pointer.any_down()));
                     let on_lens = pointer.is_some_and(|pos| row_at(pos.y).1.is_some());
@@ -3093,6 +3103,12 @@ impl Editors {
         }
         if let Some(line) = change_click {
             self.open_change_peek(doc_id, buf, tab, line, &ctx);
+        }
+        if let Some(at) = drop_at {
+            let files: Vec<PathBuf> = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files)).iter().map(|f| f.path().to_path_buf()).collect();
+            tab.sels = vec![Sel::caret(at)];
+            buf.insert_text(&mut tab.sels, &md_insert::links(buf.path.as_deref().and_then(Path::parent), &files));
+            tab.reveal = tab.sels.last().map(|s| s.head);
         }
         if let Some(intel::LensClick::Server(index)) = lens_open
             && let Some((lens, _)) = lang.code_lens.get(index)

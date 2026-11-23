@@ -668,7 +668,7 @@ impl Halo {
             let Some(first) = self.chord else {
                 for binding in bindings.iter() {
                     let chord = binding.chord.is_some();
-                    if (binding.scope == Scope::Global || (chord && editor)) && binding.active(&keys) && i.consume_shortcut(&binding.shortcut) {
+                    if (binding.scope == Scope::Global || (chord && editor)) && binding.active(&keys) && command::consume(i, &binding.shortcut) {
                         match chord {
                             true => self.chord = Some(binding.shortcut),
                             false => self.cmds.push(binding.command.clone()),
@@ -677,7 +677,7 @@ impl Halo {
                 }
                 return;
             };
-            let second = bindings.iter().filter(|b| b.shortcut == first && b.active(&keys)).find(|b| b.chord.is_some_and(|c| i.consume_shortcut(&c)));
+            let second = bindings.iter().filter(|b| b.shortcut == first && b.active(&keys)).find(|b| b.chord.is_some_and(|c| command::consume(i, &c)));
             if let Some(binding) = second {
                 self.cmds.push(binding.command.clone());
             } else if !i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })) {
