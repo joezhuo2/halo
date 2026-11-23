@@ -45,6 +45,7 @@ pub struct Search {
     items: (String, Vec<Item>),
     stale: bool,
     cursor: crate::debug::CursorCommands,
+    breakpoint_commands: crate::debug::BreakpointCommands,
     opened: u32,
     pick: Option<(String, Vec<Choice>)>,
 }
@@ -187,6 +188,11 @@ impl Search {
         }
     }
 
+    pub fn set_breakpoint_commands(&mut self, commands: crate::debug::BreakpointCommands) {
+        self.stale |= self.breakpoint_commands != commands;
+        self.breakpoint_commands = commands;
+    }
+
     fn load(&mut self, roots: &[(PathBuf, String)], editors: &mut Editors, ctx: &egui::Context) {
         let cursor = if editors.source_cursor().is_some() { editors.marks.cursor } else { Default::default() };
         self.stale |= self.cursor != cursor;
@@ -249,7 +255,7 @@ impl Search {
         }
         let none = |items: Vec<Item>, note| if items.is_empty() { vec![Item::Note(note)] } else { items };
         if let Some(q) = query.strip_prefix('>') {
-            return none(rank(q, command::all().into_iter().filter(|c| self.cursor.allows(c)).map(Item::Command), |i| match i {
+            return none(rank(q, command::all().into_iter().filter(|c| self.cursor.allows(c) && self.breakpoint_commands.allows(c)).map(Item::Command), |i| match i {
                 Item::Command(c) => score(q, c.label()),
                 _ => None,
             }), "No matching commands");

@@ -74,6 +74,7 @@ impl Halo {
                 if self.search.is_open() {
                     let rect = Rect::from_center_size(bar.center(), vec2((bar.width() - 24.0).min(600.0), 26.0));
                     let roots = self.session.workspace.prefixed();
+                    self.search.set_breakpoint_commands(self.debug.breakpoint_commands(!roots.is_empty()));
                     if self.search.ui(ui, &theme, rect, &roots, &mut self.editors, &mut self.cmds) && self.zone == Zone::Editor {
                         self.editors.focus();
                     }
@@ -173,8 +174,9 @@ impl Halo {
                     self.menu_item(ui, cmd);
                 }
             }
-            for cmd in [ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration] {
-                self.menu_item(ui, cmd);
+            let breakpoints = self.debug.breakpoint_commands(self.session.folder.is_some());
+            for cmd in [ToggleBreakpoint, EditBreakpoint, AddFunctionBreakpoint, BreakOnValueChange, RemoveAllBreakpoints, AddWatch, AddConfiguration] {
+                if breakpoints.allows(&cmd) { self.menu_item(ui, cmd); }
             }
             for cmd in [OpenDisassembly, OpenMemory] {
                 self.menu_item(ui, cmd);

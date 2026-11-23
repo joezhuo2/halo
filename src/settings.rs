@@ -505,6 +505,7 @@ pub struct Session {
     pub timeline: bool,
     pub explorer_sizes: [Option<f32>; 4],
     pub breakpoints: BTreeMap<PathBuf, BTreeMap<PathBuf, Vec<crate::debug::Breakpoint>>>,
+    pub function_breakpoints: BTreeMap<PathBuf, Vec<crate::debug::FunctionBreakpoint>>,
     pub layout: crate::workbench::Workbench,
 }
 
@@ -527,6 +528,7 @@ impl Default for Session {
             timeline: false,
             explorer_sizes: [None; 4],
             breakpoints: BTreeMap::new(),
+            function_breakpoints: BTreeMap::new(),
             layout: Default::default(),
         }
     }
