@@ -2274,7 +2274,7 @@ impl Editors {
             _ => &[],
         };
         let hover_word = self.intel.hover.as_ref().filter(|h| h.doc == doc_id && h.group == g).map(|h| h.word);
-        let marks = path.as_deref().map(|p| (self.marks.of(p).to_vec(), self.marks.stopped_line(p), self.marks.live));
+        let marks = path.as_deref().map(|p| (self.marks.of(p).to_vec(), self.marks.stopped_lines(p), self.marks.live));
         let (mut bp_action, bp_w) = (None, glyph_w * 2.2 + 2.0);
         let (test_marks, mut test_click) = (path.as_deref().and_then(|p| self.tests.of(p)).cloned(), None);
         let test_at = |line: usize| test_marks.as_ref()?.tests.iter().find(|t| t.0 == line && !marks.as_ref().is_some_and(|m| m.0.iter().any(|b| b.line == line)));
@@ -2678,7 +2678,7 @@ impl Editors {
                             painter.rect_filled(band, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
                             ui::contrast_border(&painter, theme, band, theme.border);
                         }
-                        if marks.as_ref().is_some_and(|m| m.1 == Some(line)) {
+                        if marks.as_ref().is_some_and(|m| m.1.contains(&line)) {
                             let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
                             painter.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(theme.warning, 0.14));
                         }
@@ -2880,7 +2880,7 @@ impl Editors {
                         let bulb = bulb_line.filter(|b| b.0 == line && test.is_none() && !marks.as_ref().is_some_and(|m| m.0.iter().any(|bp| bp.line == line)));
                         if let Some((list, stopped, live)) = &marks {
                             let center = pos2(clip.left() + bp_w / 2.0 + 1.0, y);
-                            crate::debug::paint_gutter(&painter, theme, list, *live, *stopped, line, center, (line_h * 0.26).min(glyph_w * 0.8), bp_hover == Some(line) && test.is_none() && bulb.is_none());
+                            crate::debug::paint_gutter(&painter, theme, list, *live, stopped.contains(&line), line, center, (line_h * 0.26).min(glyph_w * 0.8), bp_hover == Some(line) && test.is_none() && bulb.is_none());
                         }
                         if let Some((_, quick)) = bulb {
                             let size = line_h.min(bp_w);

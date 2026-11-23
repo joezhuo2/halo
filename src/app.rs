@@ -453,7 +453,7 @@ impl Halo {
                 if cmd == AddWatch {
                     self.reveal(View::RunAndDebug);
                 }
-                if !self.debug.active() && matches!(cmd, StartDebugging | RunWithoutDebugging) {
+                if cmd == RunWithoutDebugging || (cmd == StartDebugging && !self.debug.paused()) {
                     self.editors.exec(&SaveAll, &self.settings, ctx);
                 }
                 self.debug_exec(&cmd, ctx);

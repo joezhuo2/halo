@@ -978,10 +978,6 @@ impl Halo {
             }
         }
         for config in std::mem::take(&mut self.testing.debug) {
-            if self.debug.active() {
-                ui::notify("A debug session is already running.");
-                continue;
-            }
             let (debug, mut env) = self.debug_env(ctx);
             debug.begin(config, false, &mut env);
         }
