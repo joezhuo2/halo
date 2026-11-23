@@ -980,7 +980,6 @@ mod tests {
 
     #[test]
     fn ctrl_shift_v_opens_the_preview_in_markdown_and_pastes_elsewhere() {
-        let _context = crate::command::CONTEXT_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("halo-md-keys-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (md, rs) = (dir.join("a.md"), dir.join("b.rs"));

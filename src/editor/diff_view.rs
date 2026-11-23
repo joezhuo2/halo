@@ -1428,7 +1428,6 @@ mod tests {
 
     #[test]
     fn f7_opens_the_accessible_diff_viewer_and_enter_jumps_to_the_line() {
-        let _context = command::CONTEXT_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let ctx = egui::Context::default();
         let dir = repo("viewer", "one\ntwo\nthree\nfour\n");
         std::fs::write(dir.join("a.txt"), "one\nTWO\nthree\nfour\nfive\n").unwrap();

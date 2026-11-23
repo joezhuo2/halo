@@ -856,16 +856,16 @@ pub fn write_entries(entries: &[Entry]) {
 }
 
 static BINDINGS: Mutex<Option<Arc<Vec<Binding>>>> = Mutex::new(None);
-static CONTEXT: Mutex<Option<Arc<Map<String, Value>>>> = Mutex::new(None);
-#[cfg(test)]
-pub static CONTEXT_TEST: Mutex<()> = Mutex::new(());
+thread_local! {
+    static CONTEXT: std::cell::RefCell<Option<Arc<Map<String, Value>>>> = const { std::cell::RefCell::new(None) };
+}
 
 pub fn set_context(keys: Map<String, Value>) {
-    *CONTEXT.lock().unwrap() = Some(Arc::new(keys));
+    CONTEXT.with_borrow_mut(|c| *c = Some(Arc::new(keys)));
 }
 
 pub fn context() -> Arc<Map<String, Value>> {
-    CONTEXT.lock().unwrap().get_or_insert_with(Default::default).clone()
+    CONTEXT.with_borrow_mut(|c| c.get_or_insert_with(Default::default).clone())
 }
 
 pub fn bindings() -> Arc<Vec<Binding>> {
