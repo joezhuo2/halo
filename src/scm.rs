@@ -653,7 +653,7 @@ fn graph(
     }
 }
 
-fn buttons(ui: &mut Ui, theme: &Theme, rect: Rect, enabled: bool, items: &[(&str, &str)]) -> Option<usize> {
+pub(crate) fn buttons(ui: &mut Ui, theme: &Theme, rect: Rect, enabled: bool, items: &[(&str, &str)]) -> Option<usize> {
     let builder = UiBuilder::new().max_rect(rect.shrink2(vec2(6.0, 0.0))).layout(Layout::right_to_left(Align::Center));
     ui.scope_builder(builder, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;

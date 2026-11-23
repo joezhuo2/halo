@@ -478,6 +478,11 @@ impl Halo {
             ToggleSidebar => self.session.sidebar ^= true,
             TogglePanel => self.session.panel ^= true,
             ToggleAi => self.toggle_view(View::Ai),
+            AgentChangesKeepAll | AgentChangesUndoAll | AgentChangesShow | AgentChangesResetBaseline => {
+                self.reveal(View::Ai);
+                let folder = self.session.folder.clone();
+                self.ai.review.exec(&cmd, folder.as_deref(), ctx);
+            }
             ToggleFullScreen | ToggleZenMode | ToggleCenteredLayout | ToggleSidebarPosition | ToggleSecondarySidebar | MovePanelLeft
             | MovePanelRight | MovePanelBottom | MovePanelTop | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter
             | AlignPanelJustify | AlignPanelLeft | AlignPanelRight | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView

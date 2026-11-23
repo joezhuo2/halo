@@ -46,6 +46,7 @@ impl Spec {
         let (left, right) = match head[..] {
             ["diff"] => (String::new(), None),
             ["diff", "--cached"] => ("HEAD".to_owned(), Some(String::new())),
+            ["diff", rev] if !rev.starts_with('-') => (rev.to_owned(), None),
             ["show", "--format=", "--diff-merges=first-parent", hash] => (format!("{hash}^"), Some(hash.to_owned())),
             ["diff", left, right] if !left.starts_with('-') && !right.starts_with('-') => (left.to_owned(), Some(right.to_owned())),
             _ => return None,
@@ -1195,6 +1196,9 @@ mod tests {
         let revs = Spec::parse(&strings(&["diff", "base1", "head2", "--", "c.rs"])).unwrap();
         assert_eq!((revs.left.as_str(), revs.right.as_deref(), revs.side()), ("base1", Some("head2"), Side::Fixed));
         assert!(Spec::parse(&strings(&["diff", "--stat", "head2", "--", "c.rs"])).is_none());
+        let base = Spec::parse(&strings(&["diff", "tree1", "--", "c.rs"])).unwrap();
+        assert_eq!((base.left.as_str(), base.right.as_deref(), base.side()), ("tree1", None, Side::Working));
+        assert!(Spec::parse(&strings(&["diff", "--stat", "--", "c.rs"])).is_none());
         let compared = Spec::parse(&strings(&["diff", "main", "feature/é-long", "--", "c.rs"])).unwrap();
         assert_eq!((compared.left.as_str(), compared.right.as_deref(), compared.side()), ("main", Some("feature/é-long"), Side::Fixed));
         assert_eq!(Spec::label(compared.right.as_deref()), "feature/é-long");

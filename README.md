@@ -334,6 +334,13 @@ Each of these can be switched off under **Settings > Text Editor**.
   `Tab` again applies it. **Next Edit Suggestions** in Settings asks after
   each edit. Both settings are off by default because every request uses the
   CLI's quota.
+- **Agent Changes**: when a session starts in a Git folder, Halo notes every
+  file's content (untracked files too, without touching your index or
+  stashes). Files the agent then adds, edits or deletes are listed at the top
+  of the panel with A/M/D badges and line counts. Click one to open its diff,
+  and **Keep** or **Undo** it per file or all at once (Undo asks first and
+  sends created files to the recycle bin). The palette has **Agent Changes:
+  Keep All**, **Undo All**, **Show** and **Reset Baseline**.
 
 ### Search
 

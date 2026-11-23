@@ -2,6 +2,7 @@
 
 mod a11y;
 mod accounts;
+mod agent_changes;
 mod ai;
 mod app;
 mod blame;

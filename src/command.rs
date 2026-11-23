@@ -122,6 +122,10 @@ pub enum Command {
     ToggleSidebar,
     TogglePanel,
     ToggleAi,
+    AgentChangesKeepAll,
+    AgentChangesUndoAll,
+    AgentChangesShow,
+    AgentChangesResetBaseline,
     SplitEditor,
     SplitEditorDown,
     SplitEditorLeft,
@@ -736,6 +740,7 @@ pub fn all() -> Vec<Command> {
         LayoutGrid, LayoutTwoRowsRight, LayoutTwoColumnsBottom, ToggleMaximizeGroup, ToggleEditorGroupLock, ResetGroupSizes, FocusGroupLeft, FocusGroupRight,
         FocusGroupUp, FocusGroupDown, MoveEditorLeft, MoveEditorRight, MoveEditorUp, MoveEditorDown, CloseGroup, MoveEditorToNewWindow,
         CopyEditorToNewWindow, MoveEditorToMainWindow,
+        AgentChangesKeepAll, AgentChangesUndoAll, AgentChangesShow, AgentChangesResetBaseline,
         ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff, FilterExplorer, ToggleFileNesting, FocusOpenEditors,
         MarkdownPreview, MarkdownPreviewSide, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
         MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
@@ -947,6 +952,7 @@ impl Command {
             | ExpandSelection | ShrinkSelection | SelectToBracket | CursorUndo | ToggleColumnSelection | CursorColumnSelectLeft
             | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
+            | AgentChangesKeepAll | AgentChangesUndoAll | AgentChangesShow | AgentChangesResetBaseline
             | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | FilterExplorer | ToggleFileNesting
             | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
             | LayoutTwoColumns | LayoutThreeColumns | LayoutTwoRows | LayoutThreeRows | LayoutGrid | LayoutTwoRowsRight | LayoutTwoColumnsBottom
@@ -1100,6 +1106,10 @@ impl Command {
             ToggleSidebar => "Toggle Side Bar",
             TogglePanel => "Toggle Panel",
             ToggleAi => "Toggle AI Panel",
+            AgentChangesKeepAll => "Agent Changes: Keep All",
+            AgentChangesUndoAll => "Agent Changes: Undo All",
+            AgentChangesShow => "Agent Changes: Show",
+            AgentChangesResetBaseline => "Agent Changes: Reset Baseline",
             SplitEditor => "Split Editor Right",
             SplitEditorDown => "Split Editor Down",
             SplitEditorLeft => "Split Editor Left",

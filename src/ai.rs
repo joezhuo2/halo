@@ -45,6 +45,7 @@ pub struct AiPanel {
     errors: [Option<String>; 4],
     found: [Option<bool>; 4],
     focused: bool,
+    pub review: crate::agent_changes::Review,
 }
 
 impl AiPanel {
@@ -116,6 +117,16 @@ impl AiPanel {
             session.focus();
         }
 
+        let alive = self.sessions.iter().flatten().any(Terminal::is_alive);
+        self.review.tick(alive, &ctx, cmds);
+        let strip = self.review.height(body.height());
+        if strip > 0.0 {
+            let rect = Rect::from_min_size(body.min, vec2(body.width(), strip));
+            body.min.y = rect.bottom();
+            ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| self.review.ui(ui, theme, cmds));
+        }
+        self.review.dialog(ui);
+
         let (name, cli, _) = CLIS[self.tab];
         let ended = self.sessions[self.tab].as_ref().is_some_and(|s| !s.is_alive());
         let note = match &self.errors[self.tab] {
@@ -160,6 +171,7 @@ impl AiPanel {
             }
         });
         if start {
+            self.review.started(cwd, &ctx);
             self.spawn(launch(cli, cwd), cwd, &ctx);
         } else if setup {
             self.spawn(install(self.tab), cwd, &ctx);

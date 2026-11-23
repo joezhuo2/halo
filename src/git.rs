@@ -149,7 +149,7 @@ pub fn exec(dir: &Path, args: &[&str]) -> Result<String, String> {
 const READ_LIMIT: Duration = Duration::from_secs(30);
 
 pub fn read(dir: &Path, args: &[&str]) -> Result<String, String> {
-    command_within("git", dir, args, Some(READ_LIMIT))
+    command_within("git", dir, args, Some(READ_LIMIT), &[])
 }
 
 pub fn exec_all<const N: usize>(dir: &Path, all: [&[&str]; N]) -> [Result<String, String>; N] {
@@ -168,7 +168,7 @@ pub fn tracked<T>(title: Option<String>, work: impl FnOnce(&dyn Fn(String)) -> R
 }
 
 pub fn command(program: &str, dir: &Path, args: &[&str]) -> Result<String, String> {
-    command_within(program, dir, args, None)
+    command_within(program, dir, args, None, &[])
 }
 
 fn output_within(mut command: std::process::Command, limit: Duration) -> std::io::Result<Option<std::process::Output>> {
@@ -198,12 +198,17 @@ fn output_within(mut command: std::process::Command, limit: Duration) -> std::io
     Ok(Some(std::process::Output { status, stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() }))
 }
 
-fn command_within(program: &str, dir: &Path, args: &[&str], limit: Option<Duration>) -> Result<String, String> {
+pub fn exec_env(dir: &Path, env: &[(&str, &str)], args: &[&str]) -> Result<String, String> {
+    command_within("git", dir, args, None, env)
+}
+
+fn command_within(program: &str, dir: &Path, args: &[&str], limit: Option<Duration>, env: &[(&str, &str)]) -> Result<String, String> {
     let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     let (program, args) = crate::wsl::wrap(Some(dir), program, &args);
     let shown = format!("{program} {}", args.join(" ").replace('\n', " "));
     let mut command = std::process::Command::new(&program);
-    command.args(args).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0").env("WSLENV", "GIT_TERMINAL_PROMPT");
+    let shared: String = env.iter().map(|(name, _)| format!(":{name}")).collect();
+    command.args(args).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0").envs(env.iter().copied()).env("WSLENV", format!("GIT_TERMINAL_PROMPT{shared}"));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -1109,7 +1114,7 @@ mod tests {
 
         let nap = ["-c", "alias.nap=!sleep 5", "nap"];
         let started = std::time::Instant::now();
-        let error = command_within("git", &dir, &nap, Some(Duration::from_millis(300))).unwrap_err();
+        let error = command_within("git", &dir, &nap, Some(Duration::from_millis(300)), &[]).unwrap_err();
         assert!(error.contains("did not finish") && started.elapsed() < Duration::from_secs(4), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
