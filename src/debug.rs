@@ -17,6 +17,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+mod views;
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Breakpoint {
@@ -64,6 +66,7 @@ pub struct Marks {
     pub paused: Vec<(PathBuf, usize)>,
     ask: Option<(PathBuf, usize, Ask)>,
     hover: Option<Hover>,
+    pub band: Option<(String, usize)>,
 }
 
 fn same(a: &Path, b: &Path) -> bool {
@@ -469,6 +472,7 @@ struct Frame {
     path: Option<PathBuf>,
     line: usize,
     column: usize,
+    ip: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -478,6 +482,7 @@ struct Var {
     kind: String,
     reference: i64,
     expensive: bool,
+    memory: Option<String>,
 }
 
 fn vars(list: &Value, key: &str) -> Vec<Var> {
@@ -489,6 +494,7 @@ fn vars(list: &Value, key: &str) -> Vec<Var> {
         kind: text(item, "type"),
         reference: item["variablesReference"].as_i64().unwrap_or(0),
         expensive: item["expensive"] == true,
+        memory: item["memoryReference"].as_str().map(str::to_owned),
     };
     items.iter().map(var).collect()
 }
@@ -509,6 +515,9 @@ enum Want {
     Run,
     Disconnect,
     Restart,
+    Disassemble(String),
+    ReadMemory(String),
+    MemoryAt(String),
 }
 
 struct Live {
@@ -690,6 +699,7 @@ pub struct Debug {
     editing: Option<Editing>,
     dialog: Option<Dialog>,
     confirm_clear: bool,
+    views: views::Views,
 }
 
 impl Default for Debug {
@@ -712,6 +722,7 @@ impl Default for Debug {
             editing: None,
             dialog: None,
             confirm_clear: false,
+            views: Default::default(),
         }
     }
 }
@@ -881,6 +892,7 @@ impl Debug {
             "columnsStartAt1": true,
             "supportsVariableType": true,
             "supportsRunInTerminalRequest": true,
+            "supportsMemoryReferences": true,
         });
         live.ask("initialize", args, Want::Initialize);
         let name = live.config.name.clone();
@@ -944,7 +956,11 @@ impl Debug {
     fn step(&mut self, command: &str) {
         let Some(live) = self.live.get_mut(self.focus).filter(|l| l.state == State::Stopped) else { return };
         let thread = live.thread.or(live.threads.first().map(|t| t.0)).unwrap_or(0);
-        live.ask(command, json!({"threadId": thread}), Want::Run);
+        let mut args = json!({"threadId": thread});
+        if self.views.focused && command != "continue" && live.can("supportsSteppingGranularity") {
+            args["granularity"] = json!("instruction");
+        }
+        live.ask(command, args, Want::Run);
     }
 
     pub fn exec(&mut self, cmd: &Command, env: &mut Env) -> bool {
@@ -992,6 +1008,8 @@ impl Debug {
                 self.open[1] = true;
                 self.editing = Some(Editing::Watch(None, String::new()));
             }
+            OpenDisassembly => self.views.open_disassembly(self.live.get(self.focus)),
+            OpenMemory => self.views.ask_memory(self.live.get(self.focus)),
             _ => return false,
         }
         true
@@ -1040,6 +1058,7 @@ impl Debug {
             live.evaluate(&word, "hover", Want::Hover(word.clone()));
         }
         live.fetch(&self.expanded);
+        self.views.poll(live, env.marks);
     }
 
     fn handle(&mut self, index: usize, message: Incoming, env: &mut Env) {
@@ -1126,6 +1145,7 @@ impl Debug {
                     path: f["source"]["path"].as_str().map(PathBuf::from),
                     line: f["line"].as_u64().unwrap_or(0) as usize,
                     column: f["column"].as_u64().unwrap_or(0) as usize,
+                    ip: f["instructionPointerReference"].as_str().map(str::to_owned),
                 };
                 live.frames = body["stackFrames"].as_array().into_iter().flatten().map(frame).collect();
                 if live.state == State::Stopped {
@@ -1173,6 +1193,9 @@ impl Debug {
             Want::Restart => live.running(env.marks),
             Want::Run => env.bottom.console.tagged(&tag, "stderr", &format!("{message}\n")),
             Want::Plain(command) if !success => env.bottom.console.tagged(&tag, "stderr", &format!("{command}: {message}\n")),
+            Want::Disassemble(ip) => self.views.disassembled(live, &ip, success, &message, &body, env.marks),
+            Want::ReadMemory(reference) => self.views.memory_read(&reference, success, &message, &body),
+            Want::MemoryAt(expression) => self.views.memory_found(live, &expression, success, &message, &body),
             _ => {}
         }
     }
@@ -1252,6 +1275,7 @@ enum TreeAction {
     Edit(i64, String, String),
     Commit(i64, String, String),
     Cancel,
+    Memory(String, String),
 }
 
 struct Tree<'a> {
@@ -1260,6 +1284,7 @@ struct Tree<'a> {
     editing: &'a mut Option<Editing>,
     settable: bool,
     action: &'a mut Option<TreeAction>,
+    memory: bool,
 }
 
 impl Tree<'_> {
@@ -1309,6 +1334,12 @@ impl Tree<'_> {
                     }
                     if ui.button("Copy Value").clicked() {
                         ui.ctx().copy_text(var.value.clone());
+                        ui.close();
+                    }
+                    if let Some(reference) = var.memory.as_ref().filter(|_| self.memory)
+                        && ui.button("View Binary Data").clicked()
+                    {
+                        *self.action = Some(TreeAction::Memory(reference.clone(), var.name.clone()));
                         ui.close();
                     }
                 });
@@ -1406,7 +1437,8 @@ impl Debug {
         }
         let mut action = None;
         let mut editing = self.editing.take();
-        let mut tree = Tree { live, expanded: &self.expanded, editing: &mut editing, settable: live.can("supportsSetVariable"), action: &mut action };
+        let memory = live.can("supportsReadMemoryRequest");
+        let mut tree = Tree { live, expanded: &self.expanded, editing: &mut editing, settable: live.can("supportsSetVariable"), action: &mut action, memory };
         tree.show(ui, theme, &live.scopes, 0, 0, "");
         self.editing = editing;
         match action {
@@ -1417,6 +1449,11 @@ impl Debug {
             }
             Some(TreeAction::Edit(reference, name, value)) => self.editing = Some(Editing::Value(reference, name, value)),
             Some(TreeAction::Cancel) => self.editing = None,
+            Some(TreeAction::Memory(reference, name)) => {
+                if let Some(live) = self.live.get_mut(self.focus) {
+                    self.views.open_memory(live, reference, name);
+                }
+            }
             Some(TreeAction::Commit(reference, name, value)) => {
                 self.editing = None;
                 if let Some(live) = self.live.get_mut(self.focus) {
@@ -1496,8 +1533,9 @@ impl Debug {
         }
         let multi = self.live.len() > 1;
         let (depth, indent) = (multi as usize, if multi { 14.0 } else { 0.0 });
-        let mut pick = None;
+        let (mut pick, mut disassemble) = (None, false);
         for (session, live) in self.live.iter().enumerate() {
+            let can_disassemble = live.can("supportsDisassembleRequest");
             if multi {
                 let (r, resp) = row(ui, theme, false);
                 let focused = session == self.focus;
@@ -1529,6 +1567,15 @@ impl Debug {
                     if resp.clicked() {
                         pick = Some((session, Some(index)));
                     }
+                    if can_disassemble && frame.ip.is_some() {
+                        resp.context_menu(|ui| {
+                            ui::menu_pad(ui);
+                            if ui.button("Open Disassembly View").clicked() {
+                                (pick, disassemble) = (Some((session, Some(index))), true);
+                                ui.close();
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -1539,6 +1586,9 @@ impl Debug {
             }
             Some((session, None)) => self.focus_on(session, env.cmds),
             None => {}
+        }
+        if disassemble {
+            self.views.open_disassembly(self.live.get(self.focus));
         }
     }
 
@@ -1711,6 +1761,7 @@ impl Debug {
                 }
             }
         }
+        self.views.dialog(ctx, self.live.get_mut(self.focus));
     }
 }
 
@@ -1829,6 +1880,7 @@ impl Halo {
         debug.poll(&mut env);
         debug.dialogs(ctx, &mut env);
         debug.toolbar(ctx, &theme, top, env.cmds);
+        self.debug_views();
     }
 
     pub(crate) fn debug_view(&mut self, ui: &mut Ui) {
@@ -1975,7 +2027,8 @@ mod tests {
                 match command.as_str() {
                     "initialize" => {
                         let caps = json!({"supportsConfigurationDoneRequest": true, "supportsSetVariable": true, "supportsConditionalBreakpoints": true,
-                            "supportsLogPoints": true, "exceptionBreakpointFilters": [{"filter": "raised", "label": "Raised Exceptions", "default": true}]});
+                            "supportsLogPoints": true, "exceptionBreakpointFilters": [{"filter": "raised", "label": "Raised Exceptions", "default": true}],
+                            "supportsDisassembleRequest": true, "supportsReadMemoryRequest": true, "supportsSteppingGranularity": true});
                         send(&mut writer, reply(caps));
                         send(&mut writer, event("initialized", json!({})));
                     }
@@ -1992,11 +2045,20 @@ mod tests {
                     }
                     "threads" => send(&mut writer, reply(json!({"threads": [{"id": 1, "name": "main"}]}))),
                     "stackTrace" => send(&mut writer, reply(json!({"stackFrames": [
-                        {"id": 7, "name": "main", "line": 3, "column": 5, "source": {"path": file.to_string_lossy()}},
+                        {"id": 7, "name": "main", "line": 3, "column": 5, "source": {"path": file.to_string_lossy()}, "instructionPointerReference": "0x1000"},
                         {"id": 8, "name": "start", "line": 1, "column": 1},
                     ]}))),
                     "scopes" => send(&mut writer, reply(json!({"scopes": [{"name": "Locals", "variablesReference": 100}, {"name": "Globals", "variablesReference": 200, "expensive": true}]}))),
-                    "variables" => send(&mut writer, reply(json!({"variables": [{"name": "x", "value": "42", "type": "int", "variablesReference": 0}, {"name": "items", "value": "[2]", "variablesReference": 101}]}))),
+                    "variables" => send(&mut writer, reply(json!({"variables": [{"name": "x", "value": "42", "type": "int", "variablesReference": 0, "memoryReference": "0x2000"}, {"name": "items", "value": "[2]", "variablesReference": 101}]}))),
+                    "disassemble" => send(&mut writer, reply(json!({"instructions": [
+                        {"address": "0x0ffe", "instructionBytes": "90", "instruction": "nop", "symbol": "main", "location": {"path": file.to_string_lossy()}, "line": 3},
+                        {"address": "0x1000", "instructionBytes": "c3", "instruction": "ret", "symbol": "main", "line": 3},
+                    ]}))),
+                    "readMemory" => send(&mut writer, reply(json!({"address": "0x2000", "data": "SGVsbG8=", "unreadableBytes": 2}))),
+                    "next" => {
+                        send(&mut writer, reply(json!({})));
+                        send(&mut writer, event("stopped", json!({"reason": "step", "threadId": 1})));
+                    }
                     "evaluate" => {
                         let expression = request["arguments"]["expression"].as_str().unwrap_or_default();
                         let result = if expression == "x * 2" { "84" } else { "42" };
@@ -2082,6 +2144,25 @@ mod tests {
         bottom.console.submitted.push("x".into());
         pump!(|_: &Debug, b: &BottomPanel| b.console.text().ends_with("the program\n42\n"));
 
+        let shown = |d: &Debug, title: &str, part: &str| d.views.out.iter().any(|o| o.0 == title && o.1.contains(part));
+        assert_eq!(debug.live[0].children[&100][0].memory.as_deref(), Some("0x2000"));
+        assert!(debug.exec(&Command::OpenDisassembly, &mut env!()));
+        assert!(debug.views.out.iter().any(|o| o.0 == views::DISASSEMBLY && o.3));
+        pump!(|d: &Debug, _: &BottomPanel| shown(d, views::DISASSEMBLY, "ret"));
+        assert!(shown(&debug, views::DISASSEMBLY, "main:\n  0x0ffe  90  nop  ; main.py:3\n  0x1000  c3  ret\n"));
+        assert!(debug.views.out.iter().any(|o| o.0 == views::DISASSEMBLY && o.2 == Some(2)));
+        assert_eq!(marks.band, Some((views::DISASSEMBLY.to_owned(), 2)));
+        let live = &mut debug.live[0];
+        debug.views.open_memory(live, "0x2000".into(), "x".into());
+        pump!(|d: &Debug, _: &BottomPanel| shown(d, views::MEMORY, "00002000"));
+        assert!(shown(&debug, views::MEMORY, "x at 0x2000, 7 bytes\n\n00002000  48 65 6C 6C 6F ?? ?? "));
+        assert!(shown(&debug, views::MEMORY, " Hello??\n"));
+        debug.views.out.clear();
+        debug.views.focused = true;
+        assert!(debug.exec(&Command::StepOver, &mut env!()));
+        pump!(|d: &Debug, _: &BottomPanel| shown(d, views::DISASSEMBLY, "ret") && shown(d, views::MEMORY, "Hello"));
+        debug.views.focused = false;
+
         assert!(debug.exec(&Command::StartDebugging, &mut env!()));
         pump!(|d: &Debug, _: &BottomPanel| !d.active());
         assert!(!marks.live && marks.stopped.is_none() && !bottom.console.active);
@@ -2103,6 +2184,14 @@ mod tests {
         assert_eq!(exceptions["arguments"]["filters"], json!(["raised"]));
         assert!(sent.iter().any(|r| r["command"] == "evaluate" && r["arguments"]["context"] == "watch" && r["arguments"]["frameId"] == 7));
         assert!(sent.iter().any(|r| r["command"] == "evaluate" && r["arguments"]["context"] == "repl" && r["arguments"]["expression"] == "x"));
+        let count = |name: &str| sent.iter().filter(|r| r["command"] == name).count();
+        assert_eq!((count("disassemble"), count("readMemory")), (2, 2));
+        let disassemble = sent.iter().find(|r| r["command"] == "disassemble").unwrap();
+        assert_eq!(disassemble["arguments"], views::disassemble_args("0x1000"));
+        assert_eq!(sent.iter().find(|r| r["command"] == "readMemory").unwrap()["arguments"], views::read_args("0x2000"));
+        assert_eq!(sent.iter().find(|r| r["command"] == "next").unwrap()["arguments"], json!({"threadId": 1, "granularity": "instruction"}));
+        assert_eq!(sent.iter().find(|r| r["command"] == "continue").unwrap()["arguments"], json!({"threadId": 1}));
+        assert_eq!(sent[0]["arguments"]["supportsMemoryReferences"], json!(true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

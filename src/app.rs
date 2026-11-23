@@ -458,6 +458,7 @@ impl Halo {
                 }
                 self.debug_exec(&cmd, ctx);
             }
+            OpenDisassembly | OpenMemory => _ = self.debug_exec(&cmd, ctx),
             ToggleSidebar => self.session.sidebar ^= true,
             TogglePanel => self.session.panel ^= true,
             ToggleAi => self.toggle_view(View::Ai),
