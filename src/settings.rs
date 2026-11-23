@@ -51,6 +51,7 @@ pub struct Settings {
     pub tasks: Vec<Task>,
     pub lsp: bool,
     pub servers: BTreeMap<String, String>,
+    pub inline_values: bool,
     pub debug_adapters: BTreeMap<String, String>,
     pub diagnostics: bool,
     pub status_problems: bool,
@@ -224,6 +225,7 @@ impl Default for Settings {
             ]
             .map(|(ext, command)| (ext.to_owned(), command.to_owned()))
             .into(),
+            inline_values: true,
             debug_adapters: [
                 ("lldb", "codelldb"),
                 ("codelldb", "codelldb"),

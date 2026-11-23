@@ -449,7 +449,7 @@ impl Halo {
             RunAllTests | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => self.testing_exec(&cmd, ctx),
             StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver | StepInto | StepOut
-            | RemoveAllBreakpoints | AddWatch | AddConfiguration => {
+            | RunToCursor | JumpToCursor | RemoveAllBreakpoints | AddWatch | AddConfiguration => {
                 if cmd == AddWatch {
                     self.reveal(View::RunAndDebug);
                 }

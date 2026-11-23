@@ -287,6 +287,8 @@ pub enum Command {
     PauseDebugging,
     StepOver,
     StepInto,
+    RunToCursor,
+    JumpToCursor,
     StepOut,
     ToggleBreakpoint,
     EditBreakpoint,
@@ -723,7 +725,7 @@ pub fn all() -> Vec<Command> {
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, AccessibleDiffViewerNext, AccessibleDiffViewerPrev, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy, CursorWordPartLeft, CursorWordPartRight,
         ShowHover, ShowColorPicker, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
-        RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut,
+        RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut, RunToCursor, JumpToCursor,
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
         OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
@@ -940,7 +942,7 @@ impl Command {
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_)
             | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
-            | StepInto | StepOut | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
+            | StepInto | StepOut | RunToCursor | JumpToCursor | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
             | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
             NewTerminal | NewTerminalWith(_) | NewTerminalIn(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
@@ -1233,6 +1235,8 @@ impl Command {
             PauseDebugging => "Pause",
             StepOver => "Step Over",
             StepInto => "Step Into",
+            RunToCursor => "Debug: Run to Cursor",
+            JumpToCursor => "Debug: Jump to Cursor",
             StepOut => "Step Out",
             ToggleBreakpoint => "Toggle Breakpoint",
             EditBreakpoint => "Edit Breakpoint Condition...",
