@@ -509,16 +509,41 @@ fn graph(
     let text_x = 20.0 + lanes as f32 * 10.0;
     let lane_x = |rect: Rect, lane: usize| rect.left() + 14.0 + lane.min(7) as f32 * 10.0;
     let stroke = |lane: usize| Stroke::new(1.5, palette[lane % palette.len()]);
+    let (ahead, behind) = git.tracking().unwrap_or_default();
+    let groups = [(behind, icons::ARROW_DOWN, "Incoming Changes", "on the upstream branch, not here yet. Click to pull.", GitCommand::Pull),
+        (ahead, icons::ARROW_UP, "Outgoing Changes", "here, not pushed yet. Click to push.", GitCommand::Push)];
+    for (count, icon, label, tip, op) in groups.into_iter().filter(|g| g.0 > 0) {
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+        ui::row_bg(ui, theme, rect, resp.id, resp.hovered(), false);
+        ui::item(ui, &resp, ui::Role::Button, &format!("{label}, {count}"), false);
+        let (x, y) = (rect.left() + 14.0, rect.center().y);
+        let color = if op == GitCommand::Pull { theme.modified } else { theme.added };
+        ui.painter().text(pos2(x, y), Align2::LEFT_CENTER, icon, FontId::proportional(13.0), color);
+        ui.painter().text(pos2(rect.left() + text_x, y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), theme.text);
+        ui.painter().text(pos2(rect.right() - 14.0, y), Align2::RIGHT_CENTER, count.to_string(), FontId::proportional(11.5), color);
+        let plural = if count == 1 { "commit" } else { "commits" };
+        if resp.on_hover_text(format!("{count} {plural} {tip}")).clicked() && !git.busy() {
+            cmds.push(Command::Git(op));
+        }
+    }
 
     for commit in log {
         let (_, rect) = ui.allocate_space(vec2(ui.available_width(), ROW));
         let id = Id::new(("scm_commit", &commit.hash));
         let resp = ui.interact(rect, id, Sense::click());
         let is_open = open == Some(commit.hash.as_str());
+        let side = git.unsynced(&commit.hash).map(|incoming| match incoming {
+            true => (icons::ARROW_DOWN, theme.modified, "incoming"),
+            false => (icons::ARROW_UP, theme.added, "outgoing"),
+        });
         if ui.is_rect_visible(rect) {
             ui::row_bg(ui, theme, rect, id, resp.hovered(), is_open);
-            ui::tree_item(ui, &resp, &format!("{}, {}", commit.subject, commit.author), is_open, 0, Some(is_open));
-            let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 8.0));
+            let marked = side.map_or_else(String::new, |s| format!(", {}", s.2));
+            ui::tree_item(ui, &resp, &format!("{}, {}{marked}", commit.subject, commit.author), is_open, 0, Some(is_open));
+            if let Some((icon, color, _)) = side {
+                ui.painter().text(pos2(rect.right() - 14.0, rect.center().y), Align2::CENTER_CENTER, icon, FontId::proportional(12.0), color);
+            }
+            let painter = ui.painter().with_clip_rect(rect.with_max_x(rect.right() - if side.is_some() { 24.0 } else { 8.0 }));
             let dot = pos2(lane_x(rect, commit.col), rect.center().y);
             for lane in &commit.through {
                 painter.vline(lane_x(rect, *lane), rect.y_range(), stroke(*lane));
@@ -548,7 +573,8 @@ fn graph(
             }
         });
         let short = &commit.hash[..commit.hash.len().min(8)];
-        if resp.on_hover_text(format!("{short}  {}, {}", commit.author, commit.date)).clicked() {
+        let marked = side.map_or_else(String::new, |s| format!("  ({})", s.2));
+        if resp.on_hover_text(format!("{short}  {}, {}{marked}", commit.author, commit.date)).clicked() {
             *action = Some(Action::ShowCommit(commit.hash.clone()));
         }
         if !is_open {
@@ -824,6 +850,39 @@ mod tests {
         click(&ctx, &mut scm, &mut git, moved.x, moved.y + ui::SECTION * 0.5);
         assert_eq!(scm.open, [true, true, false]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shows_incoming_and_outgoing_groups_above_the_graph() {
+        let base = std::env::temp_dir().join(format!("halo-scm-sides-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (dir, remote) = (base.join("work"), base.join("remote.git"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&remote).unwrap();
+        crate::git::exec(&remote, &["init", "-q", "--bare"]).unwrap();
+        let run = |args: &[&str]| crate::git::exec(&dir, args).unwrap();
+        run(&["init", "-q", "-b", "trunk"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "t"]);
+        run(&["remote", "add", "origin", remote.to_str().unwrap()]);
+        run(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        run(&["push", "-q", "-u", "origin", "trunk"]);
+        run(&["commit", "-q", "--allow-empty", "-m", "remote only"]);
+        run(&["push", "-q"]);
+        run(&["reset", "-q", "--hard", "HEAD~1"]);
+        run(&["commit", "-q", "--allow-empty", "-m", "local only"]);
+
+        let ctx = egui::Context::default();
+        let (mut scm, mut git) = (Scm::new(), Git::new());
+        git.set_roots(vec![dir.clone()], &ctx);
+        git.wait(|g| g.tracking() == Some((1, 1)));
+        frame(&ctx, &mut scm, &mut git, vec![]);
+        let first = git.log()[0].hash.clone();
+        assert!(git.unsynced(&first).is_some());
+        let row = ctx.read_response(Id::new(("scm_commit", &first))).unwrap().rect.center();
+        assert_eq!(click(&ctx, &mut scm, &mut git, row.x, row.y - ROW), [Command::Git(GitCommand::Push)]);
+        assert_eq!(click(&ctx, &mut scm, &mut git, row.x, row.y - 2.0 * ROW), [Command::Git(GitCommand::Pull)]);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

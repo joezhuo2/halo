@@ -87,6 +87,7 @@ struct Status {
     tracking: Option<(usize, usize)>,
     branches: Vec<String>,
     log: Vec<Commit>,
+    unsynced: HashMap<String, bool>,
     more: bool,
     staged: Vec<Change>,
     unstaged: Vec<Change>,
@@ -389,6 +390,13 @@ fn log_page(root: &Path, upstream: bool, skip: usize, count: usize) -> Vec<Commi
     parse_log(&run(root, &log[..7 + upstream as usize]).or_else(|| run(root, &log[..7])).unwrap_or_default())
 }
 
+fn parse_sides(text: &str) -> HashMap<String, bool> {
+    text.lines().filter_map(|l| match l.trim().split_at_checked(1)? {
+        (side @ ("<" | ">"), hash) if !hash.is_empty() => Some((hash.to_owned(), side == ">")),
+        _ => None,
+    }).collect()
+}
+
 fn parse_name_status(text: &str) -> Vec<Change> {
     let mut out = vec![];
     let mut parts = text.split('\0');
@@ -438,13 +446,15 @@ fn load_status(root: &Path, details: bool, count: usize) -> Result<Status, Strin
     let n = count.to_string();
     let log = ["log", "--topo-order", "-n", &n, LOG_FORMAT, "HEAD", "@{upstream}"];
     let refs = ["for-each-ref", "--format=%(refname:short)", "refs/heads"];
-    let [top, text, branches, upstream_log, head_log, short] =
-        exec_all(root, [&["rev-parse", "--show-toplevel"], &status, &refs, &log, &log[..6], &["rev-parse", "--short", "HEAD"]]);
+    let sides = ["rev-list", "--left-right", "--max-count=2000", "HEAD...@{upstream}"];
+    let [top, text, branches, upstream_log, head_log, short, sides] =
+        exec_all(root, [&["rev-parse", "--show-toplevel"], &status, &refs, &log, &log[..6], &["rev-parse", "--short", "HEAD"], &sides]);
     let top = crate::wsl::local(root, top?.trim());
     let (branch, tracking, entries) = parse_status(&text?);
     let branches = branches.unwrap_or_default().lines().map(str::to_owned).collect();
     let log = parse_log(&tracking.and(upstream_log.ok()).or(head_log.ok()).unwrap_or_default());
     let more = log.len() >= count;
+    let unsynced = tracking.and(sides.ok()).map(|s| parse_sides(&s)).unwrap_or_default();
     let branch = branch.or_else(|| short.ok().map(|s| s.trim().to_owned())).unwrap_or_default();
     let top_key = key(&top);
     let mut files = HashMap::new();
@@ -474,7 +484,7 @@ fn load_status(root: &Path, details: bool, count: usize) -> Result<Status, Strin
         files.insert(full, state);
     }
     let details = details.then(|| ops::load(&top));
-    Ok(Status { details, top, branch, tracking, branches, log, more, staged, unstaged, files, folders })
+    Ok(Status { details, top, branch, tracking, branches, log, unsynced, more, staged, unstaged, files, folders })
 }
 
 impl Git {
@@ -582,6 +592,10 @@ impl Git {
 
     pub fn log(&self) -> &[Commit] {
         self.status.as_ref().map(|s| s.log.as_slice()).unwrap_or_default()
+    }
+
+    pub fn unsynced(&self, hash: &str) -> Option<bool> {
+        self.status.as_ref()?.unsynced.get(hash).copied()
     }
 
     pub fn log_loading(&self) -> bool {
@@ -1125,6 +1139,34 @@ mod tests {
         let files = parse_name_status("M\0src/a.rs\0A\0new.txt\0R100\0old.rs\0b.rs\0D\0gone.rs\0");
         let expect = [("src/a.rs", FileState::Modified), ("new.txt", FileState::Added), ("b.rs", FileState::Modified), ("gone.rs", FileState::Deleted)];
         assert_eq!(files, expect.map(|(path, state)| Change { path: path.into(), state }));
+    }
+
+    #[test]
+    fn marks_incoming_and_outgoing_commits() {
+        assert_eq!(parse_sides("<a\n>b\n\nc\n<\n"), HashMap::from([("a".into(), false), ("b".into(), true)]));
+        let base = std::env::temp_dir().join(format!("halo-git-sides-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (dir, remote) = (base.join("work"), base.join("remote.git"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&remote).unwrap();
+        exec(&remote, &["init", "-q", "--bare"]).unwrap();
+        let git = |args: &[&str]| exec(&dir, args).unwrap();
+        git(&["init", "-q", "-b", "trunk"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        git(&["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        assert!(load_status(&dir, false, 10).unwrap().unsynced.is_empty());
+        git(&["push", "-q", "-u", "origin", "trunk"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "remote only"]);
+        git(&["push", "-q"]);
+        git(&["reset", "-q", "--hard", "HEAD~1"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "local only"]);
+        let status = load_status(&dir, false, 10).unwrap();
+        assert_eq!(status.tracking, Some((1, 1)));
+        let side = |subject: &str| status.log.iter().find(|c| c.subject == subject).and_then(|c| status.unsynced.get(&c.hash).copied());
+        assert_eq!((side("remote only"), side("local only"), side("base")), (Some(true), Some(false), None));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
