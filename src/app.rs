@@ -444,6 +444,7 @@ impl Halo {
                 self.reveal(View::Search);
                 self.find.focus();
             }
+            NewSearchEditor | OpenSearchEditor => self.editors.open_search(self.find.editor_query(cmd == OpenSearchEditor), cmd == NewSearchEditor, ctx),
             ShowTesting => self.reveal(View::Testing),
             RunAllTests | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => self.testing_exec(&cmd, ctx),
@@ -718,6 +719,7 @@ impl Halo {
             ("inputFocus", typing.into()),
             ("textInputFocus", typing.into()),
             ("inQuickOpen", self.search.is_open().into()),
+            ("searchViewletFocus", self.find.has_focus(ctx).into()),
             ("isWindows", cfg!(windows).into()),
             ("isLinux", cfg!(target_os = "linux").into()),
             ("isMac", cfg!(target_os = "macos").into()),

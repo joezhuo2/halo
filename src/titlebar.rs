@@ -148,7 +148,7 @@ impl Halo {
             Some(MoveView), Some(ResetViewLocations),
         ]);
         self.menu(ui, "Go", &[
-            Some(GoToFile), Some(GoToSymbol), Some(GoToWorkspaceSymbol), Some(GoToLine), Some(GoToBracket), Some(FindInFiles), Some(ShowCommands), None,
+            Some(GoToFile), Some(GoToSymbol), Some(GoToWorkspaceSymbol), Some(GoToLine), Some(GoToBracket), Some(FindInFiles), Some(NewSearchEditor), Some(ShowCommands), None,
             Some(GoToDefinition), Some(GoToDeclaration), Some(GoToTypeDefinition), Some(GoToImplementation), Some(FindReferences),
             Some(ShowCallHierarchy), Some(ShowTypeHierarchy), None,
             Some(GoBack), Some(GoToLastEditLocation), Some(NextEditor), Some(PrevEditor), None,
