@@ -49,6 +49,8 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("format_on_paste", "editor.formatOnPaste"),
     ("format_on_type", "editor.formatOnType"),
     ("linked_editing", "editor.linkedEditing"),
+    ("inline_suggest", "editor.inlineSuggest.enabled"),
+    ("inline_edits", "editor.inlineSuggest.edits.enabled"),
     ("word_wrap", "editor.wordWrap"),
     ("auto_close", "editor.autoClosingBrackets"),
     ("auto_close_quotes", "editor.autoClosingQuotes"),

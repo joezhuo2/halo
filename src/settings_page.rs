@@ -107,6 +107,8 @@ pub const SETTINGS: &[Meta] = &[
     m("format_on_paste", 0, ED, "Format On Paste", "Format pasted text with the language server.", Kind::Toggle),
     m("format_on_type", 0, ED, "Format On Type", "Let the language server reformat the line after you type characters it reacts to, such as a semicolon or a closing brace.", Kind::Toggle),
     m("linked_editing", 0, ED, "Linked Editing", "Rename the matching HTML, XML or JSX tag while you edit a tag name.", Kind::Toggle),
+    m("inline_suggest", 0, ED, "Inline Suggestions", "Show an AI completion as dimmed text after the cursor when you pause typing. Tab accepts it. Each request runs the Claude or Codex CLI and uses its quota.", Kind::Toggle),
+    m("inline_edits", 0, ED, "Next Edit Suggestions", "After you edit and pause, ask the AI for the next likely edit in the file. Tab jumps to it and Tab again applies it. Each request uses the CLI's quota.", Kind::Toggle),
     m("diagnostics", 0, PROBLEMS, "Diagnostics", "Underline errors and warnings, and list them in the Problems panel.", Kind::Toggle),
     m("status_problems", 0, PROBLEMS, "Status Bar Counts", "Show the number of errors and warnings in the status bar.", Kind::Toggle),
     m("markdown_validate", 0, PROBLEMS, "Validate Markdown Links", "Warn about links in Markdown files to files, headings and link definitions that do not exist.", Kind::Toggle),
