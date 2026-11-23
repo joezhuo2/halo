@@ -295,6 +295,16 @@ Each of these can be switched off under **Settings > Text Editor**.
   output names them. `Ctrl+F` finds in the terminal.
 - **Shell integration** for PowerShell, bash and zsh marks each command with
   its exit status; `Ctrl+Up` and `Ctrl+Down` move between commands.
+- **Suggestions** as you type: commands from PATH and history, subcommands
+  and flags of common tools (git, cargo, npm, docker and more), and folders
+  and files. `Tab` accepts, `Down` picks another, `Ctrl+Space` opens the
+  list.
+- **Quick fixes** on a finished command: a lightbulb (or `Ctrl+.`) offers
+  `git push --set-upstream`, the command git meant for a typo, the pull
+  request page after a push, or stopping the process that holds a busy port.
+- **Sticky scroll** keeps the command whose output fills the terminal pinned
+  to the top row; click it to scroll back to the command.
+- **Images** printed as Sixel or iTerm inline images are shown in place.
 - Rename a terminal, give it a colour, or move it into the editor area.
 - Terminals come back after a restart in the same places, with their name,
   folder and the last 1000 lines of history.

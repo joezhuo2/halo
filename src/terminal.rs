@@ -4,7 +4,9 @@ use crate::settings::{Settings, ShellProfile};
 use crate::shell_integration::{Integration, Record, Tap};
 use crate::terminal_find::FindBar;
 use crate::terminal_links::{Link, Target};
+use crate::terminal_quickfix::Fix;
 use crate::terminal_restore::{Place, Saved};
+use crate::terminal_suggest::{Item, Kind};
 use crate::theme::Theme;
 use crate::ui::{self, icons};
 use alacritty_terminal::event::{Event as TermEvent, EventListener, WindowSize};
@@ -32,12 +34,21 @@ struct Shared {
     title: Mutex<Option<String>>,
     sender: Mutex<Option<EventLoopSender>>,
     code: Mutex<Option<i32>>,
+    window: Mutex<WindowSize>,
 }
 
 #[derive(Clone)]
 struct Proxy {
     ctx: egui::Context,
     shared: Arc<Shared>,
+}
+
+impl Proxy {
+    fn reply(&self, text: String) {
+        if let Some(sender) = self.shared.sender.lock().unwrap().as_ref() {
+            let _ = sender.send(Msg::Input(text.into_bytes().into()));
+        }
+    }
 }
 
 impl EventListener for Proxy {
@@ -47,15 +58,50 @@ impl EventListener for Proxy {
             TermEvent::ResetTitle => *self.shared.title.lock().unwrap() = None,
             TermEvent::ChildExit(status) => *self.shared.code.lock().unwrap() = status.code(),
             TermEvent::Exit => self.shared.exited.store(true, Ordering::Relaxed),
-            TermEvent::PtyWrite(text) => {
-                if let Some(sender) = self.shared.sender.lock().unwrap().as_ref() {
-                    let _ = sender.send(Msg::Input(text.into_bytes().into()));
-                }
-            }
+            TermEvent::PtyWrite(text) => self.reply(text),
+            TermEvent::TextAreaSizeRequest(format) => self.reply(format(*self.shared.window.lock().unwrap())),
             _ => {}
         }
         self.ctx.request_repaint();
     }
+}
+
+enum Choice {
+    Complete(Item),
+    Fix(Fix),
+}
+
+struct Pick {
+    rows: Vec<(String, &'static str, &'static str, Choice)>,
+    selected: Option<usize>,
+    reveal: bool,
+    fixes: bool,
+    at: Option<Pos2>,
+}
+
+fn kind_look(kind: Kind) -> (&'static str, &'static str) {
+    match kind {
+        Kind::History => (icons::CLOCK_COUNTER_CLOCKWISE, "history"),
+        Kind::Command => (icons::TERMINAL_WINDOW, "command"),
+        Kind::Sub => (icons::CARET_RIGHT, "subcommand"),
+        Kind::Flag => (icons::FLAG, "flag"),
+        Kind::Folder => (icons::FOLDER, "folder"),
+        Kind::File => (icons::FILE, "file"),
+    }
+}
+
+fn free_port(port: u16) {
+    std::thread::spawn(move || {
+        let Some(row) = list_ports().into_iter().find(|r| r.port == port && !r.pid.is_empty()) else {
+            return ui::notify(format!("No process was found listening on port {port}."));
+        };
+        let (program, args) = if cfg!(windows) { ("taskkill", vec!["/PID", row.pid.as_str(), "/F"]) } else { ("kill", vec![row.pid.as_str()]) };
+        let stopped = hidden_command(program).args(args).status().is_ok_and(|s| s.success());
+        ui::notify(match stopped {
+            true => format!("Stopped {} (PID {}) to free port {port}.", row.process, row.pid),
+            false => format!("Could not stop PID {} on port {port}.", row.pid),
+        });
+    });
 }
 
 struct Size {
@@ -212,6 +258,9 @@ pub struct Look {
     scrollback: usize,
     copy_on_select: bool,
     right_click: String,
+    suggest: bool,
+    sticky: bool,
+    images: bool,
 }
 
 static LOOK: Mutex<Option<Look>> = Mutex::new(None);
@@ -226,11 +275,15 @@ pub fn configure(s: &Settings) {
         scrollback: s.terminal_scrollback,
         copy_on_select: s.terminal_copy_on_selection,
         right_click: s.terminal_right_click.clone(),
+        suggest: s.terminal_suggest,
+        sticky: s.terminal_sticky_scroll,
+        images: s.terminal_images,
     });
 }
 
 fn look() -> Look {
-    LOOK.lock().unwrap().clone().unwrap_or(Look { line_height: 1.15, blink: true, scrollback: 5000, ..Default::default() })
+    let fallback = Look { line_height: 1.15, blink: true, scrollback: 5000, suggest: true, sticky: true, images: true, ..Default::default() };
+    LOOK.lock().unwrap().clone().unwrap_or(fallback)
 }
 
 type HoveredLink = (i32, Vec<(usize, usize)>, Link);
@@ -270,6 +323,10 @@ pub struct Terminal {
     restored: bool,
     key_sel: Option<Point>,
     windows_word_erase: bool,
+    pick: Option<Pick>,
+    suggest_for: Option<String>,
+    force_suggest: bool,
+    fixes: (i64, Vec<(String, Fix)>),
 }
 
 impl Drop for Terminal {
@@ -323,14 +380,20 @@ impl Terminal {
         let pid = pty.child_watcher().pid().map(|p| p.get());
         #[cfg(not(windows))]
         let pid = Some(pty.child().id());
-        let shared =
-            Arc::new(Shared { exited: AtomicBool::new(false), title: Mutex::new(None), sender: Mutex::new(None), code: Mutex::new(None) });
+        let shared = Arc::new(Shared {
+            exited: AtomicBool::new(false),
+            title: Mutex::new(None),
+            sender: Mutex::new(None),
+            code: Mutex::new(None),
+            window: Mutex::new(window),
+        });
         let proxy = Proxy { ctx: ctx.clone(), shared: shared.clone() };
         let config = Config { scrolling_history: look().scrollback, ..Default::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &Size { cols: 80, rows: 24 }, proxy.clone())));
         crate::terminal_restore::print(&mut term.lock(), prelude);
         let integration = Arc::new(Mutex::new(Integration::default()));
-        let tap = Tap::new(pty, term.clone(), integration.clone(), ctx);
+        crate::terminal_suggest::warm();
+        let tap =Tap::new(pty, term.clone(), integration.clone(), ctx);
         let event_loop = EventLoop::new(term.clone(), proxy, tap, task.is_some(), false)?;
         let sender = event_loop.channel();
         *shared.sender.lock().unwrap() = Some(sender.clone());
@@ -358,6 +421,10 @@ impl Terminal {
             restored: !prelude.is_empty(),
             key_sel: None,
             windows_word_erase: windows_word_erase(program),
+            pick: None,
+            suggest_for: None,
+            force_suggest: false,
+            fixes: (i64::MIN, vec![]),
         })
     }
 
@@ -573,10 +640,81 @@ impl Terminal {
     }
 
     pub fn last_output(&self) -> Option<String> {
+        let record = self.integration.lock().unwrap().commands.iter().rev().find(|r| r.output.is_some() && r.end.is_some())?.clone();
+        self.output_of(&record)
+    }
+
+    fn typed(&self) -> Option<String> {
         let term = self.term.lock();
+        if term.mode().contains(TermMode::ALT_SCREEN) || term.grid().display_offset() != 0 {
+            return None;
+        }
         let integration = self.integration.lock().unwrap();
-        let record = integration.commands.iter().rev().find(|r| r.output.is_some() && r.end.is_some())?;
-        let base = integration.dropped + term.history_size() as i64;
+        let record = integration.commands.last().filter(|r| r.output.is_none() && r.end.is_none())?;
+        let start = Point::new(Line((record.command? - integration.dropped - term.history_size() as i64) as i32), Column(record.column));
+        let cursor = term.grid().cursor.point;
+        if cursor < start || start.line < term.topmost_line() || cursor.line.0 - start.line.0 > 20 {
+            return None;
+        }
+        let rows = grid_rows(&term, start.line.0, cursor.line.0);
+        let last = rows.len() - 1;
+        let mut text = String::new();
+        for (i, (chars, _)) in rows.iter().enumerate() {
+            let (from, to) = (if i == 0 { start.column.0 } else { 0 }, if i == last { cursor.column.0 } else { chars.len() });
+            text.extend(chars[from.min(to)..to.min(chars.len())].iter().filter(|c| **c != '\0'));
+        }
+        Some(text)
+    }
+
+    fn path_sep(&self) -> char {
+        let program = self.profile.as_ref().map(|p| p.program.to_lowercase()).unwrap_or_default();
+        match ["wsl", "bash", "zsh", "sh.exe", "fish"].iter().any(|s| program.contains(s)) {
+            true => '/',
+            false => std::path::MAIN_SEPARATOR,
+        }
+    }
+
+    fn refresh_suggest(&mut self) {
+        let typed = self.typed();
+        if typed == self.suggest_for && !self.force_suggest {
+            return;
+        }
+        let force = std::mem::take(&mut self.force_suggest);
+        let items = match typed.as_deref() {
+            Some(text) => crate::terminal_suggest::complete(text, &self.recent(), self.cwd().as_deref(), self.path_sep(), force),
+            None => vec![],
+        };
+        let rows: Vec<_> = items
+            .into_iter()
+            .map(|item| {
+                let (icon, detail) = kind_look(item.kind);
+                (item.label.clone(), icon, detail, Choice::Complete(item))
+            })
+            .collect();
+        self.pick = (!rows.is_empty()).then_some(Pick { rows, selected: None, reveal: true, fixes: false, at: None });
+        self.suggest_for = typed;
+    }
+
+    fn open_fixes(&mut self, at: Option<Pos2>) {
+        let rows = self.fixes.1.iter().map(|(label, fix)| (label.clone(), icons::LIGHTBULB, "", Choice::Fix(fix.clone()))).collect();
+        self.pick = Some(Pick { rows, selected: Some(0), reveal: true, fixes: true, at });
+    }
+
+    fn accept(&mut self, index: usize) {
+        let Some(pick) = self.pick.take() else { return };
+        match pick.rows.into_iter().nth(index).map(|row| row.3) {
+            Some(Choice::Complete(item)) => self.write(format!("{}{}", "\x7f".repeat(item.replace), item.insert)),
+            Some(Choice::Fix(Fix::Run(line))) => self.write(format!("{line}\r")),
+            Some(Choice::Fix(Fix::Open(url))) => ui::open_url(&url),
+            Some(Choice::Fix(Fix::FreePort(port))) => free_port(port),
+            None => {}
+        }
+        self.want_focus = true;
+    }
+
+    fn output_of(&self, record: &Record) -> Option<String> {
+        let term = self.term.lock();
+        let base = self.integration.lock().unwrap().dropped + term.history_size() as i64;
         let (from, (end, col)) = ((record.output? - base).max(term.topmost_line().0 as i64), record.end?);
         let end = end - base;
         if end < term.topmost_line().0 as i64 || end > term.bottommost_line().0 as i64 {
@@ -630,8 +768,10 @@ impl Terminal {
             self.size = (cols, rows);
             self.term.lock().resize(Size { cols, rows });
             let window = WindowSize { num_lines: rows as u16, num_cols: cols as u16, cell_width: cell.x as u16, cell_height: cell.y as u16 };
+            *self.shared.window.lock().unwrap() = window;
             let _ = self.sender.send(Msg::Resize(window));
         }
+        self.integration.lock().unwrap().cell = look.images.then_some((cell.x, cell.y));
         if self.want_focus || resp.clicked() || resp.drag_started() {
             resp.request_focus();
             self.want_focus = false;
@@ -659,6 +799,44 @@ impl Terminal {
                     }
                     Event::Key { pressed: true, .. } | Event::Text(_) | Event::Paste(_) | Event::Cut => self.clear_key_selection(),
                     _ => {}
+                }
+                if let Event::Key { key, pressed: true, modifiers, .. } = &event {
+                    if *key == Key::Space && modifiers.ctrl && !modifiers.shift && !modifiers.alt && look.suggest {
+                        self.force_suggest = true;
+                        continue;
+                    }
+                    if *key == Key::Period && modifiers.command && !self.fixes.1.is_empty() {
+                        self.open_fixes(None);
+                        continue;
+                    }
+                    let (mut chosen, mut close) = (None, false);
+                    if let Some(pick) = self.pick.as_mut().filter(|_| modifiers.is_none()) {
+                        let last = pick.rows.len().saturating_sub(1);
+                        match key {
+                            Key::ArrowDown => pick.selected = Some(pick.selected.map_or(0, |s| (s + 1).min(last))),
+                            Key::ArrowUp if pick.selected.is_some() => pick.selected = pick.selected.map(|s| s.saturating_sub(1)),
+                            Key::Escape => close = true,
+                            Key::Tab => chosen = Some(pick.selected.unwrap_or(0)),
+                            Key::Enter if pick.selected.is_some() => chosen = pick.selected,
+                            Key::Enter => self.pick = None,
+                            _ if pick.fixes => self.pick = None,
+                            _ => {}
+                        }
+                        if let Some(pick) = self.pick.as_mut() {
+                            pick.reveal = true;
+                        }
+                    }
+                    if close {
+                        self.pick = None;
+                        continue;
+                    }
+                    if let Some(index) = chosen {
+                        self.accept(index);
+                        continue;
+                    }
+                    if matches!(key, Key::ArrowDown | Key::ArrowUp) && self.pick.as_ref().is_some_and(|p| p.selected.is_some()) {
+                        continue;
+                    }
                 }
                 match event {
                     Event::Text(text) => self.write(text),
@@ -699,6 +877,15 @@ impl Terminal {
                 }
                 self.last_input = now;
             }
+        }
+
+        if look.suggest && self.focused && !self.pick.as_ref().is_some_and(|p| p.fixes) {
+            self.refresh_suggest();
+        } else if !self.focused && self.pick.as_ref().is_some_and(|p| !p.fixes) {
+            (self.pick, self.suggest_for) = (None, None);
+        }
+        if resp.clicked() {
+            self.pick = None;
         }
 
         let mut scroll_to = None;
@@ -881,6 +1068,23 @@ impl Terminal {
             }
         }
 
+        if !content.mode.contains(TermMode::ALT_SCREEN) {
+            let mut integration = self.integration.lock().unwrap();
+            let (dropped, history) = (integration.dropped, term.history_size() as i64);
+            integration.pictures.retain(|p| p.line + (p.size.1 / cell.y).ceil() as i64 > dropped);
+            for (n, picture) in integration.pictures.iter_mut().enumerate() {
+                let row = picture.line - dropped - history + offset as i64;
+                if row > self.size.1 as i64 || (row as f32) * cell.y + picture.size.1 < 0.0 {
+                    continue;
+                }
+                let texture = picture
+                    .texture
+                    .get_or_insert_with(|| ctx.load_texture(format!("terminal-image-{}-{n}", self.id), picture.image.take().unwrap_or_default(), egui::TextureOptions::LINEAR));
+                let area = Rect::from_min_size(cell_pos(row as i32, picture.column), vec2(picture.size.0, picture.size.1));
+                painter.image(texture.id(), area, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), ui::with_alpha(Color32::WHITE, fade));
+            }
+        }
+
         if content.mode.contains(TermMode::SHOW_CURSOR) && content.cursor.shape != CursorShape::Hidden {
             let point = content.cursor.point;
             let min = cell_pos(point.line.0 + offset, point.column.0);
@@ -908,9 +1112,39 @@ impl Terminal {
             let shown = |r: &&Record| r.ran() && (0..self.size.1 as i64).contains(&(r.row() - base));
             integration.commands.iter().filter(shown).map(|r| (r.row() - base, r.clone())).collect()
         };
+        let caret = cell_pos(content.cursor.point.line.0 + offset, content.cursor.point.column.0) + vec2(0.0, cell.y + 2.0);
+        let sticky = match look.sticky && !content.mode.contains(TermMode::ALT_SCREEN) {
+            true => {
+                let integration = self.integration.lock().unwrap();
+                let (base, top) = (integration.dropped + term.history_size() as i64, -(offset as i64));
+                let record = integration.commands.iter().rev().find(|r| r.ran() && r.row() - base < top);
+                record.filter(|r| r.end.is_none_or(|(end, _)| end - base > top)).map(|r| {
+                    let line = r.row() - base;
+                    let text = match line >= term.topmost_line().0 as i64 {
+                        true => grid_rows(&term, line as i32, line as i32).pop().map(|row| row.0.into_iter().filter(|c| *c != '\0').collect::<String>()),
+                        false => None,
+                    };
+                    (line, text.map(|t| t.trim_end().to_owned()).unwrap_or_else(|| r.line.clone()))
+                })
+            }
+            false => None,
+        };
         drop(term);
+        let last = self.integration.lock().unwrap().last_finished().cloned();
+        if let Some(record) = last.filter(|r| r.row() != self.fixes.0) {
+            let output = self.output_of(&record).unwrap_or_default();
+            self.fixes = (record.row(), crate::terminal_quickfix::find(&record.line, &output));
+        }
         for (row, record) in marks {
             let y = rect.top() + row as f32 * cell.y;
+            if record.row() == self.fixes.0 && !self.fixes.1.is_empty() {
+                let bulb = Rect::from_center_size(pos2(rect.right() - 8.0, y + cell.y / 2.0), vec2(16.0, cell.y.max(16.0)));
+                let hit = ui.interact(bulb, id.with("bulb"), Sense::click()).on_hover_text("Quick fixes (Ctrl+.)");
+                ui.painter().text(bulb.center(), Align2::CENTER_CENTER, icons::LIGHTBULB, FontId::proportional(13.0), theme.warning);
+                if hit.clicked() {
+                    self.open_fixes(Some(pos2((bulb.right() - 462.0).max(rect.left()), bulb.bottom())));
+                }
+            }
             let mark = Rect::from_min_max(pos2(rect.left() - 8.0, y + 2.0), pos2(rect.left() - 5.0, y + cell.y - 2.0));
             let color = match (record.end, record.failed()) {
                 (None, _) => theme.text_dim,
@@ -928,6 +1162,28 @@ impl Terminal {
                 tip += &format!("\nExit code {code}");
             }
             ui.interact(mark.expand2(vec2(3.0, 0.0)), id.with(("mark", row)), Sense::hover()).on_hover_text(tip);
+        }
+        if let Some((line, text)) = sticky {
+            let bar = Rect::from_min_size(rect.min, vec2(rect.width(), cell.y));
+            let hit = ui.interact(bar, id.with("sticky"), Sense::click()).on_hover_text("Scroll to this command").on_hover_cursor(egui::CursorIcon::PointingHand);
+            let fill = if hit.hovered() { ui::mix(theme.panel, theme.text, 0.06) } else { theme.panel };
+            ui.painter().rect_filled(bar.expand2(vec2(4.0, 0.0)), CornerRadius::ZERO, fill);
+            ui.painter().hline(bar.x_range(), bar.bottom(), Stroke::new(1.0, theme.border));
+            ui.painter().with_clip_rect(bar).text(bar.min + vec2(0.0, text_dy), Align2::LEFT_TOP, text, font.clone(), theme.text);
+            if hit.clicked() {
+                let mut term = self.term.lock();
+                let (history, offset) = (term.history_size() as i64, term.grid().display_offset() as i64);
+                term.scroll_display(Scroll::Delta(((-line).clamp(0, history) - offset) as i32));
+            }
+        }
+        let clicked = self.pick.as_mut().and_then(|pick| {
+            let rows: Vec<(&str, &str, &str)> = pick.rows.iter().map(|r| (r.1, r.0.as_str(), r.2)).collect();
+            let reveal = std::mem::take(&mut pick.reveal);
+            let selected = (pick.selected.unwrap_or(usize::MAX), 8);
+            crate::editor::list_popup(&ctx, theme, &format!("terminal_pick_{}", self.id), (pick.at.unwrap_or(caret), cell.y), &rows, selected, reveal, &font).0
+        });
+        if let Some(index) = clicked {
+            self.accept(index);
         }
         if self.find.open {
             let (bar_step, closed) = self.find.ui(ui, rect.expand2(vec2(10.0, 4.0)), theme);

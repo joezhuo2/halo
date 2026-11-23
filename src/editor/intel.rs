@@ -217,7 +217,7 @@ pub(super) fn popup_frame(theme: &Theme) -> Frame {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn list_popup(
+pub(crate) fn list_popup(
     ctx: &egui::Context,
     theme: &Theme,
     id: &str,

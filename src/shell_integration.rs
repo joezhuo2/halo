@@ -5,7 +5,8 @@ use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::tty::{self, ChildEvent, EventedPty, EventedReadWrite};
 use alacritty_terminal::vte::ansi::{Processor, Timeout};
 use eframe::egui;
-use std::io::{self, ErrorKind, Read};
+use crate::terminal_images::{Found, Picture};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -100,6 +101,7 @@ pub struct Record {
     pub line: String,
     pub prompt: i64,
     pub command: Option<i64>,
+    pub column: usize,
     pub output: Option<i64>,
     pub end: Option<(i64, usize)>,
     pub exit: Option<i32>,
@@ -128,6 +130,8 @@ pub struct Integration {
     pub dropped: i64,
     pub seen: bool,
     pub restored: Vec<String>,
+    pub cell: Option<(f32, f32)>,
+    pub pictures: Vec<Picture>,
 }
 
 impl Integration {
@@ -149,7 +153,7 @@ impl Integration {
         }
         let Some(last) = self.commands.last_mut() else { return };
         match mark {
-            Mark::CommandStart => last.command = Some(line),
+            Mark::CommandStart => (last.command, last.column) = (Some(line), col),
             Mark::Executed => (last.output, last.started) = (Some(line), Some(now)),
             Mark::Finished(code) if last.end.is_none() && (last.output.is_some() || code.is_some()) => {
                 FINISHED.store(true, Ordering::Relaxed);
@@ -206,6 +210,7 @@ impl<T: EventListener> Tap<T> {
 pub struct Pump {
     parser: Processor<NoSync>,
     scanner: Scanner,
+    images: crate::terminal_images::Scanner,
     dropped: i64,
 }
 
@@ -237,21 +242,47 @@ impl Pump {
         }
     }
 
-    pub fn feed<T: EventListener>(&mut self, term: &mut Term<T>, integration: &Mutex<Integration>, bytes: &[u8]) {
-        let mut marks = vec![];
-        self.scanner.feed(bytes, |at, mark| marks.push((at, mark)));
-        let mut from = 0;
-        for (to, mark) in marks {
+    fn place<T: EventListener>(&mut self, term: &mut Term<T>, integration: &Mutex<Integration>, found: Found, (line, column): (i64, usize)) {
+        let Some(cell) = integration.lock().unwrap().cell.filter(|_| !term.mode().contains(TermMode::ALT_SCREEN)) else { return };
+        let Some((image, size)) = crate::terminal_images::decode(found, cell, (term.columns(), term.screen_lines())) else { return };
+        let rows = ((size.1 / cell.1).ceil() as usize).max(1);
+        self.advance(term, "\r\n".repeat(rows).as_bytes());
+        let mut integration = integration.lock().unwrap();
+        integration.pictures.push(Picture { line, column, size, image: Some(image), texture: None });
+        if integration.pictures.len() > 64 {
+            integration.pictures.remove(0);
+        }
+    }
+
+    pub fn feed<T: EventListener>(&mut self, term: &mut Term<T>, integration: &Mutex<Integration>, raw: &[u8]) -> Vec<u8> {
+        let (mut bytes, mut found) = (Vec::with_capacity(raw.len()), vec![]);
+        self.images.feed(raw, &mut bytes, &mut found);
+        let mut events: Vec<(usize, Result<Mark, Found>)> = vec![];
+        self.scanner.feed(&bytes, |at, mark| events.push((at, Ok(mark))));
+        events.extend(found.into_iter().map(|(at, f)| (at, Err(f))));
+        events.sort_by_key(|e| e.0);
+        let (mut from, mut replies) = (0, vec![]);
+        for (to, event) in events {
             self.advance(term, &bytes[from..to]);
             from = to;
             let cursor = term.grid().cursor.point;
             let line = self.dropped + term.grid().history_size() as i64 + cursor.line.0 as i64;
-            let mut integration = integration.lock().unwrap();
-            integration.dropped = self.dropped;
-            integration.apply(mark, (line, cursor.column.0), Instant::now());
+            match event {
+                Ok(mark) => {
+                    let mut integration = integration.lock().unwrap();
+                    integration.dropped = self.dropped;
+                    integration.apply(mark, (line, cursor.column.0), Instant::now());
+                }
+                Err(Found::Attributes) => {
+                    let images = integration.lock().unwrap().cell.is_some();
+                    replies.extend_from_slice(if images { b"\x1b[?62;4c" } else { b"\x1b[?6c" });
+                }
+                Err(found) => self.place(term, integration, found, (line, cursor.column.0)),
+            }
         }
         self.advance(term, &bytes[from..]);
         integration.lock().unwrap().dropped = self.dropped;
+        replies
     }
 }
 
@@ -262,7 +293,10 @@ impl<T: EventListener> Read for Tap<T> {
             match self.pty.reader().read(&mut buf[..cap]) {
                 Ok(0) => break,
                 Ok(n) => {
-                    self.pump.feed(&mut self.term.lock_unfair(), &self.integration, &buf[..n]);
+                    let replies = self.pump.feed(&mut self.term.lock_unfair(), &self.integration, &buf[..n]);
+                    if !replies.is_empty() {
+                        let _ = self.pty.writer().write_all(&replies);
+                    }
                     processed += n;
                 }
                 Err(e) if processed > 0 && matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => break,
@@ -451,6 +485,21 @@ mod tests {
         assert_eq!(record.prompt - base, -8);
         assert_eq!(text(record.output.unwrap() - base + 4).trim(), "5");
         assert_eq!(record.end.unwrap().0 - base, term.grid().cursor.point.line.0 as i64);
+    }
+
+    #[test]
+    fn places_images_at_the_cursor_and_moves_below_them() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        let mut term = Term::new(alacritty_terminal::term::Config::default(), &Size(10, 20), alacritty_terminal::event::VoidListener);
+        let (mut pump, integration) = (Pump::default(), Mutex::new(Integration::default()));
+        assert_eq!(pump.feed(&mut term, &integration, b"\x1b[c\x1bPq~\x1b\\"), b"\x1b[?6c");
+        assert!(integration.lock().unwrap().pictures.is_empty());
+        integration.lock().unwrap().cell = Some((8.0, 4.0));
+        assert_eq!(pump.feed(&mut term, &integration, b"ab\x1bPq!3~-~\x1b\\$ \x1b[0c"), b"\x1b[?62;4c");
+        let integration = integration.into_inner().unwrap();
+        let picture = &integration.pictures[0];
+        assert_eq!((picture.line, picture.column, picture.size), (0, 2, (3.0, 12.0)));
+        assert_eq!(term.grid().cursor.point, Point::new(Line(3), Column(2)));
     }
 
     #[test]
