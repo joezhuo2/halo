@@ -304,7 +304,8 @@ Each of these can be switched off under **Settings > Text Editor**.
   request page after a push, or stopping the process that holds a busy port.
 - **Sticky scroll** keeps the command whose output fills the terminal pinned
   to the top row; click it to scroll back to the command.
-- **Images** printed as Sixel or iTerm inline images are shown in place.
+- **Images** printed as Sixel or iTerm inline images are shown in place on
+  Linux and macOS.
 - Rename a terminal, give it a colour, or move it into the editor area.
 - Terminals come back after a restart in the same places, with their name,
   folder and the last 1000 lines of history.
@@ -478,6 +479,8 @@ The sun or moon at the right end of the status bar also switches the theme.
 - No VS Code extensions.
 - Restored terminals show their old output and start a fresh shell; the
   programs that were running in them are not kept alive.
+- Terminal images do not appear on Windows: the Windows pseudo console drops
+  Sixel and iTerm image sequences before they reach Halo.
 - High contrast and reduced motion follow the operating system on Windows
   only.
 

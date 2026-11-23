@@ -171,7 +171,7 @@ pub const SETTINGS: &[Meta] = &[
     m("terminal_right_click", 3, "Terminal", "Right Click Behavior", "What a right click in a terminal does.", Kind::Choice(&[("default", "Nothing (default)"), ("copyPaste", "Copy the selection, or paste without one"), ("paste", "Paste"), ("selectWord", "Select the word"), ("nothing", "Nothing")])),
     m("terminal_suggest", 3, "Terminal", "Suggest", "Suggest commands, subcommands, flags, folders and files as you type in a terminal with shell integration. Tab accepts, Ctrl+Space opens the list.", Kind::Toggle),
     m("terminal_sticky_scroll", 3, "Terminal", "Sticky Scroll", "Keep the command whose output fills the terminal pinned to its top row.", Kind::Toggle),
-    m("terminal_images", 3, "Terminal", "Images", "Show Sixel and iTerm inline images that programs print in a terminal.", Kind::Toggle),
+    m("terminal_images", 3, "Terminal", "Images", "Show Sixel and iTerm inline images that programs print in a terminal. Not available on Windows, whose pseudo console drops them.", Kind::Toggle),
     m("run", 4, "Run", "Commands", "The command Run File uses for each file extension. {file} is replaced by the path of the file.", Kind::Custom),
     m("tasks", 4, "Run", "Tasks", "Named commands that are listed in the Run menu.", Kind::Custom),
     m("grammars", 5, LANG, "Grammars Folder", "A folder of .sublime-syntax grammars. New grammars and associations are loaded when Halo starts.", Kind::Custom),
