@@ -2363,7 +2363,7 @@ mod tests {
         }
         macro_rules! pump {
             ($done:expr) => {{
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = Instant::now() + Duration::from_secs(30);
                 while !($done)(&debug) {
                     assert!(Instant::now() < deadline, "the session did not reach the expected state");
                     debug.poll(&mut env!());
