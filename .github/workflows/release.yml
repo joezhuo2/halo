@@ -1,9 +1,12 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release:
+        description: Create the tag and a draft release after every build passes
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,11 +31,11 @@ jobs:
         run: |
           version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+          if [ "${{ inputs.release }}" = true ] && git ls-remote --exit-code --tags origin "v$version" > /dev/null; then
+            echo "::error::tag v$version already exists; bump Cargo.toml"
             exit 1
           fi
-          if [ "$GITHUB_REF_TYPE" = tag ] && ! grep -qF "## [$version]" CHANGELOG.md; then
+          if [ "${{ inputs.release }}" = true ] && ! grep -qF "## [$version]" CHANGELOG.md; then
             echo "::error::CHANGELOG.md has no section for $version"
             exit 1
           fi
@@ -59,7 +62,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: github.ref_type == 'tag'
+    if: inputs.release
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -72,7 +75,8 @@ jobs:
           merge-multiple: true
       - name: Release notes from CHANGELOG.md
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "TAG=v$version" >> "$GITHUB_ENV"
           awk -v heading="## [$version]" '
             index($0, heading) == 1 { found = 1; next }
             found && (/^## \[/ || /^\[[^]]+\]: /) { exit }
@@ -82,7 +86,7 @@ jobs:
             exit 1
           fi
           cat notes.md
-      - run: gh release create "$GITHUB_REF_NAME" dist/* --draft --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+      - run: gh release create "$TAG" dist/* --draft --title "$TAG" --notes-file notes.md --target "$GITHUB_SHA"
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
