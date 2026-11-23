@@ -366,15 +366,22 @@ pub fn load() -> Settings {
     let base = [(user.as_ref().unwrap_or(&empty), "settings.json"), (workspace.as_ref().unwrap_or(&empty), origin)];
     let (mut settings, plain, langs) = resolve(&base, &mut errors);
     let (mut folder_raw, mut folder_plain, mut folder_langs) = (None, Map::new(), Langs::new());
+    let shared = settings.clone();
     for (index, root) in roots.iter().enumerate() {
         let raw = read_file(&settings_file(root), &mut errors);
-        let origin = settings_file(root).display().to_string();
-        let mut found = vec![];
-        let (scoped, mut p, mut l) = resolve(&[base[0], base[1], (raw.as_ref().unwrap_or(&empty), &origin)], &mut found);
-        errors.extend(found.into_iter().filter(|e| e.starts_with(&origin)));
+        let (scoped, p, l) = match raw.as_ref().filter(|m| !m.is_empty()) {
+            None => (shared.clone(), Map::new(), Langs::new()),
+            Some(map) => {
+                let origin = settings_file(root).display().to_string();
+                let mut found = vec![];
+                let (scoped, mut p, mut l) = resolve(&[base[0], base[1], (map, &origin)], &mut found);
+                errors.extend(found.into_iter().filter(|e| e.starts_with(&origin)));
+                (scoped, p.remove(2), l.remove(2))
+            }
+        };
         settings.folders.insert(root.clone(), scoped);
         if index == target {
-            (folder_raw, folder_plain, folder_langs) = (raw, p.remove(2), l.remove(2));
+            (folder_raw, folder_plain, folder_langs) = (raw, p, l);
         }
     }
     errors.into_iter().for_each(crate::ui::notify);
@@ -526,6 +533,9 @@ mod tests {
         assert_eq!(s.of(Some(Path::new("/w/api/notes.txt"))).tab_size, 6);
         assert_eq!(s.of(Some(Path::new("/w/web/main.rs"))).tab_size, 8);
         assert_eq!(s.of(None).tab_size, 2);
+        let (e, ..) = resolve(&[(&user, "settings.json"), (&workspace, "workspace"), (&Map::new(), "empty")], &mut errors);
+        assert_eq!(serde_json::to_value(&e).unwrap(), serde_json::to_value(&s).unwrap());
+        assert_eq!((e.langs.keys().collect::<Vec<_>>(), e.lang("rust").rulers.clone()), (s.langs.keys().collect(), vec![120]));
     }
 
     #[test]
