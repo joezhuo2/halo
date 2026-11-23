@@ -6,6 +6,8 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-11-22
+
 Checked with tests on Windows. Not yet tried by hand in the running app or
 against real language servers.
 
@@ -50,6 +52,13 @@ against real language servers.
   reruns the search (`Enter` or `Ctrl+Shift+R`), with `Alt+C/W/R/L` toggles
   and VS Code `.code-search` files. New Search Editor is in the Go menu and
   the search panel; Open Results in Editor is `Alt+Enter` there.
+- **Accessible diff viewer:** `F7` / `Shift+F7` in a diff tab list one change
+  at a time, line by line, with screen reader labels; `Enter` jumps to the
+  line.
+- **Audio cues** on Windows for errors, warnings, breakpoints and folds on
+  the cursor line, and for inserted and removed lines in the accessible diff
+  viewer (`accessibility.signals.*.sound`,
+  `accessibility.signalOptions.volume`).
 
 ### Fixed
 
@@ -486,7 +495,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/joezhuo2/halo/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/joezhuo2/halo/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/joezhuo2/halo/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/joezhuo2/halo/compare/v0.1.5...v0.1.6
