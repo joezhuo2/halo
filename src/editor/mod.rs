@@ -16,6 +16,7 @@ mod merge_view;
 mod open_tabs;
 pub use open_tabs::OpenTab;
 mod snippet;
+mod linked;
 
 use crate::command::{self, Command, Scope};
 use crate::git::{Git, LineChange};
@@ -101,6 +102,7 @@ struct Tab {
     box_anchor: Option<usize>,
     col_box: Option<[usize; 4]>,
     snippet: Option<snippet::Session>,
+    link: linked::Link,
     grown: Vec<(Vec<Sel>, Vec<Sel>)>,
     trail: Vec<Vec<Sel>>,
     seen: (u64, Vec<Sel>),
@@ -2058,7 +2060,7 @@ impl Editors {
             self.intel.unit = unit.clone();
             self.popup_keys(&mut events, doc_id, buf, tab);
             self.peek_escape(&mut events, doc_id);
-            let (mut typed, mut pasted) = (None, None);
+            let (mut typed, mut pasted, mut entered) = (None, None, false);
             for event in &events {
                 let from = tab.sels.first().map_or(0, |s| s.start());
                 let stepped = match event {
@@ -2068,13 +2070,23 @@ impl Editors {
                     Event::Key { key: Key::Escape, pressed: true, .. } => tab.snippet.take().is_some() && false,
                     _ => false,
                 };
-                if stepped || handle_event(buf, tab, event, settings, page, &ctx, wrap_cols, if diffed { &[] } else { &folds[..] }) {
+                let spread = tab.link.spread(buf, &tab.sels, event).filter(|_| settings.linked_editing && !diffed);
+                let before = buf.len();
+                if let Some((sels, _)) = &spread {
+                    tab.sels = sels.clone();
+                }
+                let handled = stepped || handle_event(buf, tab, event, settings, page, &ctx, wrap_cols, if diffed { &[] } else { &folds[..] });
+                if let Some((_, at)) = spread {
+                    tab.link.follow(buf, &mut tab.sels, at, before);
+                }
+                if handled {
                     snippet::track(&mut tab.snippet, buf.len(), &tab.sels);
                     self.last_input = now;
                     tab.reveal = tab.sels.last().map(|s| s.head);
                     match event {
                         Event::Text(text) if tab.sels.len() == 1 => typed = text.chars().next().filter(|_| text.chars().count() == 1),
                         Event::Paste(_) if tab.sels.len() == 1 => pasted = Some((from, tab.sels[0].head)),
+                        Event::Key { key: Key::Enter, .. } => entered = tab.sels.len() == 1,
                         _ => {}
                     }
                 }
@@ -2087,6 +2099,12 @@ impl Editors {
             if let Some(c) = typed {
                 let prose = matches!(hl.language.as_str(), "Plain Text" | "Markdown");
                 self.typed(c, doc_id, buf, lang, tab, prose, &ctx);
+            }
+            if let Some(c) = typed.or(entered.then_some('\n')).filter(|_| settings.format_on_type) {
+                self.format_on_type(c, doc_id, buf, lang, tab.sels[0].head, settings, &ctx);
+            }
+            if let Some(head) = tab.link.stale(buf, &tab.sels).filter(|_| settings.linked_editing && !diffed) {
+                self.ask_linked(doc_id, buf, lang, tab, head, &ctx);
             }
             if let Some((from, to)) = pasted.filter(|_| settings.format_on_paste) {
                 self.format_range(doc_id, buf, lang, from, to, settings, &ctx);
@@ -2508,6 +2526,7 @@ impl Editors {
                     let cursor_line = buf_ref.line_of(tab.sels[0].head);
                     let same = tab.sels.first().filter(|s| settings.selection_highlight && tab.sels.len() == 1 && !s.is_empty() && s.end() - s.start() <= 200);
                     let same = same.map(|s| (s.start(), buf_ref.rope.slice(s.start()..s.end()).to_string())).filter(|(_, t)| !t.contains('\n') && !t.trim().is_empty());
+                    let linked = tab.link.shown(buf_ref, &tab.sels);
                     let uses: &[(usize, usize)] = if single && lang_ref.marked == Some((buf_ref.version, tab.sels[0].head)) { &lang_ref.marks } else { &[] };
 
                     for column in &settings.rulers {
@@ -2634,6 +2653,12 @@ impl Editors {
                         for (a, b) in uses.iter().filter(|(a, b)| *b > start && *a <= start + len) {
                             for (x0, x1, y) in spans(a.saturating_sub(start), b - start) {
                                 painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), CornerRadius::same(2), ui::with_alpha(theme.selection, 0.5));
+                            }
+                        }
+                        for (a, b) in linked.iter().filter(|(a, b)| *b > start && *a <= start + len) {
+                            for (x0, x1, y) in spans(a.saturating_sub(start), b - start) {
+                                let r = Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h));
+                                painter.rect_stroke(r, CornerRadius::same(2), Stroke::new(1.0, ui::with_alpha(theme.accent, 0.6)), StrokeKind::Inside);
                             }
                         }
                         if let Some((a, b)) = bracket {
@@ -3706,6 +3731,35 @@ end", "word ".repeat(100)))], &settings);
         frame_with(&ctx, &mut editors, vec![plain(Key::Tab), plain(Key::Tab)], &settings);
         frame_with(&ctx, &mut editors, typing("!"), &settings);
         assert_eq!(text(&editors), "<a class=\"x\" href=\"u\">t</a>\n<p></p>!");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn renaming_a_tag_renames_its_partner_in_one_undo_step() {
+        let ctx = egui::Context::default();
+        let dir = std::env::temp_dir().join(format!("halo-linked-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.html"), "<div>\n  <br><div>x</div>\n</div>").unwrap();
+        let text = |e: &Editors| e.docs.values().next().unwrap().buf.rope.to_string();
+        let typing = |text: &str| text.chars().map(|c| Event::Text(c.to_string())).collect::<Vec<_>>();
+        for linked in [true, false] {
+            let settings = Settings { lsp: false, linked_editing: linked, ..Settings::default() };
+            let mut editors = Editors::new();
+            editors.open(&dir.join("a.html"));
+            editors.finish_loads();
+            frame_with(&ctx, &mut editors, vec![], &settings);
+            frame_with(&ctx, &mut editors, vec![], &settings);
+            editors.groups[0].tabs[0].sels = vec![Sel::new(1, 4)];
+            frame_with(&ctx, &mut editors, vec![], &settings);
+            for event in typing("span") {
+                frame_with(&ctx, &mut editors, vec![event], &settings);
+            }
+            let renamed = if linked { "<span>\n  <br><div>x</div>\n</span>" } else { "<span>\n  <br><div>x</div>\n</div>" };
+            assert_eq!(text(&editors), renamed);
+            assert_eq!(editors.groups[0].tabs[0].sels.len(), 1);
+            editors.exec(&Command::Undo, &settings, &ctx);
+            assert_eq!(text(&editors), "<div>\n  <br><div>x</div>\n</div>");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

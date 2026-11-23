@@ -295,6 +295,13 @@ pub fn edits(value: &Value) -> Vec<Edit> {
         .collect()
 }
 
+pub type Linked = (Vec<(Pos, Pos)>, Option<String>);
+
+pub fn linked_ranges(value: &Value) -> Option<Linked> {
+    let ranges: Vec<(Pos, Pos)> = value["ranges"].as_array()?.iter().map(range).collect();
+    (ranges.len() > 1).then(|| (ranges, value["wordPattern"].as_str().map(str::to_owned)))
+}
+
 pub fn workspace_edit(value: &Value) -> Vec<(PathBuf, Vec<Edit>)> {
     let mut out = vec![];
     for (target, changes) in value["changes"].as_object().into_iter().flatten() {
@@ -671,6 +678,8 @@ fn initialize(id: u64, root: &Path, folders: &[(PathBuf, String)]) -> Value {
         "rename": {},
         "formatting": {},
         "rangeFormatting": {},
+        "onTypeFormatting": {},
+        "linkedEditingRange": {},
         "semanticTokens": tokens,
         "inlayHint": {},
         "colorProvider": {},
@@ -719,6 +728,8 @@ fn capability(method: &str) -> Option<&'static str> {
         "textDocument/rename" => "renameProvider",
         "textDocument/formatting" => "documentFormattingProvider",
         "textDocument/rangeFormatting" => "documentRangeFormattingProvider",
+        "textDocument/onTypeFormatting" => "documentOnTypeFormattingProvider",
+        "textDocument/linkedEditingRange" => "linkedEditingRangeProvider",
         "textDocument/semanticTokens/full" => "semanticTokensProvider",
         "textDocument/inlayHint" => "inlayHintProvider",
         "textDocument/documentColor" | "textDocument/colorPresentation" => "colorProvider",
@@ -1015,8 +1026,9 @@ impl Lsp {
 
     pub fn triggers(&self, path: &Path, provider: &str) -> Vec<char> {
         let Some(index) = self.index_of(path) else { return vec![] };
-        let list = self.servers[index].caps[provider]["triggerCharacters"].as_array();
-        list.into_iter().flatten().filter_map(|c| c.as_str()?.chars().next()).collect()
+        let caps = &self.servers[index].caps[provider];
+        let lists = ["triggerCharacters", "moreTriggerCharacter"].into_iter().flat_map(|key| caps[key].as_array().into_iter().flatten());
+        std::iter::once(&caps["firstTriggerCharacter"]).chain(lists).filter_map(|c| c.as_str()?.chars().next()).collect()
     }
 
     pub fn provider(&self, path: &Path, name: &str) -> Value {
@@ -1253,6 +1265,11 @@ mod tests {
         assert_eq!(edit[0].1, vec![Edit { start: (2, 4), end: (2, 7), text: "x\ny".into() }]);
         let edit = workspace_edit(&json!({"documentChanges": [{"textDocument": {"uri": target}, "edits": [{"range": span, "newText": "z"}]}]}));
         assert_eq!(edit[0].1[0].text, "z");
+
+        let tag = json!({"start": {"line": 3, "character": 2}, "end": {"line": 3, "character": 5}});
+        assert_eq!(linked_ranges(&json!({"ranges": [span, tag], "wordPattern": "[a-z]+"})), Some((vec![((2, 4), (2, 7)), ((3, 2), (3, 5))], Some("[a-z]+".into()))));
+        assert_eq!(linked_ranges(&json!({"ranges": [span]})), None);
+        assert_eq!(linked_ranges(&Value::Null), None);
 
         let (items, incomplete) = completions(&json!({"isIncomplete": true, "items": [
             {"label": "push", "kind": 2, "detail": "fn(T)", "insertText": "push($1)", "insertTextFormat": 2},
