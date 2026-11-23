@@ -78,14 +78,14 @@ fn clean(output: &str) -> String {
     lines.join("\n").trim().to_owned()
 }
 
-fn invocation(top: &Path) -> Result<(String, Vec<String>), String> {
+pub(crate) fn invocation(top: &Path) -> Result<(String, Vec<String>), String> {
     if crate::wsl::parse(top).is_some() {
         let script = "if command -v claude >/dev/null; then claude -p; else codex exec -s read-only -; fi";
         return Ok(crate::wsl::wrap(Some(top), "bash", &["-lic".into(), script.into()]));
     }
     let clis: [(&str, &[&str]); 2] = [("claude", &["-p"]), ("codex", &["exec", "-s", "read-only", "-"])];
     let (cli, args, exe) = clis.into_iter().find_map(|(cli, args)| Some((cli, args, crate::ai::locate(cli)?)))
-        .ok_or("Install the Claude or Codex CLI to generate commit messages.")?;
+        .ok_or("Install the Claude or Codex CLI to use AI features.")?;
     let args = args.iter().map(|a| a.to_string());
     Ok(match !cfg!(windows) || exe.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")) {
         true => (exe.to_string_lossy().into_owned(), args.collect()),
@@ -93,7 +93,7 @@ fn invocation(top: &Path) -> Result<(String, Vec<String>), String> {
     })
 }
 
-fn run(top: &Path, (program, args): (String, Vec<String>), input: &str, cancel: &AtomicBool) -> Result<String, String> {
+pub(crate) fn run(top: &Path, (program, args): (String, Vec<String>), input: &str, cancel: &AtomicBool) -> Result<String, String> {
     let mut child = crate::terminal::hidden_command(&program)
         .args(&args)
         .current_dir(top)
@@ -124,7 +124,7 @@ fn run(top: &Path, (program, args): (String, Vec<String>), input: &str, cancel: 
         std::thread::sleep(Duration::from_millis(20));
     };
     let (out, err) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
-    crate::output::log("Git", format!("$ {program} {} (commit message) exit {}", args.join(" "), status.code().unwrap_or(-1)));
+    crate::output::log("Git", format!("$ {program} {} (AI) exit {}", args.join(" "), status.code().unwrap_or(-1)));
     if !status.success() {
         let reason = err.lines().chain(out.lines()).rfind(|l| !l.trim().is_empty()).unwrap_or("no output");
         return Err(format!("{program} failed: {reason}"));
