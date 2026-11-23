@@ -6,6 +6,36 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-11-23
+
+Checked with unit tests and against a real PowerShell with shell
+integration on Windows (suggestions, accepting one, and the git typo quick
+fix). The popups, lightbulb and sticky bar have not been checked on screen,
+the push and port quick fixes have not been run for real, and images were
+only tested through the decoder, since Windows drops them (see below).
+
+### Added
+
+- **Terminal suggestions** as you type in a terminal with shell integration:
+  commands from PATH and history, subcommands and flags from a built-in list
+  for git, cargo, npm, pnpm, yarn, docker, pip, go, kubectl, gh and common
+  shell tools, and folders and files from the shell's folder. `Tab` accepts,
+  `Down`/`Up` pick, `Enter` accepts a picked row, `Escape` closes and
+  `Ctrl+Space` opens the list. Setting: Terminal > Suggest.
+- **Terminal quick fixes:** a lightbulb on the last finished command, or
+  `Ctrl+.`, offers to run `git push --set-upstream ...` after a push without
+  an upstream, run the command git suggests for a mistyped one, open the
+  pull request page that `git push` printed, or stop the process listening
+  on a port reported as already in use.
+- **Terminal sticky scroll:** the command whose output fills the terminal
+  stays pinned to the top row; click it to scroll to the command. Setting:
+  Terminal > Sticky Scroll.
+- **Terminal images:** Sixel and iTerm inline images (`imgcat`,
+  `img2sixel`, `chafa -f sixel`) are shown where they are printed. The
+  terminal answers device attribute and pixel size queries so such programs
+  can detect it. Setting: Terminal > Images. Linux and macOS only: the
+  Windows pseudo console drops Sixel and iTerm image sequences.
+
 ## [0.1.12] - 2026-11-23
 
 Checked with unit tests and headless UI tests against temporary repositories
@@ -588,7 +618,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.12...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.13...HEAD
+[0.1.13]: https://github.com/joezhuo2/halo/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/joezhuo2/halo/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/joezhuo2/halo/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/joezhuo2/halo/compare/v0.1.9...v0.1.10
