@@ -86,6 +86,10 @@ pub enum Command {
     Unfold,
     FoldAll,
     UnfoldAll,
+    FoldLevel(u8),
+    FoldRecursively,
+    UnfoldRecursively,
+    FoldAllBlockComments,
 
     SelectAll,
     AddCursorAbove,
@@ -519,6 +523,16 @@ fn defaults() -> Vec<Binding> {
         e(NONE, Key::F2, RenameSymbol),
         k(C, Key::Num0, FoldAll),
         k(C, Key::J, UnfoldAll),
+        k(C, Key::Num1, FoldLevel(1)),
+        k(C, Key::Num2, FoldLevel(2)),
+        k(C, Key::Num3, FoldLevel(3)),
+        k(C, Key::Num4, FoldLevel(4)),
+        k(C, Key::Num5, FoldLevel(5)),
+        k(C, Key::Num6, FoldLevel(6)),
+        k(C, Key::Num7, FoldLevel(7)),
+        k(C, Key::OpenBracket, FoldRecursively),
+        k(C, Key::CloseBracket, UnfoldRecursively),
+        k(C, Key::Slash, FoldAllBlockComments),
         k(C, Key::D, MoveSelectionToNextFindMatch),
         k(C, Key::Q, GoToLastEditLocation),
         e(Modifiers::ALT, Key::ArrowUp, MoveLineUp),
@@ -658,6 +672,8 @@ pub fn all() -> Vec<Command> {
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
+        FoldRecursively, UnfoldRecursively, FoldAllBlockComments, FoldLevel(1), FoldLevel(2), FoldLevel(3), FoldLevel(4), FoldLevel(5),
+        FoldLevel(6), FoldLevel(7),
         SortLinesAscending, SortLinesDescending, RemoveDuplicateLines, ReverseLines, TransformToUppercase, TransformToLowercase,
         TransformToTitlecase, TransformToSnakecase, TransformToCamelcase, TransformToKebabcase,
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection, DeleteWordPartLeft, DeleteWordPartRight,
@@ -848,6 +864,7 @@ impl Command {
         match self {
             Self::NewSearchEditor => return "search.action.openNewEditor".into(),
             Self::OpenSearchEditor => return "search.action.openInEditor".into(),
+            Self::FoldLevel(level) => return format!("foldLevel{level}"),
             _ => {}
         }
         let name = format!("{self:?}");
@@ -865,7 +882,8 @@ impl Command {
             | NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => "File",
             Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
-            | Unfold | FoldAll | UnfoldAll | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection
+            | Unfold | FoldAll | UnfoldAll | FoldLevel(_) | FoldRecursively | UnfoldRecursively | FoldAllBlockComments
+            | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection
             | SortLinesAscending | SortLinesDescending | RemoveDuplicateLines | ReverseLines | TransformToUppercase | TransformToLowercase
             | TransformToTitlecase | TransformToSnakecase | TransformToCamelcase | TransformToKebabcase | DeleteWordPartLeft | DeleteWordPartRight => "Edit",
             SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | SelectAllOccurrences
@@ -987,6 +1005,12 @@ impl Command {
             Unfold => "Unfold",
             FoldAll => "Fold All",
             UnfoldAll => "Unfold All",
+            FoldLevel(level) => {
+                ["Fold Level 1", "Fold Level 2", "Fold Level 3", "Fold Level 4", "Fold Level 5", "Fold Level 6", "Fold Level 7"][(*level as usize).clamp(1, 7) - 1]
+            }
+            FoldRecursively => "Fold Recursively",
+            UnfoldRecursively => "Unfold Recursively",
+            FoldAllBlockComments => "Fold All Block Comments",
             SelectAll => "Select All",
             AddCursorAbove => "Add Cursor Above",
             AddCursorBelow => "Add Cursor Below",

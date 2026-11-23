@@ -41,6 +41,16 @@ pub struct Edit {
     pub text: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FoldKind {
+    Comment,
+    Imports,
+    Region,
+    Other,
+}
+
+pub type FoldRange = (usize, usize, FoldKind);
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Symbol {
     pub name: String,
@@ -270,6 +280,31 @@ pub fn locations(value: &Value) -> Vec<Location> {
 
 pub fn highlights(value: &Value) -> Vec<(Pos, Pos)> {
     list(value).iter().map(|item| range(&item["range"])).collect()
+}
+
+pub fn folding_ranges(value: &Value) -> Option<Vec<FoldRange>> {
+    let kind = |item: &Value| match item["kind"].as_str() {
+        Some("comment") => FoldKind::Comment,
+        Some("imports") => FoldKind::Imports,
+        Some("region") => FoldKind::Region,
+        _ => FoldKind::Other,
+    };
+    let line = |item: &Value, key: &str| item[key].as_u64().map(|l| l as usize);
+    Some(value.as_array()?.iter().filter_map(|item| Some((line(item, "startLine")?, line(item, "endLine")?, kind(item)))).collect())
+}
+
+pub fn selection_ranges(value: &Value) -> Vec<Vec<(Pos, Pos)>> {
+    list(value)
+        .iter()
+        .map(|mut item| {
+            let mut chain = vec![];
+            while item.is_object() {
+                chain.push(range(&item["range"]));
+                item = &item["parent"];
+            }
+            chain
+        })
+        .collect()
 }
 
 pub fn hierarchy(value: &Value) -> Vec<Location> {
@@ -686,6 +721,8 @@ fn initialize(id: u64, root: &Path, folders: &[(PathBuf, String)]) -> Value {
         "callHierarchy": {},
         "typeHierarchy": {},
         "codeLens": {},
+        "foldingRange": {"lineFoldingOnly": true, "foldingRangeKind": {"valueSet": ["comment", "imports", "region"]}},
+        "selectionRange": {},
     });
     let workspace = json!({
         "applyEdit": true,
@@ -736,6 +773,8 @@ fn capability(method: &str) -> Option<&'static str> {
         "textDocument/codeLens" => "codeLensProvider",
         "textDocument/prepareCallHierarchy" => "callHierarchyProvider",
         "textDocument/prepareTypeHierarchy" => "typeHierarchyProvider",
+        "textDocument/foldingRange" => "foldingRangeProvider",
+        "textDocument/selectionRange" => "selectionRangeProvider",
         "workspace/symbol" => "workspaceSymbolProvider",
         _ => return None,
     })
@@ -1341,6 +1380,21 @@ mod tests {
         assert!(quick_fix(&[action("refactor", false), action("quickfix", false)]));
         assert!(quick_fix(&[action("quickfix.rust", false)]) && quick_fix(&[action("refactor.extract", true)]));
         assert!(!quick_fix(&[action("refactor.inline", false), action("source", false), ("c".into(), json!({"title": "c", "command": "x"}))]));
+    }
+
+    #[test]
+    fn parses_folding_and_selection_ranges() {
+        let folds = json!([{"startLine": 0, "endLine": 4, "kind": "imports"}, {"startLine": 2, "startCharacter": 3, "endLine": 3}, {"startLine": 5, "endLine": 9, "kind": "comment"},
+            {"startLine": 7, "endLine": 8, "kind": "region"}, {"endLine": 1}]);
+        let found = folding_ranges(&folds).unwrap();
+        assert_eq!(found, vec![(0, 4, FoldKind::Imports), (2, 3, FoldKind::Other), (5, 9, FoldKind::Comment), (7, 8, FoldKind::Region)]);
+        assert_eq!(folding_ranges(&Value::Null), None);
+        let at = |line, from, to| json!({"start": {"line": line, "character": from}, "end": {"line": line, "character": to}});
+        let reply = json!([{"range": at(1, 4, 7), "parent": {"range": at(1, 0, 12), "parent": {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 3, "character": 1}}}}},
+            {"range": at(5, 2, 2)}]);
+        let chains = selection_ranges(&reply);
+        assert_eq!(chains, vec![vec![((1, 4), (1, 7)), ((1, 0), (1, 12)), ((0, 0), (3, 1))], vec![((5, 2), (5, 2))]]);
+        assert!(selection_ranges(&Value::Null).is_empty());
     }
 
     #[test]

@@ -2,7 +2,7 @@ use super::buffer::{After, Document, Kind, Sel, is_word};
 use super::load::Place;
 use super::{Editors, Tab, decor, linked, links, notice, snippet};
 use crate::command::Command;
-use crate::lsp::{self, Completion, Hint, Location, Lsp, Pos, Signature, Symbol};
+use crate::lsp::{self, Completion, FoldRange, Hint, Location, Lsp, Pos, Signature, Symbol};
 use crate::settings::Settings;
 use crate::theme::Theme;
 use crate::ui::{self, icons};
@@ -47,6 +47,7 @@ pub(super) struct Lang {
     pub lens_gen: u64,
     pub bulb_at: Option<(u64, usize)>,
     pub bulb: Option<(bool, Vec<(String, Value)>)>,
+    pub folding: Option<Vec<FoldRange>>,
 }
 
 impl Lang {
@@ -59,6 +60,9 @@ impl Lang {
         }
         for (lens, _) in &mut self.code_lens {
             lens.line = lsp::shift(lens.line, line, delta).unwrap_or(line);
+        }
+        for range in self.folding.iter_mut().flatten() {
+            (range.0, range.1) = (lsp::shift(range.0, line, delta).unwrap_or(line), lsp::shift(range.1, line, delta).unwrap_or(line));
         }
         self.hints.retain_mut(|hint| hint.line != line && lsp::shift(hint.line, line, delta).map(|moved| hint.line = moved).is_some());
         if let Some(colors) = &mut self.colors {
@@ -372,6 +376,8 @@ pub(super) enum Want {
     Colors { doc: u64, version: u64 },
     Present { doc: u64, version: u64 },
     Marks { doc: u64, version: u64, head: usize },
+    Folding { doc: u64, version: u64 },
+    Grow { group: usize, doc: u64, version: u64, sels: Vec<Sel> },
     Prepare { doc: u64, pos: usize, call: bool, outgoing: bool },
     Hierarchy { doc: u64, pos: usize, call: bool, outgoing: bool },
     CodeLens { doc: u64, version: u64 },
@@ -523,6 +529,7 @@ impl Editors {
             self.intel.wants.clear();
             for doc in self.docs.values_mut() {
                 doc.lang = Lang::default();
+                doc.ranges.0 = None;
             }
             if let Some((doc, _)) = self.intel.saving.take() {
                 self.finish_save(doc);
@@ -605,6 +612,9 @@ impl Editors {
             lang.requested = version;
             if let Some(request) = self.lsp.request(path, "textDocument/documentSymbol", target.clone()) {
                 self.intel.wants.push((request, Want::Symbols { doc: id, version }));
+            }
+            if let Some(request) = self.lsp.request(path, "textDocument/foldingRange", target.clone()) {
+                self.intel.wants.push((request, Want::Folding { doc: id, version }));
             }
             if settings.semantic_highlighting
                 && let Some(request) = self.lsp.request(path, "textDocument/semanticTokens/full", target.clone())
@@ -732,6 +742,23 @@ impl Editors {
                 let Some(d) = self.docs.get_mut(&doc).filter(|d| !failed && d.buf.version == version && d.lang.marked == Some((version, head))) else { return };
                 let marks = lsp::highlights(&value).into_iter().map(|(a, b)| (from_lsp(&d.buf, a), from_lsp(&d.buf, b))).filter(|(a, b)| a < b).collect();
                 d.lang.marks = marks;
+            }
+            Want::Folding { doc, version } => {
+                let Some(d) = self.docs.get_mut(&doc).filter(|d| !failed && d.buf.version == version) else { return };
+                d.lang.folding = lsp::folding_ranges(&value);
+                d.ranges.0 = None;
+            }
+            Want::Grow { group, doc, version, sels } => {
+                let Some(d) = self.docs.get(&doc).filter(|d| d.buf.version == version) else { return };
+                let same = |t: &&mut Tab| t.doc == doc && super::buffer::same(&t.sels, &sels);
+                let Some(tab) = self.groups.get_mut(group).and_then(|g| g.tabs.iter_mut().find(same)) else { return };
+                let chains = lsp::selection_ranges(&value);
+                let wider = sels.iter().enumerate().map(|(at, s)| {
+                    let spans = chains.get(at).into_iter().flatten().map(|(a, b)| (from_lsp(&d.buf, *a), from_lsp(&d.buf, *b)));
+                    let larger = spans.filter(|(a, b)| *a <= s.start() && *b >= s.end() && b - a > s.end() - s.start()).min_by_key(|(a, b)| b - a);
+                    larger.map_or_else(|| d.buf.grow(*s), |(a, b)| Sel::new(a, b))
+                });
+                super::grow(tab, wider.collect());
             }
             Want::Lens { doc, generation, symbol, impls } => {
                 let Some(d) = self.docs.get_mut(&doc).filter(|d| d.lang.generation == generation) else { return };
@@ -1091,6 +1118,20 @@ impl Editors {
                 self.show_path(&path);
                 self.with_active(|_, tab| tab.sels = vec![Sel::caret(pos)]);
             }
+            return true;
+        }
+        if *cmd == ExpandSelection
+            && let Some((g, t)) = self.active_tab()
+            && let tab = &self.groups[g].tabs[t]
+            && let Some(doc) = self.docs.get_mut(&tab.doc)
+            && let Some(path) = doc.buf.path.clone().filter(|_| doc.lang.attached)
+        {
+            sync(&mut self.lsp, &doc.buf, &mut doc.lang, ctx);
+            let at = |s: &Sel| to_lsp(&doc.buf, s.head);
+            let positions: Vec<Value> = tab.sels.iter().map(at).map(|(line, character)| json!({"line": line, "character": character})).collect();
+            let params = json!({"textDocument": {"uri": lsp::uri(&path)}, "positions": positions});
+            let Some(request) = self.lsp.request(&path, "textDocument/selectionRange", params) else { return false };
+            self.intel.wants.push((request, Want::Grow { group: g, doc: tab.doc, version: doc.buf.version, sels: tab.sels.clone() }));
             return true;
         }
         let known = matches!(
@@ -1769,6 +1810,30 @@ mod tests {
         assert_eq!(editors.docs[&id].lang.marks, vec![(4, 21), (line2 + 4, line2 + 21)]);
         run(&ctx, &mut editors, &settings, vec![], 3.0);
         assert_eq!(editors.docs[&id].lang.marks.len(), 2);
+    }
+
+    #[test]
+    fn grows_selections_from_the_server_chain_while_they_stand_still() {
+        let (ctx, settings) = (egui::Context::default(), Settings::default());
+        let mut editors = editor_with_lines(&ctx, &settings);
+        let group = editors.active;
+        let at = editors.groups[group].active;
+        let tab = &mut editors.groups[group].tabs[at];
+        tab.sels = vec![Sel::caret(6)];
+        let (id, caret) = (tab.doc, tab.sels.clone());
+        let version = editors.docs[&id].buf.version;
+        let chain = json!([{"range": lsp::range_json((0, 6), (0, 6)), "parent": {"range": lsp::range_json((0, 4), (0, 21)), "parent": {"range": lsp::range_json((0, 0), (0, 26))}}}]);
+        let spans = |e: &Editors| e.active_tab().map(|(g, t)| e.groups[g].tabs[t].sels.iter().map(|s| (s.start(), s.end())).collect::<Vec<_>>()).unwrap();
+        editors.reply(Want::Grow { group, doc: id, version, sels: caret.clone() }, Some(chain.clone()), 0.0);
+        assert_eq!(spans(&editors), vec![(4, 21)]);
+        editors.reply(Want::Grow { group, doc: id, version, sels: caret }, Some(chain), 0.0);
+        assert_eq!(spans(&editors), vec![(4, 21)]);
+        let word = vec![Sel::new(4, 21)];
+        editors.reply(Want::Grow { group, doc: id, version, sels: word }, None, 0.0);
+        assert!(spans(&editors)[0].1 - spans(&editors)[0].0 > 17);
+        editors.exec(&Command::ShrinkSelection, &settings, &ctx);
+        editors.exec(&Command::ShrinkSelection, &settings, &ctx);
+        assert_eq!(spans(&editors), vec![(6, 6)]);
     }
 
     #[test]

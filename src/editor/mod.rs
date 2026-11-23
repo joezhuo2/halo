@@ -4,6 +4,7 @@ mod decor;
 pub mod diff;
 mod diff_view;
 mod emmet;
+mod folding;
 mod grid;
 mod highlight;
 mod image_view;
@@ -81,6 +82,7 @@ struct Doc {
     conflicts: (u64, Vec<[usize; 4]>),
     lang: Lang,
     folds: Vec<(usize, usize)>,
+    ranges: folding::Cache,
     depths: (u64, Vec<u32>),
     backed: u64,
     stale: bool,
@@ -477,42 +479,62 @@ fn evict(buf: &Document, folds: &[(usize, usize)], sels: &mut Vec<Sel>) {
     merge_sels(sels);
 }
 
+fn grow(tab: &mut Tab, mut wider: Vec<Sel>) {
+    if tab.grown.last().is_some_and(|step| !buffer::same(&step.1, &tab.sels)) {
+        tab.grown.clear();
+    }
+    merge_sels(&mut wider);
+    tab.grown.push((std::mem::replace(&mut tab.sels, wider.clone()), wider));
+}
+
 fn fold_command(doc: &mut Doc, tab: &mut Tab, cmd: &Command) {
-    let (buf, folds) = (&doc.buf, &mut doc.folds);
+    let Doc { buf, lang, folds, ranges, .. } = doc;
+    let ranges = folding::cached(buf, lang, ranges);
     buf.clamp(&mut tab.sels);
-    let line = buf.line_of(tab.sels[0].head);
+    let lines: Vec<usize> = tab.sels.iter().map(|s| buf.line_of(s.head)).collect();
+    let spans = || ranges.iter().map(|r| (r.0, r.1));
     match cmd {
         Command::Fold => {
-            for start in (0..=line).rev() {
-                let found = buf.fold_end(start).filter(|end| *end >= line && !folds.contains(&(start, *end)));
-                if let Some(end) = found {
-                    folds.push((start, end));
-                    break;
-                }
-                if buf.indent_of(start) == 0 && buf.line_len(start) > 0 {
-                    break;
-                }
+            let found: Vec<_> = lines.iter().filter_map(|line| folding::innermost(spans().filter(|r| !folds.contains(r)), *line)).collect();
+            folds.extend(found);
+        }
+        Command::Unfold => folds.retain(|f| !lines.iter().any(|line| f.0 <= *line && *line <= f.1)),
+        Command::FoldAll => *folds = spans().collect(),
+        Command::FoldLevel(level) => folds.extend(folding::at_level(ranges, *level as usize, &lines)),
+        Command::FoldRecursively | Command::UnfoldRecursively => {
+            for line in &lines {
+                folding::recursive(ranges, folds, *line, *cmd == Command::FoldRecursively);
             }
         }
-        Command::Unfold => folds.retain(|f| !(f.0 <= line && line <= f.1)),
-        Command::FoldAll => *folds = (0..buf.lines()).filter_map(|start| Some((start, buf.fold_end(start)?))).collect(),
+        Command::FoldAllBlockComments => folds.extend(ranges.iter().filter(|r| r.2 == lsp::FoldKind::Comment).map(|r| (r.0, r.1))),
         _ => folds.clear(),
     }
     folds.sort_unstable();
+    folds.dedup();
     evict(buf, folds, &mut tab.sels);
     tab.reveal = tab.sels.first().map(|s| s.head);
 }
 
-fn settle(buf: &mut Document, hl: &mut Highlighter, lang: &mut Lang, lsp: &mut Lsp, folds: &mut Vec<(usize, usize)>) -> Option<(usize, isize)> {
+#[allow(clippy::too_many_arguments)]
+fn settle(
+    buf: &mut Document,
+    hl: &mut Highlighter,
+    lang: &mut Lang,
+    lsp: &mut Lsp,
+    folds: &mut Vec<(usize, usize)>,
+    ranges: &mut folding::Cache,
+) -> Option<(usize, isize)> {
     let line = buf.dirty_from.take()?;
     hl.invalidate(line);
     let delta = lang.edited(line, buf.lines());
+    ranges.0 = None;
+    let ranges = folding::cached(buf, lang, ranges);
     folds.retain_mut(|f| {
         let touched = f.0 <= line && line <= f.1;
         if f.0 > line {
             *f = ((f.0 as isize + delta).max(0) as usize, (f.1 as isize + delta).max(0) as usize);
         }
-        !touched && buf.fold_end(f.0) == Some(f.1)
+        !touched && ranges.binary_search_by_key(&f.0, |r| r.0).is_ok_and(|at| ranges[at].1 == f.1)
     });
     if let Some(path) = &buf.path {
         lsp.shift_diagnostics(path, line, delta);
@@ -699,7 +721,7 @@ impl Editors {
             self.banner = Some((note.clone(), None));
         }
         let hl = Highlighter::new(buf.path.as_deref().filter(|_| !buf.large), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], depths: (0, vec![]), backed: 0, stale: false, blame: Default::default(), content: Content::Text, top: 0 });
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], ranges: (None, vec![]), depths: (0, vec![]), backed: 0, stale: false, blame: Default::default(), content: Content::Text, top: 0 });
         id
     }
 
@@ -1049,7 +1071,7 @@ impl Editors {
             Copy => ctx.send_viewport_cmd(ViewportCommand::RequestCopy),
             Cut => ctx.send_viewport_cmd(ViewportCommand::RequestCut),
             Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
-            Fold | Unfold | FoldAll | UnfoldAll => {
+            Fold | Unfold | FoldAll | UnfoldAll | FoldLevel(_) | FoldRecursively | UnfoldRecursively | FoldAllBlockComments => {
                 if let Some(doc) = self.docs.get_mut(&doc_id) {
                     fold_command(doc, &mut self.groups[g].tabs[t], cmd);
                 }
@@ -1124,12 +1146,8 @@ impl Editors {
                             buf.delete_word_part(sels, cmd == DeleteWordPartRight);
                         }
                         ExpandSelection => {
-                            if tab.grown.last().is_some_and(|step| !buffer::same(&step.1, sels)) {
-                                tab.grown.clear();
-                            }
-                            let mut wider: Vec<Sel> = sels.iter().map(|s| buf.grow(*s)).collect();
-                            merge_sels(&mut wider);
-                            tab.grown.push((std::mem::replace(sels, wider.clone()), wider));
+                            let wider = sels.iter().map(|s| buf.grow(*s)).collect();
+                            grow(tab, wider);
                         }
                         ShrinkSelection => match tab.grown.pop() {
                             Some((before, after)) if buffer::same(&after, sels) => *sels = before,
@@ -2008,7 +2026,7 @@ impl Editors {
         let style = typography::FontStyle::new(settings, glyph_w);
         let char_w = glyph_w + style.spacing;
         let line_h = prefs::line_height(settings.line_height, row_h, settings.font_size);
-        let Doc { buf, hl, max_cols, conflicts, lang, folds, depths, stale, .. } = doc;
+        let Doc { buf, hl, max_cols, conflicts, lang, folds, ranges, depths, stale, .. } = doc;
         if !settings.smooth_scrolling {
             ui.style_mut().scroll_animation = egui::style::ScrollAnimation::none();
         }
@@ -2018,7 +2036,7 @@ impl Editors {
                 ctx.set_zoom_factor((ctx.zoom_factor() * zoom).clamp(0.5, 3.0));
             }
         }
-        if let (Some((line, delta)), Some(path)) = (settle(buf, hl, lang, &mut self.lsp, folds), &buf.path) {
+        if let (Some((line, delta)), Some(path)) = (settle(buf, hl, lang, &mut self.lsp, folds, ranges), &buf.path) {
             self.marks.shift(path, line, delta);
             self.tests.edited(path, line, delta);
         }
@@ -2103,7 +2121,7 @@ impl Editors {
                     }
                 }
             }
-            if let (Some((line, delta)), Some(path)) = (settle(buf, hl, lang, &mut self.lsp, folds), &buf.path) {
+            if let (Some((line, delta)), Some(path)) = (settle(buf, hl, lang, &mut self.lsp, folds, ranges), &buf.path) {
                 self.marks.shift(path, line, delta);
             self.tests.edited(path, line, delta);
             }
@@ -2252,6 +2270,8 @@ impl Editors {
         let (mut over_problem, mut ctrl_span) = (None, None);
         let mut toggle_fold = None;
         let folded: &[(usize, usize)] = if diffed { &[] } else { folds };
+        let ranges: &[lsp::FoldRange] = if diffed { &[] } else { folding::cached(buf, lang, ranges) };
+        let opens = |line: usize| ranges.binary_search_by_key(&line, |r| r.0).ok();
         let changes = path.as_deref().and_then(|p| git.line_changes(p)).filter(|_| !diffed && !buf.large);
         let (mut change_y, mut change_click) = (None, None);
         let mut visible = (0, 0);
@@ -2371,7 +2391,7 @@ impl Editors {
                     let (adds_cursor, follows_link) = if ctrl_adds { (mods.command, mods.alt) } else { (mods.alt, mods.command) };
                     let fold_x = clip.left() + gutter_w - 12.0 - glyph_w;
                     let over_gutter = resp.hovered() && pointer.is_some_and(|pos| pos.x < clip.left() + gutter_w);
-                    let can_fold = |line: usize| folded.iter().any(|f| f.0 == line) || buf_ref.foldable(line);
+                    let can_fold = |line: usize| folded.iter().any(|f| f.0 == line) || opens(line).is_some();
                     let mut lens_press = false;
                     if let Some(pos) = pointer {
                         if pressed && resp.is_pointer_button_down_on() {
@@ -2837,7 +2857,7 @@ impl Editors {
                             painter.text(pos2(gutter.right() - 10.0 - glyph_w, y), Align2::RIGHT_CENTER, number, number_font.clone(), color);
                         }
                         let closed = folded.iter().any(|f| f.0 == line);
-                        if closed || (over_gutter && buf_ref.foldable(line)) {
+                        if closed || (over_gutter && opens(line).is_some()) {
                             let icon = if closed { icons::CARET_RIGHT } else { icons::CARET_DOWN };
                             painter.text(pos2(fold_x + glyph_w / 2.0, y), Align2::CENTER_CENTER, icon, FontId::proportional(settings.font_size - 2.0), theme.text_dim);
                         }
@@ -3026,7 +3046,7 @@ impl Editors {
         if let Some(line) = toggle_fold {
             match folds.iter().position(|f| f.0 == line) {
                 Some(at) => drop(folds.remove(at)),
-                None => folds.extend(buf.fold_end(line).map(|end| (line, end))),
+                None => folds.extend(opens(line).map(|at| (line, ranges[at].1))),
             }
             folds.sort_unstable();
             evict(buf, folds, &mut tab.sels);
@@ -3864,6 +3884,31 @@ end", "word ".repeat(100)))], &settings);
         editors.exec(&Command::GoTo(2, 1), &settings, &ctx);
         frame(&ctx, &mut editors, vec![]);
         assert!(folds(&editors).is_empty());
+    }
+
+    #[test]
+    fn folds_by_level_and_recursively_keeping_nested_state() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Paste("fn a() {\n    if x {\n        one();\n    }\n    if y {\n        two();\n    }\n}\nlast".into())]);
+        let folds = |e: &Editors| e.docs.values().next().unwrap().folds.clone();
+        let run = |editors: &mut Editors, cmd: Command| {
+            editors.exec(&cmd, &settings, &ctx);
+            frame(&ctx, editors, vec![]);
+            (folds(editors), editors.status().unwrap().line)
+        };
+        assert_eq!(run(&mut editors, Command::FoldLevel(2)), (vec![(1, 2), (4, 5)], 9));
+        assert_eq!(run(&mut editors, Command::GoTo(3, 1)), (vec![(4, 5)], 3));
+        assert_eq!(run(&mut editors, Command::FoldRecursively), (vec![(1, 2), (4, 5)], 2));
+        assert_eq!(run(&mut editors, Command::GoTo(1, 1)), (vec![(1, 2), (4, 5)], 1));
+        assert_eq!(run(&mut editors, Command::FoldRecursively), (vec![(0, 6), (1, 2), (4, 5)], 1));
+        assert_eq!(editors.groups[0].tabs[0].rows.1, vec![0, 1, 1, 1, 1, 1, 1, 1, 2, 3]);
+        assert_eq!(run(&mut editors, Command::Unfold), (vec![(1, 2), (4, 5)], 1));
+        assert_eq!(run(&mut editors, Command::UnfoldRecursively), (vec![], 1));
     }
 
     #[test]
