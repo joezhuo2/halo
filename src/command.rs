@@ -620,7 +620,28 @@ fn defaults() -> Vec<Binding> {
         b.when = if b.command == StepInto { "inDebugMode" } else { "!inDebugMode" }.to_owned();
         b.cond = crate::when::parse(&b.when).ok().map(Arc::new);
     }
+    for b in list.iter_mut().filter(|b| b.command == MarkdownPreview) {
+        (b.when, b.cond) = ("editorLangId == markdown".to_owned(), crate::when::parse("editorLangId == markdown").ok().map(Arc::new));
+    }
     list
+}
+
+static PASTED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn consume(i: &mut egui::InputState, shortcut: &KeyboardShortcut) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    if shortcut.logical_key != Key::V || !shortcut.modifiers.command {
+        return i.consume_shortcut(shortcut);
+    }
+    if i.modifiers.matches_exact(shortcut.modifiers) && let Some(at) = i.events.iter().position(|e| matches!(e, egui::Event::Paste(_))) {
+        i.events.remove(at);
+        PASTED_AT.store(i.time.to_bits(), Relaxed);
+        return true;
+    }
+    let release = i.events.iter().position(|e| matches!(e, egui::Event::Key { key: Key::V, pressed: false, modifiers, .. } if modifiers.matches_exact(shortcut.modifiers)));
+    let Some(at) = release.filter(|_| i.time - f64::from_bits(PASTED_AT.load(Relaxed)) > 2.0) else { return false };
+    i.events.remove(at);
+    true
 }
 
 pub fn all() -> Vec<Command> {
@@ -1257,5 +1278,24 @@ mod tests {
         let recent = built.iter().find(|b| b.command == Command::OpenRecent).unwrap();
         assert_eq!(recent.shortcut, parse_key("ctrl+r").unwrap());
         assert!(recent.active(focus(false, false).as_object().unwrap()) && !recent.active(focus(true, false).as_object().unwrap()));
+    }
+
+    #[test]
+    fn ctrl_shift_v_fires_once_with_or_without_clipboard_text() {
+        let ctx = egui::Context::default();
+        let shortcut = parse_key("ctrl+shift+v").unwrap();
+        let mods = Modifiers { ctrl: true, shift: true, command: true, ..Default::default() };
+        let release = egui::Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: mods };
+        let fired = |time: f64, mut events: Vec<egui::Event>| {
+            let mut out = (false, 0);
+            events.insert(0, egui::Event::ModifiersChanged(mods));
+            let input = egui::RawInput { time: Some(time), events, ..Default::default() };
+            ctx.run_ui(input, |ui| out = ui.input_mut(|i| (consume(i, &shortcut), i.events.iter().filter(|e| matches!(e, egui::Event::Paste(_))).count()))).textures_delta.clear();
+            out
+        };
+        assert_eq!(fired(10.0, vec![egui::Event::Paste("text".into())]), (true, 0));
+        assert_eq!(fired(10.1, vec![release.clone()]), (false, 0));
+        assert_eq!(fired(20.0, vec![release]), (true, 0));
+        assert_eq!(fired(20.1, vec![]), (false, 0));
     }
 }

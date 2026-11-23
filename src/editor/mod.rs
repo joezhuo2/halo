@@ -2040,7 +2040,7 @@ impl Editors {
             });
             let keys = command::context();
             for binding in command::bindings().iter().filter(|b| b.scope == Scope::Editor && b.chord.is_none() && b.active(&keys)) {
-                if ui.input_mut(|i| i.consume_shortcut(&binding.shortcut)) {
+                if ui.input_mut(|i| command::consume(i, &binding.shortcut)) {
                     pending.push(binding.command.clone());
                 }
             }
