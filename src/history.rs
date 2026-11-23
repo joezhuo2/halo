@@ -309,6 +309,10 @@ impl Halo {
                 }
                 _ => Err("The current line has no commit."),
             },
+            OpenLineCommitOnRemote => match self.editors.open_line_commit_on_remote() {
+                true => Ok(()),
+                false => Err("The current line has no commit."),
+            },
             RestoreSnapshot(file, snapshot) => match self.editors.buffer().filter(|b| &b.0 == file) {
                 Some((_, _, _, version)) => {
                     let (file, snapshot) = (file.clone(), snapshot.clone());

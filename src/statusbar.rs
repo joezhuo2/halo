@@ -78,7 +78,12 @@ impl Halo {
                     }
 
                     if let Some((label, tip, diff)) = self.editors.blame_item(ui.ctx()) {
-                        if item(ui, &theme, &label, false, &tip).clicked() && let Some(cmd) = diff {
+                        let resp = item(ui, &theme, &label, false, if diff.is_some() { "" } else { &tip });
+                        let resp = match diff.is_some() {
+                            true => resp.on_hover_ui(|ui| self.editors.blame_card(ui, &theme, &mut self.cmds)),
+                            false => resp,
+                        };
+                        if resp.clicked() && let Some(cmd) = diff {
                             self.cmds.push(cmd);
                         }
                     } else if self.editors.blame_loading() {
@@ -221,5 +226,5 @@ fn item(ui: &mut Ui, theme: &Theme, text: &str, active: bool, tip: &str) -> Resp
         ui.painter().galley(pos, galley, color);
         ui::focus_ring(ui, theme, rect, resp.id);
     }
-    resp.on_hover_text(tip)
+    if tip.is_empty() { resp } else { resp.on_hover_text(tip) }
 }

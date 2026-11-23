@@ -7,6 +7,7 @@ mod app;
 mod blame;
 mod cli;
 mod command;
+mod commit_ai;
 mod dap;
 mod debug;
 mod editor;

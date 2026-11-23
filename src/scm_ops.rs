@@ -94,9 +94,23 @@ impl Scm {
         }
     }
 
+    fn generate(&mut self, git: &Git, ctx: &egui::Context) {
+        if self.ai.take().is_some() {
+            return;
+        }
+        match git.top() {
+            Some(top) => self.ai = Some(crate::commit_ai::Job::start(top, !git.changes(true).is_empty(), ctx)),
+            None => ui::notify_warning("Open a Git repository to generate a commit message."),
+        }
+    }
+
     pub fn start(&mut self, op: Op, target: Option<String>, git: &mut Git, ctx: &egui::Context, cmds: &mut Vec<Command>) {
         use Op::*;
         self.ops_root(git);
+        if op == GenerateMessage {
+            self.generate(git, ctx);
+            return;
+        }
         if git.busy() {
             return;
         }
@@ -131,7 +145,7 @@ impl Scm {
         }
         match op {
             Init => git.set_error("The open folder already belongs to a repository.".into()),
-            Clone => unreachable!(),
+            Clone | GenerateMessage => unreachable!(),
             Amend | AmendMessage if d.head.is_empty() => git.set_error("There is no commit to amend.".into()),
             AmendMessage => self.message.clone_from(&d.message),
             Amend => {
