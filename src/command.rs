@@ -122,6 +122,10 @@ pub enum Command {
     ToggleSidebar,
     TogglePanel,
     ToggleAi,
+    AgentChangesKeepAll,
+    AgentChangesUndoAll,
+    AgentChangesShow,
+    AgentChangesResetBaseline,
     SplitEditor,
     SplitEditorDown,
     SplitEditorLeft,
@@ -756,6 +760,7 @@ pub fn all() -> Vec<Command> {
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.extend([ShowOutput, ShowOutputChannels, ClearOutput, OpenOutputInEditor, ShowNotifications, ClearNotifications, ToggleDoNotDisturb, FocusNotification]);
     commands.extend([FocusNextRegion, FocusPrevRegion, ToggleTabFocus, ShowAccessibilityHelp, AnnounceCursorPosition, ToggleScreenReaderMode]);
+    commands.extend([AgentChangesKeepAll, AgentChangesUndoAll, AgentChangesShow, AgentChangesResetBaseline]);
     commands.extend([About, InstallInPath]);
     commands
 }
@@ -941,6 +946,7 @@ impl Command {
             | ExpandSelection | ShrinkSelection | SelectToBracket | CursorUndo | ToggleColumnSelection | CursorColumnSelectLeft
             | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
+            | AgentChangesKeepAll | AgentChangesUndoAll | AgentChangesShow | AgentChangesResetBaseline
             | ToggleWordWrap | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | FilterExplorer | ToggleFileNesting
             | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
             | LayoutTwoColumns | LayoutThreeColumns | LayoutTwoRows | LayoutThreeRows | LayoutGrid | LayoutTwoRowsRight | LayoutTwoColumnsBottom
@@ -1093,6 +1099,10 @@ impl Command {
             ToggleSidebar => "Toggle Side Bar",
             TogglePanel => "Toggle Panel",
             ToggleAi => "Toggle AI Panel",
+            AgentChangesKeepAll => "Agent Changes: Keep All",
+            AgentChangesUndoAll => "Agent Changes: Undo All",
+            AgentChangesShow => "Agent Changes: Show",
+            AgentChangesResetBaseline => "Agent Changes: Reset Baseline",
             SplitEditor => "Split Editor Right",
             SplitEditorDown => "Split Editor Down",
             SplitEditorLeft => "Split Editor Left",

@@ -320,6 +320,13 @@ Each of these can be switched off under **Settings > Text Editor**.
   when you press **Start session**. Nothing starts until you ask.
 - If a CLI is missing, the tab offers **Install Claude CLI** or **Install
   Codex CLI**, which runs the official installer in the panel's terminal.
+- **Agent Changes**: when a session starts in a Git folder, Halo notes every
+  file's content (untracked files too, without touching your index or
+  stashes). Files the agent then adds, edits or deletes are listed at the top
+  of the panel with A/M/D badges and line counts. Click one to open its diff,
+  and **Keep** or **Undo** it per file or all at once (Undo asks first and
+  sends created files to the recycle bin). The palette has **Agent Changes:
+  Keep All**, **Undo All**, **Show** and **Reset Baseline**.
 
 ### Search
 
