@@ -192,7 +192,7 @@ impl Scm {
                 ScrollArea::vertical().id_salt("body").min_scrolled_height(0.0).auto_shrink(false).show(ui, |ui| {
                     match i {
                         0 => changes(ui, theme, git, &top, &mut action, cmds),
-                        1 => pull_requests(ui, theme, git, busy, &mut action),
+                        1 => pull_requests(ui, theme, git, busy, &mut action, cmds),
                         _ => graph(ui, theme, git, self.commit.as_deref(), &mut action, cmds),
                     }
                 });
@@ -339,7 +339,7 @@ fn prompt(ui: &Ui, heading: &str, note: &str, fields: &mut [(&str, &mut String, 
     choice
 }
 
-fn pull_requests(ui: &mut Ui, theme: &Theme, git: &Git, busy: bool, action: &mut Option<Action>) {
+fn pull_requests(ui: &mut Ui, theme: &Theme, git: &Git, busy: bool, action: &mut Option<Action>, cmds: &mut Vec<Command>) {
     let note = |ui: &mut Ui, text: &str| {
         Frame::new().inner_margin(Margin::symmetric(14, 5)).show(ui, |ui| {
             ui.label(RichText::new(text).size(12.0).color(theme.text_dim));
@@ -394,6 +394,9 @@ fn pull_requests(ui: &mut Ui, theme: &Theme, git: &Git, busy: bool, action: &mut
             }
             if ui.button("Comment...").clicked() {
                 *action = Some(Action::ReviewPr(pr.number, false));
+            }
+            if ui.button("Review in Diff").clicked() {
+                cmds.push(Command::ReviewPullRequest(pr.number));
             }
             if ui.add_enabled(!busy, egui::Button::new("Open on GitHub")).clicked() {
                 *action = run(&["view", &number, "--web"]);

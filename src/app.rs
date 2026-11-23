@@ -386,6 +386,22 @@ impl Halo {
                 }
             }
             OpenMerge(path) => self.editors.open_merge(&path, ctx),
+            ReviewPullRequest(number) => match self.git.top() {
+                Some(top) => self.editors.review_pr(top.to_path_buf(), number, !self.settings.diff_side_by_side, ctx),
+                None => ui::notify_warning("Open a Git repository to review a pull request."),
+            },
+            PickPullRequestReview => match self.git.prs() {
+                Some(Ok(prs)) if !prs.is_empty() => {
+                    let items = prs.iter().map(|pr| (format!("#{} {}", pr.number, pr.title), pr.head_ref_name.clone(), ReviewPullRequest(pr.number)));
+                    self.search.pick("Select a pull request to review", items.collect());
+                }
+                Some(Ok(_)) => ui::notify_info("There are no open pull requests."),
+                Some(Err(error)) => ui::notify_error(error.lines().next().unwrap_or_default().to_owned()),
+                None => {
+                    self.git.load_prs();
+                    ui::notify_info("Loading pull requests. Run the command again in a moment.");
+                }
+            },
             CloseFolder => self.set_folder(None, ctx),
             NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => self.window_command(&cmd),
             OpenSettings => self.page.open = true,

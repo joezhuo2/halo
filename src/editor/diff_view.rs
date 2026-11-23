@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-const GAP: f32 = 26.0;
+pub(super) const GAP: f32 = 26.0;
 const BAR: f32 = 28.0;
 pub(super) const RULER: f32 = 14.0;
 
@@ -47,6 +47,7 @@ impl Spec {
             ["diff"] => (String::new(), None),
             ["diff", "--cached"] => ("HEAD".to_owned(), Some(String::new())),
             ["show", "--format=", "--diff-merges=first-parent", hash] => (format!("{hash}^"), Some(hash.to_owned())),
+            ["diff", left, right] if !left.starts_with('-') && !right.starts_with('-') => (left.to_owned(), Some(right.to_owned())),
             _ => return None,
         };
         Some(Spec { rel: args[at + 1].clone(), left, right })
@@ -228,6 +229,10 @@ impl DiffTab {
 
     pub fn pads(&self) -> Vec<(usize, u32)> {
         if self.inline { diff::inline_pads(&self.model.hunks) } else { diff::pads(&self.model.hunks, false) }
+    }
+
+    pub(super) fn parts(&self) -> (&str, &str, Option<&str>, &[Hunk], &[diff::Row]) {
+        (&self.spec.rel, &self.spec.left, self.spec.right.as_deref(), &self.model.hunks, &self.rows.1)
     }
 
     fn sync(&mut self, buf: &Document) {
@@ -555,6 +560,7 @@ impl Editors {
     }
 
     pub(super) fn poll_diffs(&mut self, ctx: &egui::Context) {
+        self.poll_review(ctx);
         while let Ok(msg) = self.diffs.rx.try_recv() {
             match msg {
                 Msg::Loaded(load, left, right) => self.place_diff(load, left, right),
@@ -798,6 +804,7 @@ impl Editors {
                 }
             }
         }
+        self.review_ui(ui, area.with_max_x(strip.left()), theme, d, starts, &pads);
     }
 
     fn viewer_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, doc: &Doc, tab: &mut Tab) {
@@ -1184,6 +1191,9 @@ mod tests {
         let shown = Spec::parse(&strings(&["show", "--format=", "--diff-merges=first-parent", "abcdef1234", "--", "b.rs"])).unwrap();
         assert_eq!((shown.left.as_str(), shown.right.as_deref(), shown.side()), ("abcdef1234^", Some("abcdef1234"), Side::Fixed));
         assert_eq!((Spec::label(Some(&shown.left)), Spec::label(shown.right.as_deref())), ("abcdef12^".to_owned(), "abcdef12".to_owned()));
+        let revs = Spec::parse(&strings(&["diff", "base1", "head2", "--", "c.rs"])).unwrap();
+        assert_eq!((revs.left.as_str(), revs.right.as_deref(), revs.side()), ("base1", Some("head2"), Side::Fixed));
+        assert!(Spec::parse(&strings(&["diff", "--stat", "head2", "--", "c.rs"])).is_none());
         assert!(Spec::parse(&strings(&["log", "--", "a"])).is_none());
         assert!(Spec::parse(&strings(&["diff", "--", "a", "b"])).is_none());
     }

@@ -228,6 +228,9 @@ pub enum Command {
     MergePrevConflict,
     MergeToggleBase,
     MergeComplete,
+    ReviewPullRequest(u64),
+    PickPullRequestReview,
+    AddReviewComment,
 
     GoToDefinition,
     PeekDefinition,
@@ -743,7 +746,7 @@ pub fn all() -> Vec<Command> {
         GitSync, ToggleInlineBlame, OpenLineChanges, OpenLineCommitOnRemote,
         StageHunk, RevertHunk, UnstageHunk, StageSelectedRanges, RevertSelectedRanges, UnstageSelectedRanges,
         MergeOpen, MergeAcceptIncoming, MergeAcceptCurrent, MergeAcceptBoth, MergeAcceptAllIncoming, MergeAcceptAllCurrent,
-        MergeNextConflict, MergePrevConflict, MergeToggleBase, MergeComplete,
+        MergeNextConflict, MergePrevConflict, MergeToggleBase, MergeComplete, PickPullRequestReview, AddReviewComment,
     ];
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.extend([ShowOutput, ShowOutputChannels, ClearOutput, OpenOutputInEditor, ShowNotifications, ClearNotifications, ToggleDoNotDisturb, FocusNotification]);
@@ -962,7 +965,8 @@ impl Command {
             OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | OpenLineCommitOnRemote | RestoreSnapshot(..) | StageHunk | RevertHunk
             | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges | MergeOpen | OpenMerge(_)
             | MergeAcceptIncoming | MergeAcceptCurrent | MergeAcceptBoth | MergeAcceptAllIncoming | MergeAcceptAllCurrent
-            | MergeNextConflict | MergePrevConflict | MergeToggleBase | MergeComplete => "Source Control",
+            | MergeNextConflict | MergePrevConflict | MergeToggleBase | MergeComplete | ReviewPullRequest(_) | PickPullRequestReview
+            | AddReviewComment => "Source Control",
             ShowOutput | ShowOutputChannels | ClearOutput | OpenOutputInEditor | SelectOutputChannel(_) => "Output",
             ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => "Notifications",
             FocusNextRegion | FocusPrevRegion | ToggleTabFocus | ShowAccessibilityHelp | AnnounceCursorPosition | ToggleScreenReaderMode => "Help",
@@ -1188,6 +1192,8 @@ impl Command {
             MergePrevConflict => "Merge Editor: Go to Previous Unresolved Conflict",
             MergeToggleBase => "Merge Editor: Show Base",
             MergeComplete => "Merge Editor: Complete Merge",
+            ReviewPullRequest(_) | PickPullRequestReview => "Pull Request: Review in Diff",
+            AddReviewComment => "Pull Request: Add Comment on Line",
             GoToDefinition => "Go to Definition",
             PeekDefinition => "Peek Definition",
             GoToDeclaration => "Go to Declaration",
