@@ -433,6 +433,8 @@ pub(super) struct Hover {
 pub(super) struct Peek {
     pub doc: u64,
     pub pos: usize,
+    pub group: usize,
+    anchor: (u64, usize),
     title: String,
     items: Vec<Location>,
     selected: usize,
@@ -906,7 +908,35 @@ impl Editors {
             let text = lines.get(item.start.0).map(|line| line.trim()).unwrap_or_default();
             item.label = if item.label.is_empty() { text.to_owned() } else { format!("{}   {text}", item.label) };
         }
-        self.intel.peek = Some(Peek { doc, pos, title: title.to_owned(), items, selected: 0, files, hierarchy, reveal: true, scroll: 0 });
+        let anchor = self.docs.get(&doc).map_or((0, 0), |d| {
+            let line = d.buf.line_of(pos.min(d.buf.len()));
+            (d.buf.version, d.buf.line_start(line) + d.buf.line_len(line))
+        });
+        let group = self.active;
+        self.intel.peek = Some(Peek { doc, pos, group, anchor, title: title.to_owned(), items, selected: 0, files, hierarchy, reveal: true, scroll: 0 });
+    }
+
+    pub(super) fn peek_line(&mut self, g: usize, doc: u64, buf: &Document) -> Option<usize> {
+        let peek = self.intel.peek.as_mut().filter(|p| p.doc == doc && p.group == g)?;
+        let (version, at) = peek.anchor;
+        if version != buf.version {
+            let line = match (buf.mapped(version, at), buf.mapped(version, 0)) {
+                (Some(moved), _) => {
+                    peek.pos = buf.mapped(version, peek.pos).unwrap_or(moved);
+                    buf.line_of(moved)
+                }
+                (None, Some(_)) => {
+                    self.intel.peek = None;
+                    return None;
+                }
+                (None, None) => {
+                    peek.pos = peek.pos.min(buf.len());
+                    buf.line_of(at.min(buf.len()))
+                }
+            };
+            peek.anchor = (buf.version, buf.line_start(line) + buf.line_len(line));
+        }
+        Some(buf.line_of(peek.anchor.1))
     }
 
     pub(super) fn find_doc(&self, path: &Path) -> Option<u64> {
@@ -1294,7 +1324,7 @@ impl Editors {
             } else if *key == Key::Escape && (intel.signature.is_some() || intel.hover.is_some()) {
                 intel.signature = None;
                 intel.hover = None;
-            } else if let Some(peek) = intel.peek.as_mut().filter(|p| p.doc == id && *key != Key::Tab) {
+            } else if let Some(peek) = intel.peek.as_mut().filter(|p| p.doc == id && p.group == self.active && *key != Key::Tab) {
                 match key {
                     Key::Escape => {}
                     Key::Enter => intel.queued.extend(peek.items.get(peek.selected).map(|item| Queued::Jump(item.path.clone(), item.start))),
@@ -1530,13 +1560,11 @@ impl Editors {
         }
     }
 
-    pub(super) fn peek_ui(&mut self, ui: &mut Ui, theme: &Theme, (font, style): (&FontId, super::typography::FontStyle), area: Rect, below: Option<f32>, id: u64) {
+    pub(super) fn peek_ui(&mut self, ui: &mut Ui, theme: &Theme, (font, style): (&FontId, super::typography::FontStyle), zone: Rect, id: u64) {
         let context = self.config.peek_context_lines.max(1);
         let Some(peek) = self.intel.peek.as_mut().filter(|p| p.doc == id) else { return };
         let row_h = (font.size * 1.35).round();
-        let height = (26.0 + row_h * (context * 2 + 1) as f32 + 2.0).min(area.height() - 30.0).max(80.0);
-        let top = below.filter(|y| *y > area.top()).unwrap_or(area.top()).min(area.bottom() - height).max(area.top());
-        let rect = Rect::from_min_size(pos2(area.left() + 6.0, top), vec2(area.width() - 14.0, height));
+        let rect = Rect::from_min_max(zone.min + vec2(6.0, 2.0), zone.max - vec2(8.0, 2.0));
         ui.interact(rect, Id::new(("peek", id)), Sense::click());
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect(rect, CornerRadius::same(3), theme.panel, Stroke::new(1.0, theme.accent), StrokeKind::Inside);

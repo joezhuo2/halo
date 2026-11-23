@@ -253,7 +253,7 @@ pub(super) struct Diffs {
     bases: HashMap<u64, Option<Base>>,
     gutter: HashMap<u64, LineChanges>,
     waiting: Option<(u64, Wait)>,
-    peek: Option<(u64, usize)>,
+    peek: Option<(u64, usize, usize)>,
     at: Option<usize>,
     refresh: bool,
 }
@@ -337,19 +337,20 @@ impl Diffs {
         });
     }
 
-    fn anchor(&mut self, doc: u64, buf: &Document) -> Option<usize> {
-        let (_, index) = self.peek.filter(|p| p.0 == doc)?;
+    fn anchor(&mut self, doc: u64, buf: &Document, g: usize) -> Option<(usize, usize, usize)> {
+        let (_, index, _) = self.peek.filter(|p| p.0 == doc && p.2 == g)?;
         let base = self.bases.get_mut(&doc)?.as_mut()?;
         base.sync(buf);
         let hunk = base.model.hunks.get(index)?;
-        Some(if hunk.right.is_empty() { hunk.right.start.saturating_sub(1) } else { hunk.right.end - 1 })
+        let line = if hunk.right.is_empty() { hunk.right.start.saturating_sub(1) } else { hunk.right.end - 1 };
+        Some((line, hunk.left.len() + hunk.right.len(), index))
     }
 
-    fn show_peek(&mut self, doc: u64, buf: &Document, line: usize) -> Option<usize> {
+    fn show_peek(&mut self, doc: u64, buf: &Document, line: usize, g: usize) -> Option<usize> {
         let base = self.bases.get_mut(&doc)?.as_mut()?;
         base.sync(buf);
         let index = diff::hunk_at(&base.model.hunks, line).or_else(|| diff::step(&base.model.hunks, line, true))?;
-        self.peek = Some((doc, index));
+        self.peek = Some((doc, index, g));
         Some(buf.line_start(base.model.hunks[index].right.start))
     }
 }
@@ -500,7 +501,7 @@ impl Editors {
                     if let Some((_, wait)) = self.diffs.waiting.take_if(|w| w.0 == doc) {
                         match wait {
                             Wait::Peek(line) => {
-                                let shown = self.docs.get(&doc).and_then(|d| self.diffs.show_peek(doc, &d.buf, line));
+                                let shown = self.docs.get(&doc).and_then(|d| self.diffs.show_peek(doc, &d.buf, line, self.active));
                                 if let (Some(pos), Some((g, t))) = (shown, self.active_tab()) {
                                     self.groups[g].tabs[t].reveal = Some(pos);
                                 }
@@ -728,12 +729,12 @@ impl Editors {
         }
     }
 
-    pub(super) fn change_anchor(&mut self, doc: u64, buf: &Document) -> Option<usize> {
-        self.diffs.anchor(doc, buf)
+    pub(super) fn change_anchor(&mut self, doc: u64, buf: &Document, g: usize) -> Option<(usize, usize, usize)> {
+        self.diffs.anchor(doc, buf, g)
     }
 
     pub(super) fn peek_escape(&mut self, events: &mut Vec<Event>, doc: u64) {
-        if self.diffs.peek.is_none_or(|p| p.0 != doc) {
+        if self.diffs.peek.is_none_or(|p| p.0 != doc || p.2 != self.active) {
             return;
         }
         let before = events.len();
@@ -756,7 +757,7 @@ impl Editors {
 
     pub(super) fn open_change_peek(&mut self, doc: u64, buf: &Document, tab: &mut Tab, line: usize, ctx: &egui::Context) {
         if self.diffs.fresh(doc) {
-            if let Some(pos) = self.diffs.show_peek(doc, buf, line) {
+            if let Some(pos) = self.diffs.show_peek(doc, buf, line, self.active) {
                 tab.reveal = Some(pos);
             }
             return;
@@ -768,8 +769,8 @@ impl Editors {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn change_peek_ui(&mut self, ui: &mut Ui, theme: &Theme, font: &FontId, style: typography::FontStyle, area: Rect, below: Option<f32>, doc: u64, buf: &Document, pending: &mut Vec<Command>) {
-        let Some((_, index)) = self.diffs.peek.filter(|p| p.0 == doc) else { return };
+    pub(super) fn change_peek_ui(&mut self, ui: &mut Ui, theme: &Theme, font: &FontId, style: typography::FontStyle, zone: Rect, doc: u64, buf: &Document, pending: &mut Vec<Command>) {
+        let Some((_, index, _)) = self.diffs.peek.filter(|p| p.0 == doc) else { return };
         let Some(base) = self.diffs.bases.get_mut(&doc).and_then(Option::as_mut) else { return };
         base.sync(buf);
         let count = base.model.hunks.len();
@@ -778,10 +779,7 @@ impl Editors {
             return;
         };
         let row_h = (font.size * 1.35).round();
-        let lines = hunk.left.len() + hunk.right.len();
-        let height = (34.0 + lines as f32 * row_h).min(260.0).min((area.height() - 30.0).max(80.0));
-        let top = below.filter(|y| *y > area.top()).unwrap_or(area.top()).min(area.bottom() - height).max(area.top());
-        let rect = Rect::from_min_size(pos2(area.left() + 6.0, top), vec2(area.width() - 14.0, height));
+        let rect = Rect::from_min_max(zone.min + vec2(6.0, 2.0), zone.max - vec2(8.0, 2.0));
         ui.interact(rect, Id::new(("change_peek", doc)), Sense::click());
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect(rect, CornerRadius::same(3), theme.panel, Stroke::new(1.0, theme.accent), StrokeKind::Inside);
@@ -909,7 +907,7 @@ impl Editors {
             }
             tab.reveal = Some(pos);
             if !in_diff && matches!(cmd, ShowNextChange | ShowPrevChange) {
-                self.diffs.peek = Some((doc_id, index));
+                self.diffs.peek = Some((doc_id, index, self.active));
             }
             return;
         }
@@ -1059,7 +1057,7 @@ mod tests {
             base.at = Instant::now() - Duration::from_secs(60);
         }
         assert!(click_bar(&ctx, &mut editors, id, 1), "the peek must open in the click frame");
-        assert_eq!(editors.diffs.peek, Some((id, 0)));
+        assert_eq!(editors.diffs.peek, Some((id, 0, 0)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1218,7 +1216,7 @@ mod tests {
         editors.exec(&Command::GoTo(1, 1), &settings, &ctx);
         editors.exec(&Command::ShowNextChange, &settings, &ctx);
         settle(&ctx, &mut editors, "the change peek", |e| e.diffs.peek.is_some());
-        assert_eq!(editors.diffs.peek, Some((plain, 0)));
+        assert_eq!(editors.diffs.peek, Some((plain, 0, 0)));
         frame(&ctx, &mut editors, vec![Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }]);
         assert!(editors.diffs.peek.is_none());
         editors.exec(&Command::GoTo(2, 1), &settings, &ctx);
