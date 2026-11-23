@@ -2535,7 +2535,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".vscode")).unwrap();
         let file = dir.join("main.py");
         std::fs::write(&file, "x = 42\n").unwrap();
-        let (port, requests) = adapter(file.clone());
+        let (port, requests) = adapter(file.clone(), "42");
         let entry = format!("{{\"type\": \"fake\", \"request\": \"attach\", \"name\": \"Attach\", \"debugServer\": {port}, \"processId\": \"${{command:pickProcess}}\", \"note\": \"pid ${{command:pickMyProcess}} in ${{workspaceFolder}}\"}}");
         std::fs::write(launch_path(&dir), format!("{{\"configurations\": [{entry}]}}")).unwrap();
 
@@ -2546,7 +2546,7 @@ mod tests {
         let workspace = Workspace::single(dir.clone());
         macro_rules! env {
             () => {
-                Env { folder: Some(&dir), workspace: &workspace, file: Some(file.clone()), settings: &settings, marks: &mut marks, bottom: &mut bottom, tasks: &mut tasks, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
+                Env { folder: Some(&dir), workspace: &workspace, file: Some(file.clone()), cursor_line: None, settings: &settings, marks: &mut marks, bottom: &mut bottom, tasks: &mut tasks, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
             };
         }
         macro_rules! pump {
