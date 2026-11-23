@@ -15,6 +15,13 @@ All notable changes to Halo are documented here. The format follows
   with" menu for common text and code files, so it can be picked once or set
   as the default app, also under Settings > Apps > Default apps.
 
+### Fixed
+
+- Opening a folder that sits inside a bigger Git repository (for example a
+  project folder under a versioned `Documents`) no longer makes that outer
+  repository the active one. Source Control says a repository was found in
+  the parent folder and offers **Open Repository**, as VS Code does.
+
 ## [0.1.13] - 2026-11-23
 
 Checked with unit tests and against a real PowerShell with shell

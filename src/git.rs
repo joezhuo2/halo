@@ -93,6 +93,7 @@ struct Status {
     unstaged: Vec<Change>,
     files: HashMap<String, FileState>,
     folders: HashMap<String, FileState>,
+    nested: bool,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -110,6 +111,8 @@ enum Msg {
 pub struct Git {
     folder: Option<PathBuf>,
     folder_repo: Option<bool>,
+    parent_repo: Option<PathBuf>,
+    allow_parent: bool,
     repos: Vec<PathBuf>,
     followed: Option<PathBuf>,
     shown: Option<(String, Vec<Change>)>,
@@ -448,8 +451,11 @@ fn load_status(root: &Path, details: bool, count: usize) -> Result<Status, Strin
     let refs = ["for-each-ref", "--format=%(refname:short)", "refs/heads"];
     let sides = ["rev-list", "--left-right", "--max-count=2000", "HEAD...@{upstream}"];
     let [top, text, branches, upstream_log, head_log, short, sides] =
-        exec_all(root, [&["rev-parse", "--show-toplevel"], &status, &refs, &log, &log[..6], &["rev-parse", "--short", "HEAD"], &sides]);
-    let top = crate::wsl::local(root, top?.trim());
+        exec_all(root, [&["rev-parse", "--show-toplevel", "--show-prefix"], &status, &refs, &log, &log[..6], &["rev-parse", "--short", "HEAD"], &sides]);
+    let top = top?;
+    let mut lines = top.lines();
+    let top = crate::wsl::local(root, lines.next().unwrap_or_default().trim());
+    let nested = lines.next().is_some_and(|p| !p.trim().is_empty());
     let (branch, tracking, entries) = parse_status(&text?);
     let branches = branches.unwrap_or_default().lines().map(str::to_owned).collect();
     let log = parse_log(&tracking.and(upstream_log.ok()).or(head_log.ok()).unwrap_or_default());
@@ -484,7 +490,7 @@ fn load_status(root: &Path, details: bool, count: usize) -> Result<Status, Strin
         files.insert(full, state);
     }
     let details = details.then(|| ops::load(&top));
-    Ok(Status { details, top, branch, tracking, branches, log, unsynced, more, staged, unstaged, files, folders })
+    Ok(Status { details, top, branch, tracking, branches, log, unsynced, more, staged, unstaged, files, folders, nested })
 }
 
 impl Git {
@@ -493,6 +499,8 @@ impl Git {
         Self {
             folder: None,
             folder_repo: None,
+            parent_repo: None,
+            allow_parent: false,
             repos: vec![],
             followed: None,
             shown: None,
@@ -523,6 +531,7 @@ impl Git {
         let root = roots.first().cloned();
         self.folder = root.clone();
         self.folder_repo = None;
+        (self.parent_repo, self.allow_parent) = (None, false);
         self.repos.clear();
         if let Some(folder) = root.clone() {
             let (tx, ctx) = (self.tx.clone(), ctx.clone());
@@ -561,6 +570,18 @@ impl Git {
         self.status_error = None;
         self.diffs.borrow_mut().clear();
         self.refresh(ctx);
+    }
+
+    pub fn parent_repo(&self) -> Option<&Path> {
+        self.parent_repo.as_deref()
+    }
+
+    pub fn open_parent_repo(&mut self) {
+        self.allow_parent = true;
+        if let Some(ctx) = self.ctx.clone() {
+            self.parent_repo = None;
+            self.refresh(&ctx);
+        }
     }
 
     pub fn can_init(&self) -> bool {
@@ -713,6 +734,13 @@ impl Git {
                 Msg::Status(root, status) => {
                     self.running = false;
                     let current = self.root.as_ref() == Some(&root);
+                    let status = match status {
+                        Ok(s) if s.nested && current && !self.allow_parent && self.folder.as_ref() == Some(&root) => {
+                            self.parent_repo = Some(s.top);
+                            Err("not a git repository".into())
+                        }
+                        status => status,
+                    };
                     if current {
                         self.status_error = status.as_ref().err().filter(|e| !e.contains("not a git repository")).cloned();
                     }
@@ -1040,11 +1068,13 @@ mod tests {
 
         let status = load_status(&dir.join("sub"), false, 10).unwrap();
         assert_eq!(status.branch, "trunk");
+        assert!(status.nested);
         let paths = |list: &[Change]| list.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
         assert!(status.staged.is_empty());
         assert_eq!(paths(&status.unstaged), ["sub/a.txt", "new.txt"]);
         git(&["add", "-A", "--", "new.txt"]);
         let staged = load_status(&dir, false, 10).unwrap();
+        assert!(!staged.nested);
         assert_eq!(staged.staged, [Change { path: "new.txt".into(), state: FileState::Added }]);
         assert_eq!(paths(&staged.unstaged), ["sub/a.txt"]);
         git(&["reset", "-q", "--", "new.txt"]);

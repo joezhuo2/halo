@@ -86,6 +86,13 @@ impl Scm {
                     ui::skeleton(ui, theme, 2);
                 } else {
                     ui.label(RichText::new("Open or initialize a Git repository.").color(theme.text_dim));
+                    if let Some(parent) = git.parent_repo().map(Path::to_path_buf) {
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(format!("A Git repository was found in the parent folder {}.", parent.display())).color(theme.text_dim));
+                        if ui.button("Open Repository").clicked() {
+                            git.open_parent_repo();
+                        }
+                    }
                     if git.can_init() && ui.button("Initialize Repository").clicked() {
                         cmds.push(Command::Git(GitCommand::Init));
                     }
