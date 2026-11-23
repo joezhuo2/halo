@@ -849,6 +849,8 @@ pub fn write_entries(entries: &[Entry]) {
 
 static BINDINGS: Mutex<Option<Arc<Vec<Binding>>>> = Mutex::new(None);
 static CONTEXT: Mutex<Option<Arc<Map<String, Value>>>> = Mutex::new(None);
+#[cfg(test)]
+pub static CONTEXT_TEST: Mutex<()> = Mutex::new(());
 
 pub fn set_context(keys: Map<String, Value>) {
     *CONTEXT.lock().unwrap() = Some(Arc::new(keys));
