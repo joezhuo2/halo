@@ -6,6 +6,12 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Open with Halo from Windows:** the installer lists Halo in the "Open
+  with" menu for common text and code files, so it can be picked once or set
+  as the default app, also under Settings > Apps > Default apps.
+
 ## [0.1.13] - 2026-11-23
 
 Checked with unit tests and against a real PowerShell with shell

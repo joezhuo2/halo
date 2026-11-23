@@ -46,11 +46,52 @@ Root: HKA; Subkey: "Software\Classes\Directory\shell\Halo\command"; ValueType: s
 Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\Halo"; ValueType: string; ValueData: "Open with Halo"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\Halo"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\halo-ide.exe"
 Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\Halo\command"; ValueType: string; ValueData: """{app}\halo-ide.exe"" ""%V"""
+Root: HKA; Subkey: "Software\Classes\Halo.File"; ValueType: string; ValueData: "Halo file"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Halo.File\DefaultIcon"; ValueType: string; ValueData: "{app}\halo-ide.exe,0"
+Root: HKA; Subkey: "Software\Classes\Halo.File\shell\open\command"; ValueType: string; ValueData: """{app}\halo-ide.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\Applications\halo-ide.exe"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "Halo"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Applications\halo-ide.exe\shell\open\command"; ValueType: string; ValueData: """{app}\halo-ide.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Halo"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Halo\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "Halo"
+Root: HKA; Subkey: "Software\Halo\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "Lightweight code editor"
+Root: HKA; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "Halo"; ValueData: "Software\Halo\Capabilities"; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\halo-ide.exe"; Description: "Launch Halo"; Flags: nowait postinstall skipifsilent
 
 [Code]
+const
+  Types = '.txt .md .markdown .json .jsonc .yaml .yml .toml .ini .cfg .conf .xml .csv .log .env .diff .patch .rs .py .js .mjs .cjs .ts .tsx .jsx .c .h .cpp .hpp .cc .cs .go .java .kt .rb .php .lua .sh .bash .zsh .ps1 .psm1 .bat .cmd .sql .html .htm .css .scss .less .vue .svelte .swift .dart .tex .gitignore .gitattributes .editorconfig ';
+
+procedure RegisterTypes(Install: Boolean);
+var
+  List, Ext: string;
+  At: Integer;
+begin
+  List := Types;
+  At := Pos(' ', List);
+  while At > 0 do
+  begin
+    Ext := Copy(List, 1, At - 1);
+    Delete(List, 1, At);
+    At := Pos(' ', List);
+    if Install then
+    begin
+      RegWriteStringValue(HKCU, 'Software\Classes\' + Ext + '\OpenWithProgids', 'Halo.File', '');
+      RegWriteStringValue(HKCU, 'Software\Classes\Applications\halo-ide.exe\SupportedTypes', Ext, '');
+      RegWriteStringValue(HKCU, 'Software\Halo\Capabilities\FileAssociations', Ext, 'Halo.File');
+    end
+    else
+      RegDeleteValue(HKCU, 'Software\Classes\' + Ext + '\OpenWithProgids', 'Halo.File');
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    RegisterTypes(True);
+end;
+
 function NeedsPath(Dir: string): Boolean;
 var
   Path: string;
@@ -65,6 +106,8 @@ var
   Path, Dir: string;
   At: Integer;
 begin
+  if Step = usUninstall then
+    RegisterTypes(False);
   if (Step = usPostUninstall) and RegQueryStringValue(HKCU, 'Environment', 'Path', Path) then
   begin
     Dir := ExpandConstant('{app}\bin');

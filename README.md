@@ -42,7 +42,8 @@ Get the latest build from
 
 - **Windows installer:** `halo-x.y.z-windows-x64-setup.exe`. Installs per
   user, no admin prompt. Adds a Start menu entry and **Open with Halo** on
-  files, folders and folder backgrounds.
+  files, folders and folder backgrounds, and lists Halo in **Open with** and
+  under Settings > Apps > Default apps for common text and code files.
 - **Windows portable:** `halo-x.y.z-windows-x64.exe`. One file, no install.
 - **Linux x64:** `halo-x.y.z-linux-x64.tar.gz`.
 - **macOS:** `halo-x.y.z-macos-arm64.tar.gz` (Apple silicon) or
