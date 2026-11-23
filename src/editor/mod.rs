@@ -15,6 +15,7 @@ mod merge;
 mod merge_view;
 mod open_tabs;
 pub use open_tabs::OpenTab;
+mod search_editor;
 mod snippet;
 mod linked;
 
@@ -297,6 +298,7 @@ pub struct Editors {
     pub terminals: HashMap<u64, crate::terminal::Terminal>,
     renaming: Option<(u64, String, bool)>,
     grid: grid::Grid,
+    searches: Vec<(u64, std::sync::mpsc::Receiver<String>)>,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -326,13 +328,6 @@ fn block_tokens(path: Option<&Path>) -> Option<(&'static str, &'static str)> {
         (_, ("//", None)) => Some(("/*", "*/")),
         _ => None,
     }
-}
-
-fn search_target(buf: &Document, line: usize) -> Option<(String, usize)> {
-    let text = buf.line_text(line);
-    let number = text.strip_prefix("  ").filter(|_| buf.read_only && buf.title.starts_with("Search: "))?.split(':').next()?.parse().ok()?;
-    let file = (0..line).rev().map(|above| buf.line_text(above)).find(|above| !above.is_empty() && !above.starts_with(' '))?;
-    Some((file, number))
 }
 
 fn emmet_expand(buf: &mut Document, tab: &mut Tab, unit: &str, strict: bool) -> bool {
@@ -635,6 +630,7 @@ impl Editors {
             terminals: HashMap::new(),
             renaming: None,
             grid: Default::default(),
+            searches: vec![],
         }
     }
 
@@ -903,7 +899,7 @@ impl Editors {
     fn save_doc(&mut self, id: u64, ask: bool) -> bool {
         let Some(doc) = self.docs.get_mut(&id).filter(|d| d.content.is_text()) else { return false };
         if doc.buf.path.is_none() || ask {
-            let mut dialog = rfd::FileDialog::new().set_file_name(&doc.buf.title);
+            let mut dialog = rfd::FileDialog::new().set_file_name(search_editor::file_name(&doc.buf).unwrap_or_else(|| doc.buf.title.clone()));
             if let Some(dir) = doc.buf.path.as_ref().and_then(|p| p.parent()) {
                 dialog = dialog.set_directory(dir);
             }
@@ -993,7 +989,7 @@ impl Editors {
                 self.intel.pick_caret = true;
                 return true;
             }
-            _ if self.grid_exec(cmd) => return true,
+            _ if self.grid_exec(cmd) || self.search_exec(cmd, settings, ctx) => return true,
             _ => {}
         }
         if let Some((g, t)) = self.active_tab().filter(|_| !matches!(cmd, CloseEditor | NextEditor | PrevEditor | KeepEditor))
@@ -1338,6 +1334,7 @@ impl Editors {
             ("findWidgetVisible", (self.find.open && self.focused).into()),
             ("suggestWidgetVisible", self.intel.suggesting().into()),
             ("inDiffEditor", (tab.diff.is_some() || tab.merge.is_some() || (doc.buf.read_only && doc.hl.language == "Diff")).into()),
+            ("inSearchEditor", search_editor::is(&doc.buf).into()),
         ];
         keys.extend(entries.map(|(k, v): (&str, serde_json::Value)| (k.to_owned(), v)));
     }
@@ -1575,6 +1572,7 @@ impl Editors {
         self.poll_loads(ui.ctx());
         self.poll_diffs(ui.ctx());
         self.poll_merges();
+        self.poll_searches();
         self.process(settings, ui.ctx());
         let mut pending = vec![];
         self.area_ui(ui, 0, theme, settings, git, &mut pending);
@@ -1622,6 +1620,7 @@ impl Editors {
                     let area = self.diff_frame(ui, body, theme, &doc, &mut tab, pending);
                     let area = self.merge_frame(ui, area, theme, &doc, &mut tab, pending);
                     self.view(ui, g, area, theme, settings, git, pending, &mut doc, &mut tab);
+                    self.search_badge(ui, area, theme, doc_id);
                     self.diff_after(ui, body, theme, settings, &mut tab, pending);
                     self.merge_after(ui, body, theme, settings, &mut doc, &mut tab);
                 }
@@ -2062,6 +2061,10 @@ impl Editors {
             self.peek_escape(&mut events, doc_id);
             let (mut typed, mut pasted, mut entered) = (None, None, false);
             for event in &events {
+                if search_editor::enter_reruns(buf, &tab.sels, event) {
+                    pending.push(Command::RerunSearchEditorSearch);
+                    continue;
+                }
                 let from = tab.sels.first().map_or(0, |s| s.start());
                 let stepped = match event {
                     Event::Key { key: Key::Tab, pressed: true, modifiers, .. } if !modifiers.command && !modifiers.alt => {
@@ -2121,8 +2124,9 @@ impl Editors {
         if max_cols.0 != buf.version {
             *max_cols = (buf.version, (0..total).map(|l| buf.line_len(l)).max().unwrap_or(0).min(MAX_COLS));
         }
+        let search = search_editor::Marks::of(buf);
         // shortcut: nesting counts brackets in strings and comments too, upgrade to syntax scopes if the colors drift
-        let colored = settings.bracket_colors && buf.rope.len_bytes() < 1_000_000;
+        let colored = settings.bracket_colors && buf.rope.len_bytes() < 1_000_000 && search.is_none();
         if colored && depths.0 != buf.version {
             let mut depth = 0u32;
             let per_line = buf.rope.lines().map(|line| {
@@ -2254,7 +2258,6 @@ impl Editors {
         }
         let buf_ref: &Document = buf;
         let lang_ref: &Lang = lang;
-        let root = self.root.clone();
         let out = ui
             .scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
                 area.show_viewport(ui, |ui, viewport| {
@@ -2303,6 +2306,7 @@ impl Editors {
                             over.sort_unstable_by_key(|o| o.0);
                             over.dedup_by(|next, kept| next.0 < kept.1);
                         }
+                        over.extend(search.as_ref().and_then(|s| s.color(&text, line, theme)));
                         let (mut inserts, mut hints) = (vec![], vec![]);
                         let swatches = if settings.color_decorators { decor::swatches(&text, line, lang_ref, builtin) } else { vec![] };
                         for s in &swatches {
@@ -2445,8 +2449,8 @@ impl Editors {
                         if resp.double_clicked() && !on_lens {
                             let (a, b) = buf_ref.word_at(hit(&painter, pos));
                             tab.sels = vec![Sel::new(a, b)];
-                            if let (Some((file, line)), Some(root)) = (search_target(buf_ref, buf_ref.line_of(a)), &root) {
-                                pending.extend([Command::OpenPath(root.join(file)), Command::GoTo(line, 1)]);
+                            if search.is_some() && search_editor::target(buf_ref, buf_ref.line_of(a)).is_some() {
+                                pending.push(Command::GoToDefinition);
                             }
                         }
                         if resp.triple_clicked() && !on_lens {
@@ -2622,7 +2626,9 @@ impl Editors {
                             painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), CornerRadius::ZERO, ui::with_alpha(theme.accent, 0.09));
                         }
                         let from = matches.partition_point(|m| m.1 <= start);
-                        for m in matches[from..].iter().take_while(|m| m.0 <= start + len) {
+                        let found = search.as_ref().map(|s| s.found(&buf_ref.line_text(line), line)).unwrap_or_default();
+                        let found = found.into_iter().map(|(a, b)| (start + a, start + b));
+                        for m in matches[from..].iter().take_while(|m| m.0 <= start + len).copied().chain(found) {
                             for (x0, x1, y) in spans(m.0.saturating_sub(start), m.1 - start) {
                                 let r = Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h));
                                 painter.rect_filled(r, CornerRadius::same(2), ui::with_alpha(theme.accent, 0.25));

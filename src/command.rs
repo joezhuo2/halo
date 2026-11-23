@@ -173,6 +173,13 @@ pub enum Command {
     GoToFile,
     ShowCommands,
     FindInFiles,
+    NewSearchEditor,
+    OpenSearchEditor,
+    RerunSearchEditorSearch,
+    ToggleSearchEditorContextLines,
+    ToggleSearchEditorCaseSensitive,
+    ToggleSearchEditorWholeWord,
+    ToggleSearchEditorRegex,
     GoToSymbol,
     GoToLine,
     GoToBracket,
@@ -596,6 +603,12 @@ fn defaults() -> Vec<Binding> {
         e(C, Key::G, GoToLine),
         e(C, Key::D, SelectNextOccurrence),
         e(C, Key::Slash, ToggleComment),
+        g(Modifiers::ALT, Key::Enter, OpenSearchEditor),
+        e(cs, Key::R, RerunSearchEditorSearch),
+        e(Modifiers::ALT, Key::L, ToggleSearchEditorContextLines),
+        e(Modifiers::ALT, Key::C, ToggleSearchEditorCaseSensitive),
+        e(Modifiers::ALT, Key::W, ToggleSearchEditorWholeWord),
+        e(Modifiers::ALT, Key::R, ToggleSearchEditorRegex),
     ];
     let shell = crate::when::parse(SEND_TO_SHELL).ok().map(Arc::new);
     for b in list.iter_mut().filter(|b| b.scope == Scope::Global && b.shortcut.modifiers == C) {
@@ -619,6 +632,10 @@ fn defaults() -> Vec<Binding> {
     }
     for b in list.iter_mut().filter(|b| b.shortcut == key(NONE, Key::F11)) {
         b.when = if b.command == StepInto { "inDebugMode" } else { "!inDebugMode" }.to_owned();
+        b.cond = crate::when::parse(&b.when).ok().map(Arc::new);
+    }
+    for b in list.iter_mut().filter(|b| b.command.label().starts_with("Search Editor:")) {
+        b.when = if b.command == OpenSearchEditor { "searchViewletFocus" } else { "inSearchEditor" }.to_owned();
         b.cond = crate::when::parse(&b.when).ok().map(Arc::new);
     }
     list
@@ -647,7 +664,8 @@ pub fn all() -> Vec<Command> {
         MarkdownPreview, MarkdownPreviewSide, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
         MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
         AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations,
-        GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation, ReopenClosed,
+        GoToFile, ShowCommands, FindInFiles, NewSearchEditor, OpenSearchEditor, RerunSearchEditorSearch, ToggleSearchEditorContextLines,
+        ToggleSearchEditorCaseSensitive, ToggleSearchEditorWholeWord, ToggleSearchEditorRegex, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation, ReopenClosed,
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
         ShowHover, ShowColorPicker, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
@@ -817,6 +835,11 @@ impl Command {
         if let Self::Git(op) | Self::GitAt(op, _) = self {
             return format!("git{op:?}");
         }
+        match self {
+            Self::NewSearchEditor => return "search.action.openNewEditor".into(),
+            Self::OpenSearchEditor => return "search.action.openInEditor".into(),
+            _ => {}
+        }
         let name = format!("{self:?}");
         name[..1].to_lowercase() + &name[1..]
     }
@@ -851,6 +874,8 @@ impl Command {
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | GoToLastEditLocation | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
+            NewSearchEditor | OpenSearchEditor | RerunSearchEditorSearch | ToggleSearchEditorContextLines | ToggleSearchEditorCaseSensitive
+            | ToggleSearchEditorWholeWord | ToggleSearchEditorRegex => "Go",
             ShowHover | ShowColorPicker | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_)
@@ -1035,6 +1060,13 @@ impl Command {
             GoToFile => "Go to File...",
             ShowCommands => "Show All Commands",
             FindInFiles => "Find in Files",
+            NewSearchEditor => "Search Editor: New Search Editor",
+            OpenSearchEditor => "Search Editor: Open Results in Editor",
+            RerunSearchEditorSearch => "Search Editor: Search Again",
+            ToggleSearchEditorContextLines => "Search Editor: Toggle Context Lines",
+            ToggleSearchEditorCaseSensitive => "Search Editor: Toggle Match Case",
+            ToggleSearchEditorWholeWord => "Search Editor: Toggle Match Whole Word",
+            ToggleSearchEditorRegex => "Search Editor: Toggle Use Regular Expression",
             GoToSymbol => "Go to Symbol in Editor...",
             GoToLine => "Go to Line...",
             GoToBracket => "Go to Bracket",
