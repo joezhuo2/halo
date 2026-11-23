@@ -219,6 +219,7 @@ pub enum Command {
     ShowCallHierarchy,
     ShowTypeHierarchy,
     ShowHover,
+    ShowColorPicker,
     TriggerSuggest,
     TriggerParameterHints,
     RenameSymbol,
@@ -670,7 +671,7 @@ pub fn all() -> Vec<Command> {
         GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation, ReopenClosed,
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
-        ShowHover, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
+        ShowHover, ShowColorPicker, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut,
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
@@ -871,7 +872,7 @@ impl Command {
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | GoToLastEditLocation | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
-            ShowHover | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
+            ShowHover | ShowColorPicker | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_)
             | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
@@ -1099,6 +1100,7 @@ impl Command {
             ShowCallHierarchy => "Show Call Hierarchy",
             ShowTypeHierarchy => "Show Type Hierarchy",
             ShowHover => "Show Hover",
+            ShowColorPicker => "Show Color Picker",
             TriggerSuggest => "Trigger Suggest",
             TriggerParameterHints => "Trigger Parameter Hints",
             RenameSymbol => "Rename Symbol",

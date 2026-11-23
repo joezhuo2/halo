@@ -74,6 +74,7 @@ pub struct FileMarks {
 pub struct Marks {
     files: HashMap<String, FileMarks>,
     pub clicked: Option<(Kind, String, bool)>,
+    pub run: Option<(String, Option<PathBuf>)>,
     edited: Vec<(PathBuf, usize, isize)>,
 }
 
@@ -518,7 +519,8 @@ impl Testing {
     }
 
     fn debug_test(&mut self, kind: Kind, id: &str, ctx: &egui::Context) {
-        let (Some(root), Some(test)) = (self.root.clone(), self.tests.iter().find(|t| t.kind == kind && t.id == id).cloned()) else { return };
+        let listed = self.tests.iter().find(|t| t.kind == kind && t.id == id).cloned();
+        let (Some(root), Some(test)) = (self.root.clone(), listed.or_else(|| (kind == Kind::Rust).then(|| Test::new(kind, id, id, "", None)))) else { return };
         if kind != Kind::Rust {
             return match tp::debug_config(&test, &root, None) {
                 Ok(config) => self.debug.push(config),
@@ -958,6 +960,11 @@ impl Halo {
         }
         for action in std::mem::take(&mut self.testing.actions) {
             self.testing_act(action, ctx);
+        }
+        if let Some((line, cwd)) = self.editors.tests.run.take() {
+            self.editors.exec(&Command::SaveAll, &self.settings, ctx);
+            self.session.panel = true;
+            self.bottom.run(&line, &self.settings, cwd.as_deref(), ctx);
         }
         if self.testing.dirty {
             self.testing.sync(&mut self.editors.tests);
