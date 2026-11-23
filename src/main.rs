@@ -29,6 +29,7 @@ mod search;
 mod settings;
 mod settings_page;
 mod shortcuts;
+mod sound;
 mod shell_integration;
 mod statusbar;
 mod tasks;
