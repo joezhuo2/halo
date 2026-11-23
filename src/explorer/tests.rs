@@ -141,6 +141,7 @@ fn single_folder_chains_become_one_row() {
     assert_eq!(chain.path, dir.join("a/b/c"));
     assert_eq!(chain.chain, [dir.join("a"), dir.join("a/b"), dir.join("a/b/c")]);
     assert!(explorer.rows[1].chain.is_empty());
+    assert!(!explorer.children.contains_key(&dir.join("x")) && !explorer.children.contains_key(&dir.join("a/b")));
     assert_eq!(explorer.row_of(&dir.join("a/b")), Some(0));
 
     explorer.expand(&dir.join("a/b/c"));
