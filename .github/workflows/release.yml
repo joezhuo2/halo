@@ -43,13 +43,14 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item "target\${{ matrix.target }}\release\halo.exe" "dist\halo-$($env:VERSION)-${{ matrix.name }}.exe"
+          Copy-Item "target\${{ matrix.target }}\release\halo-ide.exe" "dist\halo-$($env:VERSION)-${{ matrix.name }}.exe"
           choco install innosetup --no-progress -y
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$($env:VERSION)" "/DExe=..\target\${{ matrix.target }}\release\halo.exe" installer\halo.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$($env:VERSION)" "/DExe=..\target\${{ matrix.target }}\release\halo-ide.exe" installer\halo.iss
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir dist
+          mv "target/${{ matrix.target }}/release/halo-ide" "target/${{ matrix.target }}/release/halo"
           tar -czf "dist/halo-$VERSION-${{ matrix.name }}.tar.gz" -C "target/${{ matrix.target }}/release" halo
       - uses: actions/upload-artifact@v7
         with:

@@ -562,7 +562,7 @@ with the panel showing a terminal. To repeat it, write a `session.json` for
 your own test folder and run from the repository root:
 
 ```powershell
-.\docs\measure-startup.ps1 -Exe target\release\halo.exe -Session C:\path\to\test-session.json -Runs 5
+.\docs\measure-startup.ps1 -Exe target\release\halo-ide.exe -Session C:\path\to\test-session.json -Runs 5
 ```
 
 The script backs up `%APPDATA%\halo\session.json`, copies the given session

@@ -6,6 +6,10 @@ license = "MIT"
 description = "An ultra-lightweight native code editor"
 repository = "https://github.com/joezhuo2/halo"
 
+[[bin]]
+name = "halo-ide"
+path = "src/main.rs"
+
 [dependencies]
 alacritty_terminal = "0.26.0"
 dirs = "7.0.0"

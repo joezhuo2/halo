@@ -12,7 +12,7 @@ Written 2026-11-21. Read [requirements.md](requirements.md), [decisions.md](deci
 - The window is transparent while Halo starts and is shown once its first frames are drawn (`windows::conceal`), because eframe shows the window before the first painted frame. The window keeps the layered style afterwards.
 - Version 0.1.3 (the interface polish of M7) is on `main`, tagged `v0.1.3`. Its animations, loaders and the timeline are covered by tests where they have logic; none of it was checked by hand in the running app.
 - Version 0.1.2 (the editing features of M6 and auto update) is tagged `v0.1.2`. The Release workflow builds it and leaves a draft GitHub release to publish. Auto update only sees published releases. The M6 features are covered by tests; they were not checked by hand in the running app.
-- Run: `cargo run --release`, or `target\release\halo.exe [folder-or-file]`.
+- Run: `cargo run --release`, or `target\release\halo-ide.exe [folder-or-file]`.
 - Config written by the app: `%APPDATA%\halo\settings.json`, `session.json` and, once opened, `keybindings.json`. eframe also stores window size and position under `%APPDATA%\Halo`.
 
 ## What works (checked by running the app)
