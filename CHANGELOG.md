@@ -6,6 +6,42 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-11-23
+
+Checked with unit tests and fake debug adapters on Windows; not yet tried
+against real adapters.
+
+### Added
+
+- **Several debug sessions at once.** Starting a configuration while
+  another runs starts a second session. The Call Stack groups threads by
+  session, the debug toolbar gets a session picker, and Debug Console lines
+  are tagged with the session name. Variables, Watch, stepping and hover act
+  on the focused session; breakpoint changes go to all of them.
+- **Compound launch configurations:** `compounds` in `launch.json`, with
+  `stopAll` and `preLaunchTask`.
+- **Inline values:** while paused, `name = value` appears after the lines of
+  the current frame. Turn it off with `debug.inlineValues`.
+- **Run to Cursor** and **Jump to Cursor** (set next statement) in the Run
+  menu, the editor context menu and the command palette.
+- **Function breakpoints** from the Breakpoints section's `+` or
+  "Debug: Add Function Breakpoint…", saved per workspace.
+- **Data breakpoints:** "Break on Value Change" on a variable stops when its
+  value changes; they last for the session.
+- **Disassembly view** from the Call Stack or "Debug: Open Disassembly
+  View", with the current instruction highlighted; stepping while it is
+  focused steps one instruction.
+- **Memory view:** "View Binary Data" on a variable, or "Debug: Open Memory
+  View…" with an address or expression, shows a hex dump refreshed on each
+  stop.
+- **Attach to a process:** `${command:pickProcess}` and
+  `${command:pickMyProcess}` in `launch.json` open a filterable list of
+  running processes and fill in the chosen pid.
+
+### Fixed
+
+- A keyboard test could fail at random when the test suite ran in parallel.
+
 ## [0.1.10] - 2026-11-22
 
 Checked with tests and timed startup runs on Windows.

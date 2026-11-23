@@ -325,7 +325,10 @@ what it searches:
   codelldb, lldb-dap, gdb, debugpy and dlv; set others in `debug_adapters`):
   breakpoints with conditions, hit counts and logpoints (`F9`), stepping
   (`F10`, `F11`, `Shift+F11`), variables, watch, call stack, and a Debug
-  Console that evaluates expressions while paused.
+  Console that evaluates expressions while paused. Also inline values, Run
+  and Jump to Cursor, function and data breakpoints, disassembly and memory
+  views, several sessions at once with compound configurations, and a
+  process picker for `${command:pickProcess}`.
 - **Tasks** from `.vscode/tasks.json`, plus npm, yarn, pnpm, bun and cargo
   tasks found in the folder. `Ctrl+Shift+B` runs the build task. Problem
   matchers send compiler errors to the Problems panel.
@@ -450,8 +453,8 @@ The sun or moon at the right end of the status bar also switches the theme.
   only.
 - Call and type hierarchy list one level at a time.
 - New grammars and file associations load when Halo starts.
-- Debugging and testing need the adapter or test tool on `PATH`; one debug
-  session runs at a time.
+- Debugging and testing need the adapter or test tool on `PATH`. Other
+  `${command:...}` variables than the process picker are not supported.
 - Imported icon themes must use SVG or PNG icons, and imported color themes
   must be JSON.
 - No VS Code extensions.
