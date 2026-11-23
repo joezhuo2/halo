@@ -320,6 +320,17 @@ Each of these can be switched off under **Settings > Text Editor**.
   when you press **Start session**. Nothing starts until you ask.
 - If a CLI is missing, the tab offers **Install Claude CLI** or **Install
   Codex CLI**, which runs the official installer in the panel's terminal.
+- **Inline suggestions**: `Alt+\` asks the CLI for a completion at the
+  cursor and shows it as dimmed ghost text, with further lines below the
+  cursor line. `Tab` accepts it, `Ctrl+Right` accepts the next word, `Esc`
+  dismisses it, and typing what it shows keeps the rest. Turn on **Inline
+  Suggestions** in Settings to ask after each pause in typing.
+- **Next edit suggestions**: `Alt+]` asks for the next likely edit in the file
+  from your recent edits. The lines to change are struck through and the new
+  lines shown below them, with an arrow in the gutter; `Tab` jumps there and
+  `Tab` again applies it. **Next Edit Suggestions** in Settings asks after
+  each edit. Both settings are off by default because every request uses the
+  CLI's quota.
 
 ### Search
 
@@ -446,6 +457,8 @@ The defaults follow VS Code:
 | `Ctrl+.` | Quick fix |
 | `Shift+Alt+F` | Format document |
 | `Ctrl+Space` | Trigger suggest |
+| `Alt+\` | Trigger inline suggestion (AI) |
+| `Alt+]` | Suggest next edit (AI) |
 | `Ctrl+Shift+M` | Problems |
 | `Ctrl+B` | Toggle side bar |
 | `Ctrl+J` | Toggle panel |

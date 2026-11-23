@@ -245,6 +245,8 @@ pub enum Command {
     ShowColorPicker,
     TriggerSuggest,
     TriggerParameterHints,
+    TriggerInlineSuggestion,
+    SuggestNextEdit,
     RenameSymbol,
     QuickFix,
     OrganizeImports,
@@ -540,6 +542,8 @@ fn defaults() -> Vec<Binding> {
         e(Modifiers::ALT, Key::F3, ShowNextChange),
         k(NONE, Key::Enter, KeepEditor),
         e(C, Key::Space, TriggerSuggest),
+        e(Modifiers::ALT, Key::Backslash, TriggerInlineSuggestion),
+        e(Modifiers::ALT, Key::CloseBracket, SuggestNextEdit),
         e(C, Key::Period, QuickFix),
         e(NONE, Key::F12, GoToDefinition),
         e(NONE, Key::F2, RenameSymbol),
@@ -741,6 +745,7 @@ pub fn all() -> Vec<Command> {
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, AccessibleDiffViewerNext, AccessibleDiffViewerPrev, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy, CursorWordPartLeft, CursorWordPartRight,
         ShowHover, ShowColorPicker, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
+        TriggerInlineSuggestion, SuggestNextEdit,
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut, RunToCursor, JumpToCursor,
         ToggleBreakpoint, EditBreakpoint, AddFunctionBreakpoint, BreakOnValueChange, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         OpenDisassembly, OpenMemory,
@@ -914,6 +919,7 @@ impl Command {
         match self {
             Self::NewSearchEditor => return "search.action.openNewEditor".into(),
             Self::OpenSearchEditor => return "search.action.openInEditor".into(),
+            Self::TriggerInlineSuggestion => return "editor.action.inlineSuggest.trigger".into(),
             Self::FoldLevel(level) => return format!("foldLevel{level}"),
             _ => {}
         }
@@ -956,6 +962,7 @@ impl Command {
             NewSearchEditor | OpenSearchEditor | RerunSearchEditorSearch | ToggleSearchEditorContextLines | ToggleSearchEditorCaseSensitive
             | ToggleSearchEditorWholeWord | ToggleSearchEditorRegex => "Go",
             ShowHover | ShowColorPicker | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
+            TriggerInlineSuggestion | SuggestNextEdit => "Language",
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_)
             | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
@@ -1212,6 +1219,8 @@ impl Command {
             ShowColorPicker => "Show Color Picker",
             TriggerSuggest => "Trigger Suggest",
             TriggerParameterHints => "Trigger Parameter Hints",
+            TriggerInlineSuggestion => "Trigger Inline Suggestion",
+            SuggestNextEdit => "Suggest Next Edit",
             RenameSymbol => "Rename Symbol",
             QuickFix => "Quick Fix...",
             OrganizeImports => "Organize Imports",

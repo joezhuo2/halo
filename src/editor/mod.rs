@@ -1,3 +1,4 @@
+mod ai_inline;
 mod buffer;
 mod clipboard;
 mod decor;
@@ -311,6 +312,7 @@ pub struct Editors {
     grid: grid::Grid,
     searches: Vec<(u64, std::sync::mpsc::Receiver<String>)>,
     links: md_links::Links,
+    ai: ai_inline::Ai,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -670,6 +672,7 @@ impl Editors {
             grid: Default::default(),
             searches: vec![],
             links: Default::default(),
+            ai: Default::default(),
         }
     }
 
@@ -1072,6 +1075,7 @@ impl Editors {
                 return true;
             }
             _ if self.grid_exec(cmd) || self.search_exec(cmd, settings, ctx) => return true,
+            _ if self.ai_exec(cmd, ctx) => return true,
             _ => {}
         }
         if let Some((g, t)) = self.active_tab().filter(|_| !matches!(cmd, CloseEditor | NextEditor | PrevEditor | KeepEditor))
@@ -1674,6 +1678,7 @@ impl Editors {
         self.poll_merges();
         self.poll_searches();
         self.process(settings, ui.ctx());
+        self.ai_poll(settings, ui.ctx());
         let mut pending = vec![];
         self.area_ui(ui, 0, theme, settings, git, &mut pending);
         self.after_previews();
@@ -2162,6 +2167,7 @@ impl Editors {
             let unit = indent_unit(buf, settings).2;
             self.intel.unit = unit.clone();
             self.popup_keys(&mut events, doc_id, buf, tab);
+            self.ai_keys(&mut events, doc_id, buf, tab);
             self.peek_escape(&mut events, doc_id);
             let release = |e: &Event| matches!(e, Event::Key { key: Key::V, pressed: false, modifiers, .. } if modifiers.matches_exact(egui::Modifiers::COMMAND));
             if hl.language == "Markdown" && !diffed && !buf.read_only && events.iter().any(release) {
@@ -2307,6 +2313,8 @@ impl Editors {
                 Err(at) => pads.insert(at, (line + 1, size)),
             }
         }
+        let ai = if is_active && !diffed { self.ai.shown(doc_id, buf, &tab.sels) } else { None };
+        ai_inline::pad(&mut pads, ai.as_ref());
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         (buf.version, wrap_cols, row_folds, &lens_rows, &pads).hash(&mut hasher);
         if tab.rows.0 != hasher.finish() || tab.rows.1.len() != total + 1 {
@@ -2349,6 +2357,7 @@ impl Editors {
             valign: Align::Center,
             ..Default::default()
         };
+        let ghost_format = ai_inline::ghost_format(&font, theme);
         let lens_font = FontId::proportional((settings.font_size * 0.88).round());
         let (builtin, swatch_s) = (decor::builtin(path.as_deref()), (settings.font_size * 0.7).round());
         let unicode = (settings.unicode_invisible, settings.unicode_ambiguous && !decor::prose(path.as_deref()));
@@ -2445,11 +2454,16 @@ impl Editors {
                             inserts.push((text.char_indices().nth(s.0).map_or(text.len(), |c| c.0), decor::SWATCH));
                             hints.push((s.0, decor::SWATCH.len()));
                         }
+                        let ghost = ai.as_ref().filter(|s| s.line == line && !s.first.is_empty());
                         let from = lang_ref.hints.partition_point(|h| h.line < line);
-                        for hint in lang_ref.hints[from..].iter().take_while(|h| h.line == line && settings.inlay_hints && !crate::a11y::optimized()) {
+                        for hint in lang_ref.hints[from..].iter().take_while(|h| h.line == line && settings.inlay_hints && !crate::a11y::optimized() && ghost.is_none()) {
                             let col = lsp::utf16_to_char(text.chars(), hint.col);
                             inserts.push((text.char_indices().nth(col).map_or(text.len(), |c| c.0), hint.label.as_str()));
                             hints.push((col, hint.label.chars().count()));
+                        }
+                        if let Some(s) = ghost {
+                            inserts.push((text.char_indices().nth(s.col).map_or(text.len(), |c| c.0), s.first.as_str()));
+                            hints.push((s.col, s.first.chars().count()));
                         }
                         inserts.sort_by_key(|i| i.0);
                         hints.sort_by_key(|h| h.0);
@@ -2466,7 +2480,8 @@ impl Editors {
                                 let span = byte(start)..byte(end);
                                 let within: Vec<(usize, &str)> = inserts.iter().filter(|x| x.0 >= span.start && (x.0 < span.end || last)).copied().collect();
                                 let hints = hints.iter().filter(|h| h.0 >= start && (h.0 < end || last)).map(|h| (h.0 - start, h.1)).collect();
-                                let galley = painter.layout_job(style.apply(job(&text, span, hl.get(line), &font, theme.text, &over, &within, &hint_format)));
+                                let format = if ghost.is_some() { &ghost_format } else { &hint_format };
+                                let galley = painter.layout_job(style.apply(job(&text, span, hl.get(line), &font, theme.text, &over, &within, format)));
                                 Piece { start, galley, hints }
                             })
                             .collect();
@@ -2831,6 +2846,9 @@ impl Editors {
                                 }
                             }
                         }
+                        if let Some(s) = &ai {
+                            ai_inline::paint_line(ui, theme, s, line, (start, len, bottom), (first, last, line_h), &at, &spans, (&font, style));
+                        }
                         for (index, piece) in row.pieces.iter().enumerate() {
                             let top = y + index as f32 * line_h + (line_h - piece.galley.size().y) / 2.0;
                             painter.galley(pos2(text_x, top), piece.galley.clone(), theme.text);
@@ -2992,6 +3010,10 @@ impl Editors {
                             let icon = if closed { icons::CARET_RIGHT } else { icons::CARET_DOWN };
                             painter.text(pos2(fold_x + glyph_w / 2.0, y), Align2::CENTER_CENTER, icon, FontId::proportional(settings.font_size - 2.0), theme.text_dim);
                         }
+                    }
+                    if let Some(line) = ai.as_ref().and_then(|s| s.arrow).filter(|l| (first..last).contains(l)) {
+                        let y = origin.y + top_of(line) as f32 * line_h + line_h / 2.0;
+                        painter.text(pos2(clip.left() + bp_w / 2.0 + 1.0, y), Align2::CENTER_CENTER, icons::ARROW_RIGHT, FontId::proportional(settings.font_size), theme.accent);
                     }
                     if let Some(d) = shown.as_mut() {
                         let pad_top = |line: usize| {
