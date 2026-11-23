@@ -188,6 +188,8 @@ pub enum Command {
     PrevChange,
     ShowNextChange,
     ShowPrevChange,
+    AccessibleDiffViewerNext,
+    AccessibleDiffViewerPrev,
     ToggleInlineDiff,
     MarkdownPreview,
     MarkdownPreviewSide,
@@ -496,6 +498,8 @@ fn defaults() -> Vec<Binding> {
         g(Modifiers::ALT, Key::F5, NextChange),
         e(Modifiers::SHIFT, Key::F7, PrevChange),
         e(NONE, Key::F7, NextChange),
+        e(Modifiers::SHIFT, Key::F7, AccessibleDiffViewerPrev),
+        e(NONE, Key::F7, AccessibleDiffViewerNext),
         e(sa, Key::F3, ShowPrevChange),
         e(Modifiers::ALT, Key::F3, ShowNextChange),
         k(NONE, Key::Enter, KeepEditor),
@@ -620,6 +624,10 @@ fn defaults() -> Vec<Binding> {
         b.when = if b.command == StepInto { "inDebugMode" } else { "!inDebugMode" }.to_owned();
         b.cond = crate::when::parse(&b.when).ok().map(Arc::new);
     }
+    for b in list.iter_mut().filter(|b| b.shortcut.logical_key == Key::F7) {
+        b.when = if matches!(b.command, AccessibleDiffViewerNext | AccessibleDiffViewerPrev) { "inDiffEditor" } else { "!inDiffEditor" }.to_owned();
+        b.cond = crate::when::parse(&b.when).ok().map(Arc::new);
+    }
     list
 }
 
@@ -647,7 +655,7 @@ pub fn all() -> Vec<Command> {
         MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
         AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations,
         GoToFile, ShowCommands, FindInFiles, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation, ReopenClosed,
-        KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
+        KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, AccessibleDiffViewerNext, AccessibleDiffViewerPrev, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy,
         ShowHover, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut,
@@ -848,7 +856,7 @@ impl Command {
             | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter | AlignPanelJustify | AlignPanelLeft | AlignPanelRight
             | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
-            | GoForward | GoToLastEditLocation | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
+            | GoForward | GoToLastEditLocation | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | AccessibleDiffViewerNext | AccessibleDiffViewerPrev | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
             ShowHover | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
@@ -1049,6 +1057,8 @@ impl Command {
             PrevChange => "Go to Previous Change",
             ShowNextChange => "Show Next Change",
             ShowPrevChange => "Show Previous Change",
+            AccessibleDiffViewerNext => "Accessible Diff Viewer: Go to Next Difference",
+            AccessibleDiffViewerPrev => "Accessible Diff Viewer: Go to Previous Difference",
             ToggleInlineDiff => "Toggle Inline Diff View",
             MarkdownPreview => "Markdown: Open Preview",
             MarkdownPreviewSide => "Markdown: Open Preview to the Side",

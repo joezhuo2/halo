@@ -115,6 +115,63 @@ fn hunk_in(hunks: &[Hunk], line: usize, left: bool) -> Option<&Hunk> {
     hunks.get(hunks.partition_point(|h| range(h).end <= line)).filter(|h| range(h).contains(&line))
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Viewer {
+    change: usize,
+    line: Option<usize>,
+    focus: bool,
+    heard: Option<(usize, usize)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ViewLine {
+    left: Option<usize>,
+    right: Option<usize>,
+    text: String,
+}
+
+impl ViewLine {
+    fn label(&self) -> String {
+        match (self.left, self.right) {
+            (Some(_), Some(r)) => format!("unchanged line {}: {}", r + 1, self.text),
+            (None, Some(r)) => format!("+ {} inserted line: {}", r + 1, self.text),
+            (l, None) => format!("- {} removed line: {}", l.unwrap_or_default() + 1, self.text),
+        }
+    }
+
+    fn cue(&self) -> Option<crate::sound::Cue> {
+        match (self.left, self.right) {
+            (None, Some(_)) => Some(crate::sound::Cue::Inserted),
+            (Some(_), None) => Some(crate::sound::Cue::Deleted),
+            _ => None,
+        }
+    }
+}
+
+const CONTEXT: usize = 3;
+
+fn change_lines(hunks: &[Hunk], index: usize, right_len: usize, left: impl Fn(usize) -> String, right: impl Fn(usize) -> String) -> Vec<ViewLine> {
+    let Some(h) = hunks.get(index) else { return vec![] };
+    let after = index.checked_sub(1).map_or(0, |i| hunks[i].right.end);
+    let before = hunks.get(index + 1).map_or(right_len, |n| n.right.start).min(right_len);
+    let same = |r: usize, l: usize| ViewLine { left: Some(l), right: Some(r), text: right(r) };
+    let mut out: Vec<ViewLine> = (h.right.start.saturating_sub(CONTEXT).max(after)..h.right.start).map(|r| same(r, h.left.start + r - h.right.start)).collect();
+    out.extend(h.left.clone().map(|l| ViewLine { left: Some(l), right: None, text: left(l) }));
+    out.extend(h.right.clone().map(|r| ViewLine { left: None, right: Some(r), text: right(r) }));
+    out.extend((h.right.end..(h.right.end + CONTEXT).min(before)).map(|r| same(r, h.left.end + r - h.right.end)));
+    out
+}
+
+fn change_header(hunks: &[Hunk], index: usize) -> String {
+    let span = |r: &Range<usize>| match r.len() {
+        0 => "no lines".to_owned(),
+        1 => format!("line {}", r.start + 1),
+        _ => format!("lines {}–{}", r.start + 1, r.end),
+    };
+    let h = &hunks[index];
+    format!("Change {} of {}: {} original, {} modified", index + 1, hunks.len(), span(&h.left), span(&h.right))
+}
+
 pub(super) struct DiffTab {
     pub title: String,
     top: PathBuf,
@@ -129,6 +186,7 @@ pub(super) struct DiffTab {
     seen: (u64, f64),
     job: Option<Receiver<(u64, Model)>>,
     rows: ((u64, usize), Vec<diff::Row>),
+    viewer: Option<Viewer>,
     pub inline: bool,
     pub scroll: f32,
     pub text_top: f32,
@@ -155,6 +213,7 @@ impl DiffTab {
             seen: (0, 0.0),
             job: None,
             rows: ((0, 0), vec![]),
+            viewer: None,
             inline: load.inline,
             scroll: 0.0,
             text_top: 0.0,
@@ -471,6 +530,10 @@ fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, right_len: us
     }
 }
 
+fn dock(d: &DiffTab, body: Rect) -> f32 {
+    if d.viewer.is_some() { ((body.height() - BAR) / 3.0).max(0.0).round() } else { 0.0 }
+}
+
 fn tip(cmd: &Command, ctx: &egui::Context) -> String {
     match command::shortcut_text(ctx, cmd) {
         Some(keys) => format!("{} ({keys})", cmd.label()),
@@ -569,6 +632,7 @@ impl Editors {
             Some((g, t)) => {
                 let tab = &mut self.groups[g].tabs[t];
                 fresh.inline = tab.diff.as_ref().map_or(fresh.inline, |d| d.inline);
+                fresh.viewer = tab.diff.as_ref().and_then(|d| d.viewer);
                 tab.diff = Some(Box::new(fresh));
                 let old = std::mem::replace(&mut tab.doc, doc);
                 if load.focus {
@@ -596,7 +660,8 @@ impl Editors {
         let ctx = ui.ctx().clone();
         d.refresh(&doc.buf, ui.input(|i| i.time), &ctx);
         let bar = Rect::from_min_size(body.min, vec2(body.width(), BAR));
-        let area = body.with_min_y(bar.bottom());
+        let docked = dock(d, body);
+        let area = body.with_min_y(bar.bottom()).with_max_y(body.bottom() - docked);
         let right_col = if d.inline { area } else { area.with_min_x(area.center().x + GAP / 2.0) };
         let painter = ui.painter();
         painter.rect_filled(bar, CornerRadius::ZERO, theme.panel);
@@ -640,12 +705,15 @@ impl Editors {
                 }
             }
         });
+        if docked > 0.0 {
+            self.viewer_ui(ui, body.with_min_y(body.bottom() - docked), theme, doc, tab);
+        }
         right_col
     }
 
     pub(super) fn diff_after(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, settings: &Settings, tab: &mut Tab, pending: &mut Vec<Command>) {
         let Some(d) = tab.diff.as_mut() else { return };
-        let area = body.with_min_y(body.top() + BAR);
+        let area = body.with_min_y(body.top() + BAR).with_max_y(body.bottom() - dock(d, body));
         let starts = &tab.rows.1;
         let Some(rows) = starts.last().map(|r| *r as usize) else { return };
         let font = FontId::monospace(settings.font_size);
@@ -724,6 +792,127 @@ impl Editors {
                 }
             }
         }
+    }
+
+    fn viewer_ui(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, doc: &Doc, tab: &mut Tab) {
+        let Some(d) = tab.diff.as_mut() else { return };
+        let Some(mut v) = d.viewer else { return };
+        let (buf, hunks) = (&doc.buf, &d.model.hunks);
+        if hunks.is_empty() {
+            d.viewer = None;
+            self.want_focus = true;
+            return;
+        }
+        if v.focus {
+            self.want_focus = false;
+        }
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect_filled(rect, CornerRadius::ZERO, theme.panel);
+        painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, theme.border));
+        let last = buf.lines() - 1;
+        let right_len = if buf.rope.line(last).len_chars() == 0 { last } else { last + 1 };
+        let lines_of = |change: usize| change_lines(hunks, change, right_len, |l| line_text(&d.rope, l), |r| buf.line_text(r));
+        let first = |lines: &[ViewLine]| lines.iter().position(|l| l.left.is_none() || l.right.is_none()).unwrap_or(0);
+        v.change = v.change.min(hunks.len() - 1);
+        let mut lines = lines_of(v.change);
+        let mut line = v.line.unwrap_or_else(|| first(&lines)).min(lines.len().saturating_sub(1));
+        let base = Id::new(("diff_viewer", &d.title));
+        let (mut close, mut jump) = (false, false);
+        if let Some(k) = ui.memory(|m| m.focused()).and_then(|id| (0..lines.len()).find(|k| base.with(*k) == id)) {
+            line = k;
+            let filter = egui::EventFilter { tab: false, horizontal_arrows: false, vertical_arrows: true, escape: true };
+            ui.memory_mut(|m| m.set_focus_lock_filter(base.with(line), filter));
+            let step = ui.input_mut(|i| match (i.consume_key(egui::Modifiers::SHIFT, Key::F7), i.consume_key(egui::Modifiers::NONE, Key::F7)) {
+                (true, _) => Some(hunks.len() - 1),
+                (_, true) => Some(1),
+                _ => None,
+            });
+            if let Some(step) = step {
+                v.change = (v.change + step) % hunks.len();
+                lines = lines_of(v.change);
+                (line, v.focus) = (first(&lines), true);
+            }
+            ui.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) {
+                    (line, v.focus) = ((line + 1).min(lines.len() - 1), true);
+                }
+                if i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) {
+                    (line, v.focus) = (line.saturating_sub(1), true);
+                }
+                jump = i.consume_key(egui::Modifiers::NONE, Key::Enter);
+                close = i.consume_key(egui::Modifiers::NONE, Key::Escape);
+            });
+        }
+        let header = Rect::from_min_size(rect.min + vec2(0.0, 1.0), vec2(rect.width(), 26.0));
+        let title = change_header(hunks, v.change);
+        ui.scope_builder(UiBuilder::new().max_rect(header.shrink2(vec2(8.0, 0.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
+            close |= ui::icon_button(ui, theme, icons::X, 22.0, false, "Close (Escape)").clicked();
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| ui.add(egui::Label::new(RichText::new(&title).size(12.0).color(theme.text)).truncate()));
+        });
+        let size = self.config.font_size;
+        let (font, number_font) = (FontId::monospace(size), FontId::monospace(size - 1.0));
+        let char_w = ui.ctx().fonts_mut(|f| f.glyph_width(&font, 'm'));
+        let row_h = (size * 1.35).round();
+        let digits = right_len.max(d.rope.len_lines()).to_string().len().max(3) as f32 * char_w;
+        let focus = std::mem::take(&mut v.focus);
+        let mut clicked = None;
+        ui.scope_builder(UiBuilder::new().max_rect(rect.with_min_y(header.bottom())).id_salt(base.with("list")), |ui| {
+            egui::ScrollArea::vertical().id_salt(base.with("scroll")).auto_shrink(false).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (k, l) in lines.iter().enumerate() {
+                    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
+                    let resp = ui.interact(row, base.with(k), Sense::click());
+                    let color = match (l.left, l.right) {
+                        (None, _) => Some(theme.added),
+                        (_, None) => Some(theme.deleted),
+                        _ => None,
+                    };
+                    if let Some(color) = color {
+                        ui.painter().rect_filled(row, CornerRadius::ZERO, ui::with_alpha(color, 0.2));
+                    }
+                    ui::row_bg(ui, theme, row, resp.id, resp.hovered(), k == line);
+                    let (x, y) = (row.left() + 8.0, row.center().y);
+                    for (n, at) in [(l.left, x + digits), (l.right, x + 2.0 * digits + 8.0)] {
+                        if let Some(n) = n {
+                            ui.painter().text(pos2(at, y), Align2::RIGHT_CENTER, n + 1, number_font.clone(), theme.text_dim);
+                        }
+                    }
+                    let marker = if l.left.is_none() { "+" } else if l.right.is_none() { "-" } else { " " };
+                    let text_x = x + 2.0 * digits + 20.0;
+                    ui.painter().text(pos2(text_x, y), Align2::LEFT_CENTER, marker, font.clone(), color.unwrap_or(theme.text_dim));
+                    let shown: String = l.text.chars().take(MAX_COLS).collect();
+                    ui.painter().text(pos2(text_x + 2.0 * char_w, y), Align2::LEFT_CENTER, shown, font.clone(), theme.text);
+                    ui::list_item(ui, &resp, &l.label(), k == line, (k, lines.len()));
+                    if resp.clicked() {
+                        clicked = Some(k);
+                    }
+                    if focus && k == line {
+                        resp.request_focus();
+                        resp.scroll_to_me(None);
+                        ui.ctx().request_repaint();
+                    }
+                }
+            });
+        });
+        if let Some(k) = clicked {
+            (line, v.focus) = (k, true);
+            ui.ctx().request_repaint();
+        }
+        if Some((v.change, line)) != v.heard {
+            v.heard = Some((v.change, line));
+            if let Some(cue) = lines.get(line).and_then(ViewLine::cue) {
+                crate::sound::play(&self.config, cue);
+            }
+        }
+        let h = &hunks[v.change];
+        let target = lines.get(line).map(|l| l.right.unwrap_or_else(|| h.right.start + (l.left.unwrap_or_default() - h.left.start).min(h.right.len().saturating_sub(1))));
+        v.line = Some(line);
+        d.viewer = (!close && !jump).then_some(v);
+        if jump && let Some(r) = target {
+            let pos = buf.line_start(r);
+            (tab.sels, tab.reveal) = (vec![Sel::caret(pos)], Some(pos));
+        }
+        self.want_focus |= close || jump;
     }
 
     pub(super) fn change_anchor(&mut self, doc: u64, buf: &Document) -> Option<usize> {
@@ -843,6 +1032,27 @@ impl Editors {
 
     pub(super) fn diff_exec(&mut self, cmd: &Command, ctx: &egui::Context) -> bool {
         use Command::*;
+        if matches!(cmd, AccessibleDiffViewerNext | AccessibleDiffViewerPrev) {
+            let forward = *cmd == AccessibleDiffViewerNext;
+            let Some((g, t)) = self.active_tab() else { return true };
+            let tab = &mut self.groups[g].tabs[t];
+            let line = self.docs.get(&tab.doc).map_or(0, |doc| doc.buf.line_of(tab.sels.first().map_or(0, |s| s.head)));
+            let Some(d) = tab.diff.as_mut() else {
+                let next = if forward { NextChange } else { PrevChange };
+                return self.merge_exec(&next, ctx) || self.diff_exec(&next, ctx);
+            };
+            let count = d.model.hunks.len();
+            let change = match d.viewer {
+                _ if count == 0 => {
+                    self.banner = notice("No changes.".to_owned());
+                    return true;
+                }
+                Some(v) => (v.change + if forward { 1 } else { count - 1 }) % count,
+                None => diff::hunk_at(&d.model.hunks, line).or_else(|| diff::step(&d.model.hunks, line, forward)).unwrap_or(0),
+            };
+            d.viewer = Some(Viewer { change, focus: true, ..Viewer::default() });
+            return true;
+        }
         let ranged = matches!(cmd, StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges);
         if !ranged && !matches!(cmd, NextChange | PrevChange | ShowNextChange | ShowPrevChange | ToggleInlineDiff | StageHunk | RevertHunk | UnstageHunk) {
             return false;
@@ -1183,6 +1393,84 @@ mod tests {
         settle(&ctx, &mut editors, "the unstaged hunk", |_| !cached(&dir).contains("TWO"));
         assert!(cached(&dir).contains("+thirteen"));
         settle(&ctx, &mut editors, "the reloaded staged diff", |e| hunks(e) == 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lists_each_change_with_context_and_screen_reader_labels() {
+        let (left, right) = ("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n", "a\nB\nc\nd\ne\nf\ng\nh\nj\nk\nl\n");
+        let m = model(left, right);
+        let (a, b) = (diff::split(left), diff::split(right));
+        let text = |lines: &[&str], at: usize| lines[at].trim_end_matches('\n').to_owned();
+        let lines = |index| change_lines(&m.hunks, index, b.len(), |l| text(&a, l), |r| text(&b, r));
+        assert_eq!(m.hunks.len(), 3);
+        let first: Vec<String> = lines(0).iter().map(ViewLine::label).collect();
+        assert_eq!(first, ["unchanged line 1: a", "- 2 removed line: b", "+ 2 inserted line: B", "unchanged line 3: c", "unchanged line 4: d", "unchanged line 5: e"]);
+        assert_eq!(change_header(&m.hunks, 0), "Change 1 of 3: line 2 original, line 2 modified");
+        let second = lines(1);
+        assert_eq!(second.iter().map(|l| (l.left, l.right)).collect::<Vec<_>>(), [(Some(5), Some(5)), (Some(6), Some(6)), (Some(7), Some(7)), (Some(8), None), (Some(9), Some(8))]);
+        assert_eq!(second[3].label(), "- 9 removed line: i");
+        assert_eq!((second[3].cue(), second[0].cue()), (Some(crate::sound::Cue::Deleted), None));
+        assert_eq!(change_header(&m.hunks, 1), "Change 2 of 3: line 9 original, no lines modified");
+        let third = lines(2);
+        assert_eq!(third.iter().map(ViewLine::label).collect::<Vec<_>>(), ["unchanged line 9: j", "+ 10 inserted line: k", "+ 11 inserted line: l"]);
+        assert_eq!(third[1].cue(), Some(crate::sound::Cue::Inserted));
+        assert_eq!(change_header(&m.hunks, 2), "Change 3 of 3: no lines original, lines 10–11 modified");
+        assert!(lines(3).is_empty());
+    }
+
+    fn key(key: Key, shift: bool) -> Event {
+        Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: if shift { egui::Modifiers::SHIFT } else { Default::default() } }
+    }
+
+    #[test]
+    fn f7_opens_the_accessible_diff_viewer_and_enter_jumps_to_the_line() {
+        let ctx = egui::Context::default();
+        let dir = repo("viewer", "one\ntwo\nthree\nfour\n");
+        std::fs::write(dir.join("a.txt"), "one\nTWO\nthree\nfour\nfive\n").unwrap();
+        let mut editors = Editors::new();
+        assert!(editors.compare("a.txt (changes)", &strings(&["diff", "--", "a.txt"]), &dir, false, &ctx));
+        settle(&ctx, &mut editors, "the diff tab", |e| e.active_tab().is_some_and(|(g, t)| e.groups[g].tabs[t].diff.is_some()));
+        frame(&ctx, &mut editors, vec![]);
+        let mut keys = serde_json::Map::new();
+        editors.when_keys(&mut keys);
+        command::set_context(keys);
+        let viewer = |e: &Editors| active(e).0.diff.as_ref().unwrap().viewer;
+        let press = |editors: &mut Editors, event: Event| {
+            frame(&ctx, editors, vec![event]);
+            frame(&ctx, editors, vec![]);
+            frame(&ctx, editors, vec![]);
+        };
+        frame(&ctx, &mut editors, vec![key(Key::F7, false)]);
+        assert_eq!(viewer(&editors).map(|v| v.change), Some(0));
+        ctx.enable_accesskit();
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 600.0))), focused: true, ..Default::default() };
+        let (theme, git, settings) = (Theme::dark(), crate::git::Git::new(), Settings::default());
+        let mut out = ctx.run_ui(input, |ui| editors.ui(ui, &theme, &settings, &git, &mut vec![]));
+        let nodes = crate::a11y::tree(&mut out);
+        let mut labels: Vec<&str> = nodes.iter().filter(|n| n.role() == ui::Role::ListItem).filter_map(|n| n.label()).filter(|l| l.contains(" line")).collect();
+        labels.sort();
+        assert_eq!(labels, ["+ 2 inserted line: TWO", "- 2 removed line: two", "unchanged line 1: one", "unchanged line 3: three", "unchanged line 4: four"]);
+        let base = Id::new(("diff_viewer", "a.txt (changes)"));
+        assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(1)));
+        frame(&ctx, &mut editors, vec![]);
+        press(&mut editors, key(Key::ArrowDown, false));
+        assert_eq!(viewer(&editors).and_then(|v| v.line), Some(2));
+        assert_eq!(ctx.memory(|m| m.focused()), Some(base.with(2)));
+        press(&mut editors, key(Key::F7, false));
+        assert_eq!(viewer(&editors).map(|v| (v.change, v.line)), Some((1, Some(2))));
+        press(&mut editors, key(Key::F7, true));
+        assert_eq!(viewer(&editors).map(|v| (v.change, v.line)), Some((0, Some(1))));
+        press(&mut editors, key(Key::F7, true));
+        press(&mut editors, key(Key::Enter, false));
+        assert!(viewer(&editors).is_none());
+        assert_eq!(caret_line(&editors), 4);
+        assert!(editors.has_focus());
+        press(&mut editors, key(Key::F7, false));
+        assert_eq!(viewer(&editors).map(|v| v.change), Some(1));
+        press(&mut editors, key(Key::Escape, false));
+        assert!(viewer(&editors).is_none() && editors.has_focus());
+        command::set_context(Default::default());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
