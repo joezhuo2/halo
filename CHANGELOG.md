@@ -6,6 +6,36 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-11-23
+
+Checked with unit tests and headless UI tests against temporary repositories
+on Windows; the `gh` review calls and the `claude`/`codex` message calls have
+not yet been run against the real services.
+
+### Added
+
+- **Interactive rebase** from a commit in the graph ("Interactive Rebase
+  from Here...") or "Git: Interactive Rebase...": reorder commits by
+  dragging or with `Alt+Up`/`Alt+Down`, and set pick, reword, edit, squash,
+  fixup or drop per commit. Edit stops and conflicts use the existing
+  Continue, Abort and Skip controls.
+- **Compare branches or commits:** "Git: Compare References...", "Compare
+  with..." on a graph commit, or "Compare Branch with..." in the branch
+  menu lists the files changed between any two refs; click one for its
+  diff. Switch between two-dot and three-dot.
+- **Incoming and Outgoing Changes** rows with counts above the commit graph
+  (click to pull or push), and markers on commits not yet pulled or pushed.
+- **Hover blame:** hover the inline blame or the status bar blame item for
+  the full commit message, Open Changes, and Open on GitHub, GitLab or
+  Bitbucket. Also "Git: Open Current Line's Commit on Remote".
+- **Generate commit message** from the staged changes (or all changes) with
+  the Claude or Codex CLI, from the sparkle button next to Commit or "Git:
+  Generate Commit Message". Click again to cancel.
+- **Pull request review in the diff:** "Review in Diff" on a pull request
+  opens its changed files as diff tabs with its review threads on their
+  lines. Reply, resolve or unresolve threads, and comment on any line with
+  the hover `+` or "Pull Request: Add Comment on Line".
+
 ## [0.1.11] - 2026-11-23
 
 Checked with unit tests and fake debug adapters on Windows; not yet tried
@@ -558,7 +588,9 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/joezhuo2/halo/compare/v0.1.11...v0.1.12
+[0.1.11]: https://github.com/joezhuo2/halo/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/joezhuo2/halo/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/joezhuo2/halo/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/joezhuo2/halo/compare/v0.1.7...v0.1.8

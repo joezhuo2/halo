@@ -262,18 +262,26 @@ Each of these can be switched off under **Settings > Text Editor**.
   `Ctrl+Enter`. Amend, or undo the last commit.
 - Switch or create branches, push, pull, fetch, and synchronize from the
   status bar. Merge, rebase and cherry-pick, with Continue, Abort and Skip
-  while one is in progress.
+  while one is in progress. **Interactive rebase** to reorder, reword,
+  squash, fixup, edit or drop commits.
+- **Compare** any two branches, tags or commits and open each changed file's
+  diff.
+- **Generate a commit message** from your changes with the Claude or Codex
+  CLI.
 - Tags, remotes, worktrees, Clone and Initialize Repository, and a Stashes
   section with Show, Apply, Pop and Drop.
 - **Blame** for the current line in the status bar, and inline on the caret
-  line if you turn it on.
+  line if you turn it on. Hover it for the full commit message and a link to
+  the commit on GitHub, GitLab or Bitbucket.
 - The stashes, changes, pull requests and commits sections can be minimized,
   and resized by dragging the line between them. Commits load 10 at a time
   as you scroll.
 - **Commit graph** with lanes and branch labels. Click a commit to list its
-  files, and a file to open its diff.
+  files, and a file to open its diff. Incoming and outgoing commits are shown
+  before you pull or push.
 - **Pull requests** through the `gh` CLI: list, create, check out, approve,
-  request changes and comment.
+  request changes and comment. Review in Diff shows review threads on their
+  lines, where you can comment, reply and resolve.
 - **Accounts:** list and switch the GitHub accounts `gh` is signed in to.
 - Repositories nested inside the open folder are listed and can be selected.
 
