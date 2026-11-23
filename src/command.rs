@@ -383,6 +383,8 @@ pub enum GitCommand {
     PopStash,
     DropStash,
     ShowStash,
+    InteractiveRebase,
+    Compare,
 }
 
 impl GitCommand {
@@ -393,6 +395,7 @@ impl GitCommand {
         Self::RemoteUrl, Self::Fetch, Self::FetchPrune, Self::FetchAll, Self::Pull, Self::Push, Self::Clone,
         Self::Init, Self::Worktrees, Self::AddWorktree, Self::RemoveWorktree, Self::OpenWorktree,
         Self::Stash, Self::ApplyStash, Self::PopStash, Self::DropStash, Self::ShowStash,
+        Self::InteractiveRebase, Self::Compare,
     ];
 
     pub fn label(self) -> &'static str {
@@ -432,6 +435,8 @@ impl GitCommand {
             Self::PopStash => "Git: Pop Stash...",
             Self::DropStash => "Git: Drop Stash...",
             Self::ShowStash => "Git: Show Stash Changes...",
+            Self::InteractiveRebase => "Git: Interactive Rebase...",
+            Self::Compare => "Git: Compare References...",
         }
     }
 }

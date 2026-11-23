@@ -34,7 +34,7 @@ fn entry(ui: &mut Ui, op: Op, cmds: &mut Vec<Command>) {
 
 pub(super) fn menu(ui: &mut Ui, git: &Git, cmds: &mut Vec<Command>) {
     use Op::*;
-    for op in [AmendMessage, Merge, Rebase, CherryPick, Stash, PopStash, Tags, Remotes, Worktrees, Clone] {
+    for op in [AmendMessage, Merge, Rebase, InteractiveRebase, CherryPick, Compare, Stash, PopStash, Tags, Remotes, Worktrees, Clone] {
         entry(ui, op, cmds);
     }
     if git.details().and_then(|d| d.as_ref().ok()).is_some_and(|d| d.has_parent && d.operation.is_none()) {
@@ -69,7 +69,7 @@ fn choices(op: Op, git: &Git, d: &ops::Details) -> Choices {
     match op {
         Merge | Rebase => git.branches().iter().filter(|b| Some(b.as_str()) != git.branch())
             .map(|b| (b.clone(), b.clone())).collect(),
-        CherryPick | BranchAt => git.log().iter().map(|c| {
+        CherryPick | BranchAt | InteractiveRebase => git.log().iter().map(|c| {
             (c.hash.clone(), format!("{}  {}", &c.hash[..8.min(c.hash.len())], c.subject))
         }).collect(),
         Tags | PushTag | DeleteTag => d.tags.iter().map(|t| (t.clone(), t.clone())).collect(),
@@ -108,6 +108,9 @@ impl Scm {
             git.init();
             return;
         }
+        if op == Compare {
+            return self.compare_start(target, git, ctx);
+        }
         git.request_details(ctx);
         let Some(result) = git.details() else {
             if git.loading() {
@@ -122,7 +125,7 @@ impl Scm {
             Err(e) => { git.set_error(e.clone()); return; }
         };
         let top = git.top().unwrap().to_path_buf();
-        if d.operation.is_some() && matches!(op, Amend | UndoCommit | Merge | Rebase | CherryPick) {
+        if d.operation.is_some() && matches!(op, Amend | UndoCommit | Merge | Rebase | CherryPick | InteractiveRebase) {
             git.set_error("Finish the current Git operation first.".into());
             return;
         }
@@ -172,6 +175,7 @@ impl Scm {
                     Rebase => git.act(&[&["rebase", "--", &target]]),
                     CherryPick => git.act(&[&["cherry-pick", "--", &target]]),
                     BranchAt => self.ops.dialog = Some(Dialog::Form(op, target, String::new(), String::new())),
+                    InteractiveRebase => self.rebase = Some(super::rebase::Editor::open(&top, target, ctx)),
                     PushTag => self.choose_remote(op, target, git),
                     RemoteUrl => {
                         if let Some(r) = d.remotes.iter().find(|r| r.name == target) {
@@ -335,7 +339,7 @@ impl Scm {
                     ui::outline(ui);
                     ui.set_width(400.0);
                     ui.heading(op.label());
-                    let reference = matches!(op, Op::CherryPick | Op::BranchAt);
+                    let reference = matches!(op, Op::CherryPick | Op::BranchAt | Op::InteractiveRebase);
                     if reference {
                         ui.add(egui::TextEdit::singleline(revision).hint_text("Commit hash or reference"));
                         let valid = !revision.trim().is_empty();

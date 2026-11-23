@@ -389,7 +389,7 @@ fn log_page(root: &Path, upstream: bool, skip: usize, count: usize) -> Vec<Commi
     parse_log(&run(root, &log[..7 + upstream as usize]).or_else(|| run(root, &log[..7])).unwrap_or_default())
 }
 
-fn parse_name_status(text: &str) -> Vec<Change> {
+pub fn parse_name_status(text: &str) -> Vec<Change> {
     let mut out = vec![];
     let mut parts = text.split('\0');
     while let (Some(code), Some(mut path)) = (parts.next(), parts.next()) {
