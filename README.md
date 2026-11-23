@@ -563,6 +563,25 @@ open files and the terminals have loaded, which happens right after the window
 appears; the folder check and the syntax definitions load on a background
 thread. The session file is not written until the restore has finished.
 
+Median of 5 runs per row, v0.1.8 against the v0.1.10 startup changes on top
+of it, both run as `halo-ide.exe`:
+
+| Session | Window on screen | Settled | Working set | Private bytes |
+| --- | --- | --- | --- | --- |
+| No folder: v0.1.8 | 458 ms | 983 ms | 107.8 MB | 131.9 MB |
+| No folder: v0.1.10 | 426 ms | 956 ms | 108.0 MB | 132.5 MB |
+| 5 folders, 25 tabs: v0.1.8 | 445 ms | 1252 ms | 138.0 MB | 122.0 MB |
+| 5 folders, 25 tabs: v0.1.10 | 429 ms | 1048 ms | 134.8 MB | 117.6 MB |
+| 20 folders, 50 tabs: v0.1.8 | 456 ms | 1654 ms | 160.8 MB | 145.2 MB |
+| 20 folders, 50 tabs: v0.1.10 | 447 ms | 1166 ms | 140.8 MB | 124.8 MB |
+| 20 folders, no tabs: v0.1.8 | 455 ms | 1380 ms | 109.9 MB | 113.4 MB |
+| 20 folders, no tabs: v0.1.10 | 447 ms | 948 ms | 106.5 MB | 109.1 MB |
+
+The large sessions use generated folders of about 5,000 files each, and tabs
+of up to 8 MB. Run as `halo.exe`, the same v0.1.8 build took 3.8 s to show
+the window and 260-300 MB private bytes, because the NVIDIA driver puts any
+`halo.exe` on the discrete GPU through a game profile.
+
 Median of 5 runs per row, v0.1.7 against v0.1.8:
 
 | Session | Window on screen | Settled | Working set | Private bytes |

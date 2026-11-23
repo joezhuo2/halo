@@ -6,6 +6,33 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-11-22
+
+Checked with tests and timed startup runs on Windows.
+
+### Changed
+
+- **The Windows program is now `halo-ide.exe`.** The NVIDIA driver ran any
+  `halo.exe` on the discrete GPU through a game profile, which cost about
+  3 s at startup and 100-150 MB of memory. The installer installs the new
+  name and removes the old one; shortcuts pinned to `halo.exe` need pinning
+  again. Linux and macOS archives still contain `halo`.
+- **Faster startup with many or large workspace folders.** The explorer no
+  longer reads collapsed folders in full, folders without their own settings
+  file reuse the base settings, and shell profiles are probed once instead
+  of on every settings load. A session with 20 folders and 50 tabs settles
+  in 1.17 s instead of 1.65 s.
+- **Restored tabs load their file when first shown,** so a session with many
+  open tabs uses 15-20 MB less memory. A tab not yet shown shows a spinner
+  for one frame the first time you switch to it.
+- **Explorer refresh** after a save or a finished terminal command skips
+  folders that have not changed.
+
+### Fixed
+
+- The Windows installer's folder for the `halo` command held a stray control
+  character where `\bin` belonged.
+
 ## [0.1.9] - 2026-11-22
 
 Checked with tests on Windows. Not yet tried by hand in the running app or
@@ -495,7 +522,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/joezhuo2/halo/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/joezhuo2/halo/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/joezhuo2/halo/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/joezhuo2/halo/compare/v0.1.6...v0.1.7
