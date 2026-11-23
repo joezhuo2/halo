@@ -1,5 +1,9 @@
 #[path = "scm_ops.rs"]
 mod ops;
+#[path = "scm_rebase.rs"]
+mod rebase;
+#[path = "scm_compare.rs"]
+mod compare;
 
 use crate::command::{Command, GitCommand};
 use crate::explorer::{file_icon, state_badge, state_color};
@@ -53,6 +57,8 @@ pub struct Scm {
     review: Option<(u64, bool, String)>,
     new_pr: Option<(String, String)>,
     ops: ops::Ops,
+    rebase: Option<rebase::Editor>,
+    compare: compare::Compare,
     ai: Option<crate::commit_ai::Job>,
 }
 
@@ -61,6 +67,7 @@ impl Scm {
         Self {
             open: [true; 3], sizes: [None; 4], message: String::new(), committing: false, discard: None,
             new_branch: None, commit: None, review: None, new_pr: None, ops: ops::Ops::default(), ai: None,
+            rebase: None, compare: compare::Compare::default(),
         }
     }
 
@@ -68,6 +75,8 @@ impl Scm {
         ui.spacing_mut().item_spacing.y = 0.0;
         ui::section_header(ui, theme, "Source Control");
         self.operation_dialogs(ui, theme, git, cmds);
+        self.rebase_dialog(ui, theme, git);
+        self.compare_picker(ui, theme, git);
         let mut action = None;
         repositories(ui, theme, git, &mut action);
         let Some(top) = git.top().map(Path::to_path_buf) else {
@@ -193,7 +202,10 @@ impl Scm {
                     match i {
                         0 => changes(ui, theme, git, &top, &mut action, cmds),
                         1 => pull_requests(ui, theme, git, busy, &mut action, cmds),
-                        _ => graph(ui, theme, git, self.commit.as_deref(), &mut action, cmds),
+                        _ => {
+                            self.compare_view(ui, theme, git, cmds);
+                            graph(ui, theme, git, self.commit.as_deref(), &mut action, cmds);
+                        }
                     }
                 });
             });
@@ -450,6 +462,9 @@ fn toolbar(ui: &mut Ui, theme: &Theme, git: &Git, action: &mut Option<Action>, c
                     if ui.button("Create Branch...").clicked() {
                         *action = Some(Action::NewBranch);
                     }
+                    if ui.button("Compare Branch with...").clicked() {
+                        cmds.push(Command::GitAt(GitCommand::Compare, branch.to_owned()));
+                    }
                 })
                 .0
                 .on_hover_text("Switch branch");
@@ -584,7 +599,8 @@ fn graph(
         resp.context_menu(|ui| {
             ui::menu_pad(ui);
             for (op, label) in [(GitCommand::CherryPick, "Cherry Pick..."), (GitCommand::CreateTag, "Create Tag Here..."),
-                (GitCommand::BranchAt, "Create Branch Here...")] {
+                (GitCommand::BranchAt, "Create Branch Here..."), (GitCommand::InteractiveRebase, "Interactive Rebase from Here..."),
+                (GitCommand::Compare, "Compare with...")] {
                 if ui.add_enabled(!git.busy(), egui::Button::new(label)).clicked() {
                     cmds.push(Command::GitAt(op, commit.hash.clone()));
                     ui.close();

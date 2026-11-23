@@ -397,7 +397,7 @@ fn parse_sides(text: &str) -> HashMap<String, bool> {
     }).collect()
 }
 
-fn parse_name_status(text: &str) -> Vec<Change> {
+pub fn parse_name_status(text: &str) -> Vec<Change> {
     let mut out = vec![];
     let mut parts = text.split('\0');
     while let (Some(code), Some(mut path)) = (parts.next(), parts.next()) {

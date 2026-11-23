@@ -67,7 +67,8 @@ impl Spec {
             Some("") => "Index".to_owned(),
             Some(rev) => {
                 let (hash, parent) = rev.strip_suffix('^').map_or((rev, ""), |hash| (hash, "^"));
-                format!("{}{parent}", &hash[..hash.len().min(8)])
+                let hash = if hash.len() > 8 && hash.bytes().all(|b| b.is_ascii_hexdigit()) { &hash[..8] } else { hash };
+                format!("{hash}{parent}")
             }
         }
     }
@@ -1194,6 +1195,10 @@ mod tests {
         let revs = Spec::parse(&strings(&["diff", "base1", "head2", "--", "c.rs"])).unwrap();
         assert_eq!((revs.left.as_str(), revs.right.as_deref(), revs.side()), ("base1", Some("head2"), Side::Fixed));
         assert!(Spec::parse(&strings(&["diff", "--stat", "head2", "--", "c.rs"])).is_none());
+        let compared = Spec::parse(&strings(&["diff", "main", "feature/é-long", "--", "c.rs"])).unwrap();
+        assert_eq!((compared.left.as_str(), compared.right.as_deref(), compared.side()), ("main", Some("feature/é-long"), Side::Fixed));
+        assert_eq!(Spec::label(compared.right.as_deref()), "feature/é-long");
+        assert!(Spec::parse(&strings(&["diff", "--stat", "main", "--", "c.rs"])).is_none());
         assert!(Spec::parse(&strings(&["log", "--", "a"])).is_none());
         assert!(Spec::parse(&strings(&["diff", "--", "a", "b"])).is_none());
     }
