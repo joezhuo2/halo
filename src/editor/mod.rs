@@ -1,4 +1,5 @@
 mod buffer;
+mod decor;
 pub mod diff;
 mod diff_view;
 mod emmet;
@@ -442,11 +443,13 @@ fn job(
     cuts.sort_unstable();
     cuts.dedup();
     let mut job = LayoutJob::default();
+    let swatch = TextFormat { color: Color32::TRANSPARENT, background: Color32::TRANSPARENT, ..hint.clone() };
+    let format = |label: &str| if label == decor::SWATCH { swatch.clone() } else { hint.clone() };
     let (mut b, mut o, mut i) = (0, 0, 0);
     for pair in cuts.windows(2) {
         let (from, to) = (pair[0], pair[1]);
         while i < inserts.len() && inserts[i].0 <= from {
-            job.append(inserts[i].1, 0.0, hint.clone());
+            job.append(inserts[i].1, 0.0, format(inserts[i].1));
             i += 1;
         }
         while b < base.len() && base[b].0 <= from {
@@ -462,7 +465,7 @@ fn job(
         job.append(&text[from..to], 0.0, TextFormat::simple(font.clone(), shade));
     }
     for insert in &inserts[i..] {
-        job.append(insert.1, 0.0, hint.clone());
+        job.append(insert.1, 0.0, format(insert.1));
     }
     job
 }
@@ -984,6 +987,10 @@ impl Editors {
                 for id in ids {
                     self.save_doc(id, false);
                 }
+                return true;
+            }
+            ShowColorPicker => {
+                self.intel.pick_caret = true;
                 return true;
             }
             _ if self.grid_exec(cmd) => return true,
@@ -2216,6 +2223,10 @@ impl Editors {
             ..Default::default()
         };
         let lens_font = FontId::proportional((settings.font_size * 0.88).round());
+        let (builtin, swatch_s) = (decor::builtin(path.as_deref()), (settings.font_size * 0.7).round());
+        let unicode = (settings.unicode_invisible, settings.unicode_ambiguous && !decor::prose(path.as_deref()));
+        let pick_caret = is_active && std::mem::take(&mut self.intel.pick_caret);
+        let mut picked = None;
         let (mut activated, mut touched, mut pressed_text) = (false, false, false);
         let (mut caret_at, mut hover_at, mut peek_y, mut over_word, mut lens_open) = (None, None, None, None, None);
         let (mut over_problem, mut ctrl_span) = (None, None);
@@ -2286,12 +2297,20 @@ impl Editors {
                             over.dedup_by(|next, kept| next.0 < kept.1);
                         }
                         let (mut inserts, mut hints) = (vec![], vec![]);
+                        let swatches = if settings.color_decorators { decor::swatches(&text, line, lang_ref, builtin) } else { vec![] };
+                        for s in &swatches {
+                            inserts.push((text.char_indices().nth(s.0).map_or(text.len(), |c| c.0), decor::SWATCH));
+                            hints.push((s.0, decor::SWATCH.len()));
+                        }
                         let from = lang_ref.hints.partition_point(|h| h.line < line);
                         for hint in lang_ref.hints[from..].iter().take_while(|h| h.line == line && settings.inlay_hints && !crate::a11y::optimized()) {
                             let col = lsp::utf16_to_char(text.chars(), hint.col);
                             inserts.push((text.char_indices().nth(col).map_or(text.len(), |c| c.0), hint.label.as_str()));
                             hints.push((col, hint.label.chars().count()));
                         }
+                        inserts.sort_by_key(|i| i.0);
+                        hints.sort_by_key(|h| h.0);
+                        let odd = if unicode.0 || unicode.1 { decor::flags(&text, unicode.0, unicode.1, line == 0) } else { vec![] };
                         let len = text.chars().count();
                         let mut cuts = vec![0];
                         if let Some(cols) = wrap_cols {
@@ -2308,7 +2327,7 @@ impl Editors {
                                 Piece { start, galley, hints }
                             })
                             .collect();
-                        Row { len, pieces }
+                        Row { len, pieces, swatches, odd }
                     };
                     let hit = |painter: &egui::Painter, pos: Pos2| -> usize {
                         let (line, lens, piece) = row_at(pos.y);
@@ -2316,6 +2335,17 @@ impl Editors {
                             return buf_ref.line_start(line);
                         }
                         buf_ref.line_start(line) + layout(painter, line).hit(piece, pos.x - text_x)
+                    };
+                    let swatch_box = |x: f32, y: f32| Rect::from_min_size(pos2(x + 2.0, y + ((line_h - swatch_s) / 2.0).round()), vec2(swatch_s, swatch_s));
+                    let swatch_at = |painter: &egui::Painter, pos: Pos2| {
+                        let (line, lens, piece) = row_at(pos.y);
+                        let row = layout(painter, line);
+                        let start = buf_ref.line_start(line);
+                        row.swatches.iter().filter(|_| lens.is_none()).find_map(|s| {
+                            let at = row.piece(s.0);
+                            let r = swatch_box(text_x + row.x(at, s.0), origin.y + (top_of(line) + at) as f32 * line_h);
+                            (at == piece && r.expand(2.0).contains(pos)).then_some((start + s.0, start + s.1, s.2, r))
+                        })
                     };
 
                     let painter = ui.painter().clone();
@@ -2342,6 +2372,9 @@ impl Editors {
                                 tab.drag_anchor = None;
                             } else if on_lens {
                                 lens_press = true;
+                                tab.drag_anchor = None;
+                            } else if let Some(found) = swatch_at(&painter, pos) {
+                                picked = Some(found);
                                 tab.drag_anchor = None;
                             } else if let Some(test) = test_at(row_at(pos.y).0).filter(|_| pos.x < clip.left() + bp_w) {
                                 test_click = Some((test.2, test.3.clone(), mods.command));
@@ -2618,6 +2651,29 @@ impl Editors {
                         for (index, piece) in row.pieces.iter().enumerate() {
                             let top = y + index as f32 * line_h + (line_h - piece.galley.size().y) / 2.0;
                             painter.galley(pos2(text_x, top), piece.galley.clone(), theme.text);
+                        }
+                        let over = |r: Rect| resp.hovered() && pointer.is_some_and(|p| r.expand(2.0).contains(p));
+                        for s in &row.swatches {
+                            let piece = row.piece(s.0);
+                            let r = swatch_box(text_x + row.x(piece, s.0), y + piece as f32 * line_h);
+                            decor::paint_swatch(&painter, theme, r, s.2);
+                            if over(r) {
+                                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                            }
+                            if pick_caret && (start + s.0..=start + s.1).contains(&tab.sels[0].head) {
+                                picked = Some((start + s.0, start + s.1, s.2, r));
+                            }
+                        }
+                        for (column, c, ascii) in &row.odd {
+                            let piece = row.piece(*column);
+                            let (x0, x1) = (text_x + row.x(piece, *column), text_x + row.x(piece, column + 1));
+                            let half = ((x1 - x0) / 2.0).max(2.0);
+                            let top = y + piece as f32 * line_h;
+                            let r = Rect::from_min_max(pos2((x0 + x1) / 2.0 - half, top + 1.0), pos2((x0 + x1) / 2.0 + half, top + line_h - 1.0));
+                            painter.rect_stroke(r, CornerRadius::same(2), Stroke::new(1.0, theme.warning), StrokeKind::Inside);
+                            if over(r) {
+                                resp.clone().on_hover_text_at_pointer(decor::describe(*c, *ascii));
+                            }
                         }
                         if is_active && settings.inline_blame && !buf_ref.large && buf_ref.line_of(tab.sels[0].head) == line
                             && let Some(label) = doc.blame.inline(line)
@@ -2942,6 +2998,10 @@ impl Editors {
         self.track_hover(over_word.or(over_problem), g, doc_id, buf, lang, now, &ctx);
         crate::debug::hover_ui(&ctx, theme, &mut self.marks, (g, doc_id), over_word.map(|(a, b)| buf.text_of(a, b)), now);
         self.hover_ui(&ctx, theme, &font, g, doc_id, hover_at, line_h);
+        if pick_caret && picked.is_none() {
+            self.banner = notice("There is no color value at the cursor.".into());
+        }
+        self.picker_ui(&ctx, theme, (g, doc_id), buf, tab, picked, lang.colors.is_some());
         if is_active {
             self.popups(ui, theme, doc_id, buf, tab, caret_at, line_h, &font);
             self.peek_ui(ui, theme, &font, text_rect, peek_y, doc_id);
@@ -3254,7 +3314,7 @@ impl Editors {
 mod tests {
     use super::*;
 
-    fn frame(ctx: &egui::Context, editors: &mut Editors, events: Vec<Event>) {
+    pub(super) fn frame(ctx: &egui::Context, editors: &mut Editors, events: Vec<Event>) {
         frame_with(ctx, editors, events, &Settings::default());
     }
 
