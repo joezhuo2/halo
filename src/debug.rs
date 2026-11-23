@@ -63,6 +63,7 @@ pub struct Marks {
     folder: Option<PathBuf>,
     pub live: bool,
     pub stopped: Option<(PathBuf, usize)>,
+    pub paused: Vec<(PathBuf, usize)>,
     ask: Option<(PathBuf, usize, Ask)>,
     hover: Option<Hover>,
     pub band: Option<(String, usize)>,
@@ -77,8 +78,8 @@ impl Marks {
         self.files.iter().find(|f| same(&f.0, path)).map_or(&[], |f| f.1.as_slice())
     }
 
-    pub fn stopped_line(&self, path: &Path) -> Option<usize> {
-        self.stopped.as_ref().filter(|s| same(&s.0, path)).map(|s| s.1)
+    pub fn stopped_lines(&self, path: &Path) -> Vec<usize> {
+        self.paused.iter().filter(|s| same(&s.0, path)).map(|s| s.1).collect()
     }
 
     fn list(&mut self, path: &Path) -> &mut Vec<Breakpoint> {
@@ -177,6 +178,7 @@ impl Marks {
     fn reset(&mut self, live: bool) {
         self.live = live;
         self.stopped = None;
+        self.paused.clear();
         self.hover = None;
         for b in self.files.iter_mut().flat_map(|f| f.1.iter_mut()) {
             (b.verified, b.id) = (false, None);
@@ -245,26 +247,54 @@ pub fn parse_launch(text: &str) -> Result<Vec<Config>, String> {
     Ok(configs.collect())
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Compound {
+    pub name: String,
+    pub configurations: Vec<String>,
+    pub stop_all: bool,
+    pub pre_launch_task: Option<String>,
+}
+
+pub fn parse_compounds(text: &str) -> Vec<Compound> {
+    let Ok(value) = crate::jsonc::parse(text) else { return vec![] };
+    let compounds = value["compounds"].as_array().into_iter().flatten().map(|item| Compound {
+        name: item["name"].as_str().unwrap_or("Unnamed").to_owned(),
+        configurations: item["configurations"].as_array().into_iter().flatten().filter_map(|c| c.as_str().or(c["name"].as_str())).map(str::to_owned).collect(),
+        stop_all: item["stopAll"] == true,
+        pre_launch_task: item["preLaunchTask"].as_str().map(str::to_owned),
+    });
+    compounds.collect()
+}
+
 struct Vars {
     folder: PathBuf,
     file: Option<PathBuf>,
     all: Workspace,
 }
 
-fn launch_configs(texts: &[(PathBuf, String, String)]) -> (Vec<Config>, Option<String>) {
-    let (mut configs, mut error) = (vec![], None);
+fn launch_configs(texts: &[(PathBuf, String, String)]) -> (Vec<Config>, Vec<Compound>, Option<String>) {
+    let (mut configs, mut compounds, mut error) = (vec![], vec![], None);
     for (folder, tag, text) in texts {
         match parse_launch(text) {
-            Ok(found) => configs.extend(found.into_iter().map(|c| (Config { folder: Some(folder.clone()), ..c }, tag))),
+            Ok(found) => {
+                configs.extend(found.into_iter().map(|c| (Config { folder: Some(folder.clone()), ..c }, tag)));
+                compounds.extend(parse_compounds(text).into_iter().map(|c| (c, folder)));
+            }
             Err(e) => error = error.or(Some(e)),
         }
     }
     if error.is_some() {
-        return (vec![], error);
+        return (vec![], vec![], error);
     }
     let clash = |name: &str| texts.len() > 1 && configs.iter().filter(|(c, _)| c.name == name).count() > 1;
-    let named = configs.iter().map(|(c, tag)| Config { name: if clash(&c.name) { format!("{} ({tag})", c.name) } else { c.name.clone() }, ..c.clone() });
-    (named.collect(), None)
+    let shown = |c: &Config, tag: &str| if clash(&c.name) { format!("{} ({tag})", c.name) } else { c.name.clone() };
+    let compounds = compounds.into_iter().map(|(c, folder)| {
+        let find = |name: &String| configs.iter().find(|(x, _)| x.name == *name && x.folder.as_ref() == Some(folder)).or_else(|| configs.iter().find(|(x, _)| x.name == *name));
+        Compound { configurations: c.configurations.iter().map(|name| find(name).map_or(name.clone(), |(x, tag)| shown(x, tag))).collect(), ..c }
+    });
+    let compounds = compounds.collect();
+    let named = configs.iter().map(|(c, tag)| Config { name: shown(c, tag), ..c.clone() });
+    (named.collect(), compounds, None)
 }
 
 fn expand(text: &str, vars: &Vars) -> String {
@@ -367,9 +397,15 @@ impl Console {
     }
 
     pub fn push(&mut self, category: &str, text: &str) {
-        match self.lines.last_mut().filter(|l| l.0 == category && !l.1.ends_with('\n')) {
+        self.tagged("", category, text);
+    }
+
+    fn tagged(&mut self, tag: &str, category: &str, text: &str) {
+        let head = if tag.is_empty() { String::new() } else { format!("[{tag}] ") };
+        let last = if tag.is_empty() { self.lines.last_mut() } else { self.lines.iter_mut().rev().find(|l| l.1.starts_with(&head)) };
+        match last.filter(|l| l.0 == category && !l.1.ends_with('\n')) {
             Some(last) => last.1.push_str(text),
-            None => self.lines.push((category.to_owned(), text.to_owned())),
+            None => self.lines.push((category.to_owned(), head + text)),
         }
         let extra = self.lines.len().saturating_sub(5000);
         self.lines.drain(..extra);
@@ -503,9 +539,20 @@ struct Live {
     configured: bool,
     stopping: u8,
     restart: bool,
+    id: u64,
+    group: Option<String>,
+    place: Option<(PathBuf, usize)>,
 }
 
 impl Live {
+    fn shown_state(&self) -> &'static str {
+        match self.state {
+            State::Starting => "starting",
+            State::Running => "running",
+            State::Stopped => "paused",
+        }
+    }
+
     fn ask(&mut self, command: &str, args: Value, want: Want) {
         let request = self.client.request(command, args);
         self.wants.insert(request, want);
@@ -541,8 +588,9 @@ impl Live {
         self.frame = index;
         (self.scopes, self.children, self.asked) = (vec![], HashMap::new(), HashSet::new());
         let Some(frame) = self.frames.get(index).cloned() else { return };
+        marks.hover = None;
         if let Some(path) = frame.path.filter(|p| p.is_file()) {
-            marks.stopped = Some((path.clone(), frame.line.saturating_sub(1)));
+            self.place = Some((path.clone(), frame.line.saturating_sub(1)));
             cmds.extend([Command::OpenPath(path), Command::GoTo(frame.line.max(1), frame.column.max(1))]);
         }
         self.ask("scopes", json!({"frameId": frame.id}), Want::Scopes(frame.id));
@@ -553,7 +601,7 @@ impl Live {
         self.state = State::Running;
         (self.frames, self.scopes, self.children, self.asked) = (vec![], vec![], HashMap::new(), HashSet::new());
         self.watch.clear();
-        marks.stopped = None;
+        self.place = None;
         marks.hover = None;
     }
 
@@ -562,7 +610,8 @@ impl Live {
     }
 
     fn send_filters(&mut self, filters: &[(String, String, bool)]) {
-        let on: Vec<&str> = filters.iter().filter(|f| f.2).map(|f| f.0.as_str()).collect();
+        let known = self.caps["exceptionBreakpointFilters"].as_array().map_or(&[] as &[Value], Vec::as_slice);
+        let on: Vec<&str> = filters.iter().filter(|f| f.2 && known.iter().any(|k| k["filter"] == f.0.as_str())).map(|f| f.0.as_str()).collect();
         self.ask("setExceptionBreakpoints", json!({"filters": on}), Want::Plain("setExceptionBreakpoints".into()));
     }
 
@@ -630,14 +679,19 @@ enum Editing {
     Value(i64, String, String),
 }
 
+type Pending = (Vec<Config>, bool, Option<String>, std::sync::mpsc::Receiver<Outcome>);
+
 pub struct Debug {
     configs: Vec<Config>,
     error: Option<String>,
     present: bool,
     stamp: (Option<PathBuf>, Option<SystemTime>, f64),
     selected: String,
-    live: Option<Live>,
-    pending: Option<(Config, bool, std::sync::mpsc::Receiver<Outcome>)>,
+    live: Vec<Live>,
+    focus: usize,
+    next: u64,
+    compounds: Vec<Compound>,
+    pending: Vec<Pending>,
     watches: Vec<String>,
     filters: Vec<(String, String, bool)>,
     open: [bool; 4],
@@ -656,8 +710,11 @@ impl Default for Debug {
             present: false,
             stamp: (None, None, f64::NEG_INFINITY),
             selected: String::new(),
-            live: None,
-            pending: None,
+            live: vec![],
+            focus: 0,
+            next: 0,
+            compounds: vec![],
+            pending: vec![],
             watches: vec![],
             filters: vec![],
             open: [true; 4],
@@ -683,7 +740,23 @@ fn run_in_terminal(args: &Value, env: &mut Env) -> Result<Value, String> {
 
 impl Debug {
     pub fn active(&self) -> bool {
-        self.live.is_some()
+        !self.live.is_empty()
+    }
+
+    pub fn paused(&self) -> bool {
+        self.live.get(self.focus).is_some_and(|l| l.state == State::Stopped)
+    }
+
+    fn tag(&self, index: usize) -> String {
+        if self.live.len() > 1 { self.live[index].config.name.clone() } else { String::new() }
+    }
+
+    fn focus_on(&mut self, index: usize, cmds: &mut Vec<Command>) {
+        self.focus = index;
+        let Some(frame) = self.live.get(index).filter(|l| l.state == State::Stopped).and_then(|l| l.frames.get(l.frame)) else { return };
+        if let Some(path) = frame.path.clone().filter(|p| p.is_file()) {
+            cmds.extend([Command::OpenPath(path), Command::GoTo(frame.line.max(1), frame.column.max(1))]);
+        }
     }
 
     fn reload(&mut self, workspace: &Workspace, folder: Option<&Path>, now: f64, force: bool) {
@@ -710,8 +783,8 @@ impl Debug {
             texts.push((first, "workspace".into(), launch.to_string()));
         }
         self.present = !texts.is_empty();
-        (self.configs, self.error) = launch_configs(&texts);
-        if !self.configs.iter().any(|c| c.name == self.selected) {
+        (self.configs, self.compounds, self.error) = launch_configs(&texts);
+        if !self.configs.iter().any(|c| c.name == self.selected) && !self.compounds.iter().any(|c| c.name == self.selected) {
             self.selected = self.configs.first().map(|c| c.name.clone()).unwrap_or_default();
         }
     }
@@ -723,16 +796,44 @@ impl Debug {
         if let Some(error) = &self.error {
             return ui::notify(error.clone());
         }
-        let Some(config) = self.configs.iter().find(|c| c.name == self.selected).or(self.configs.first()).cloned() else {
-            return ui::notify("launch.json has no configurations. Use Debug: Add Configuration... to add one.");
+        let compound = self.compounds.iter().find(|c| c.name == self.selected && !self.configs.iter().any(|x| x.name == c.name)).cloned();
+        let names = match &compound {
+            Some(compound) => compound.configurations.clone(),
+            None => match self.configs.iter().find(|c| c.name == self.selected).or(self.configs.first()) {
+                Some(config) => vec![config.name.clone()],
+                None => return ui::notify("launch.json has no configurations. Use Debug: Add Configuration... to add one."),
+            },
         };
-        let folder = config.folder.clone().unwrap_or_else(|| folder.to_path_buf());
-        let vars = Vars { folder, file: env.file.clone(), all: env.workspace.clone() };
-        let config = config.resolve(&vars);
-        let Some(task) = config.pre_launch_task.clone() else { return self.begin(config, no_debug, env) };
+        let resolve = |c: &Config| c.resolve(&Vars { folder: c.folder.clone().unwrap_or_else(|| folder.to_path_buf()), file: env.file.clone(), all: env.workspace.clone() });
+        let configs: Vec<Config> = names.iter().filter_map(|n| self.configs.iter().find(|c| c.name == *n)).map(resolve).collect();
+        let Some(compound) = compound else { return self.launch(configs, no_debug, None, env) };
+        let missing: Vec<&str> = names.iter().filter(|n| !self.configs.iter().any(|c| c.name == **n)).map(String::as_str).collect();
+        if !missing.is_empty() {
+            return ui::notify_error(format!("Compound \"{}\" names configurations that launch.json does not have: {}", compound.name, missing.join(", ")));
+        }
+        let group = compound.stop_all.then(|| compound.name.clone());
+        let Some(task) = compound.pre_launch_task else { return self.launch(configs, no_debug, group, env) };
         match env.tasks.run_label(&task, env.workspace, env.file.clone(), env.settings, env.bottom, env.ctx) {
-            Ok(done) => self.pending = Some((config, no_debug, done)),
+            Ok(done) => self.pending.push((configs, no_debug, group, done)),
             Err(error) => ui::notify(format!("preLaunchTask \"{task}\": {error}")),
+        }
+    }
+
+    fn launch(&mut self, configs: Vec<Config>, no_debug: bool, group: Option<String>, env: &mut Env) {
+        for mut config in configs {
+            match config.pre_launch_task.take() {
+                Some(task) => match env.tasks.run_label(&task, env.workspace, env.file.clone(), env.settings, env.bottom, env.ctx) {
+                    Ok(done) => self.pending.push((vec![config], no_debug, group.clone(), done)),
+                    Err(error) => ui::notify(format!("preLaunchTask \"{task}\": {error}")),
+                },
+                None => {
+                    let count = self.live.len();
+                    self.begin(config, no_debug, env);
+                    if let Some(live) = self.live.get_mut(count) {
+                        live.group = group.clone();
+                    }
+                }
+            }
         }
     }
 
@@ -776,7 +877,11 @@ impl Debug {
             configured: false,
             stopping: 0,
             restart: false,
+            id: self.next,
+            group: None,
+            place: None,
         };
+        self.next += 1;
         let args = json!({
             "clientID": "halo",
             "clientName": "Halo",
@@ -790,31 +895,52 @@ impl Debug {
             "supportsMemoryReferences": true,
         });
         live.ask("initialize", args, Want::Initialize);
-        env.bottom.console.begin(&live.config.name);
+        let name = live.config.name.clone();
+        if self.live.is_empty() {
+            env.bottom.console.begin(&name);
+            env.marks.reset(true);
+        } else {
+            env.bottom.console.tagged(&name, "console", &format!("Starting {name}\n"));
+        }
         env.bottom.show_debug();
         *env.panel = true;
-        env.marks.reset(true);
-        self.live = Some(live);
+        self.live.push(live);
+        self.focus = self.live.len() - 1;
     }
 
-    fn end(&mut self, env: &mut Env) {
-        let Some(mut live) = self.live.take() else { return };
+    fn end(&mut self, index: usize, env: &mut Env) {
+        if index >= self.live.len() {
+            return;
+        }
+        let tag = self.tag(index);
+        let mut live = self.live.remove(index);
         if live.stopping < 2 {
             live.client.request("disconnect", json!({"restart": false, "terminateDebuggee": live.config.request == "launch"}));
         }
-        env.marks.reset(false);
-        env.bottom.console.active = false;
-        env.bottom.console.push("console", "Debugging ended.\n");
+        if self.focus > index {
+            self.focus -= 1;
+        }
+        self.focus = self.focus.min(self.live.len().saturating_sub(1));
+        if self.live.is_empty() {
+            env.marks.reset(false);
+            env.bottom.console.active = false;
+        }
+        env.bottom.console.tagged(&tag, "console", "Debugging ended.\n");
         if live.restart {
-            let (config, no_debug) = (live.config.clone(), live.no_debug);
+            let (config, no_debug, group) = (Config { pre_launch_task: None, ..live.config.clone() }, live.no_debug, live.group.clone());
             drop(live);
-            self.begin(config, no_debug, env);
+            return self.launch(vec![config], no_debug, group, env);
+        }
+        let Some(group) = live.group else { return };
+        for at in 0..self.live.len() {
+            if self.live[at].group.as_ref() == Some(&group) && self.live[at].stopping == 0 {
+                self.stop(at, env);
+            }
         }
     }
 
-    fn stop(&mut self, env: &mut Env) {
-        self.pending = None;
-        let Some(live) = self.live.as_mut() else { return };
+    fn stop(&mut self, index: usize, env: &mut Env) {
+        let Some(live) = self.live.get_mut(index) else { return };
         live.stopping += 1;
         match live.stopping {
             1 if live.can("supportsTerminateRequest") && live.config.request == "launch" => live.ask("terminate", json!({}), Want::Plain("terminate".into())),
@@ -823,12 +949,12 @@ impl Debug {
                 live.stopping = 2;
                 live.ask("disconnect", args, Want::Disconnect);
             }
-            _ => self.end(env),
+            _ => self.end(index, env),
         }
     }
 
     fn step(&mut self, command: &str) {
-        let Some(live) = self.live.as_mut().filter(|l| l.state == State::Stopped) else { return };
+        let Some(live) = self.live.get_mut(self.focus).filter(|l| l.state == State::Stopped) else { return };
         let thread = live.thread.or(live.threads.first().map(|t| t.0)).unwrap_or(0);
         let mut args = json!({"threadId": thread});
         if self.views.focused && command != "continue" && live.can("supportsSteppingGranularity") {
@@ -840,15 +966,14 @@ impl Debug {
     pub fn exec(&mut self, cmd: &Command, env: &mut Env) -> bool {
         use Command::*;
         match cmd {
-            StartDebugging => match self.live.as_ref().map(|l| l.state) {
-                Some(State::Stopped) => self.step("continue"),
-                Some(_) => {}
-                None => self.start(false, env),
-            },
-            RunWithoutDebugging if self.live.is_none() => self.start(true, env),
-            RunWithoutDebugging => {}
-            StopDebugging => self.stop(env),
-            RestartDebugging => match self.live.as_mut() {
+            StartDebugging if self.paused() => self.step("continue"),
+            StartDebugging => self.start(false, env),
+            RunWithoutDebugging => self.start(true, env),
+            StopDebugging => {
+                self.pending.clear();
+                self.stop(self.focus, env);
+            }
+            RestartDebugging => match self.live.get_mut(self.focus) {
                 None => self.start(false, env),
                 Some(live) if live.can("supportsRestartRequest") => {
                     let args = json!({"arguments": Value::Object(live.config.raw.clone())});
@@ -856,11 +981,11 @@ impl Debug {
                 }
                 Some(live) => {
                     live.restart = true;
-                    self.stop(env);
+                    self.stop(self.focus, env);
                 }
             },
             PauseDebugging => {
-                if let Some(live) = self.live.as_mut().filter(|l| l.state == State::Running) {
+                if let Some(live) = self.live.get_mut(self.focus).filter(|l| l.state == State::Running) {
                     let thread = live.thread.or(live.threads.first().map(|t| t.0)).unwrap_or(0);
                     live.ask("pause", json!({"threadId": thread}), Want::Plain("pause".into()));
                 }
@@ -883,38 +1008,49 @@ impl Debug {
                 self.open[1] = true;
                 self.editing = Some(Editing::Watch(None, String::new()));
             }
-            OpenDisassembly => self.views.open_disassembly(self.live.as_ref()),
-            OpenMemory => self.views.ask_memory(self.live.as_ref()),
+            OpenDisassembly => self.views.open_disassembly(self.live.get(self.focus)),
+            OpenMemory => self.views.ask_memory(self.live.get(self.focus)),
             _ => return false,
         }
         true
     }
 
     pub fn poll(&mut self, env: &mut Env) {
-        if let Some(outcome) = self.pending.as_ref().and_then(|(.., done)| done.try_recv().ok()) {
-            match (outcome.ok, self.pending.take()) {
-                (true, Some((config, no_debug, _))) => self.begin(config, no_debug, env),
-                _ => ui::notify(outcome.error.unwrap_or_else(|| "The preLaunchTask failed, so debugging did not start.".to_owned())),
+        let mut at = 0;
+        while at < self.pending.len() {
+            let Ok(outcome) = self.pending[at].3.try_recv() else {
+                at += 1;
+                continue;
+            };
+            let (configs, no_debug, group, _) = self.pending.remove(at);
+            match outcome.ok {
+                true => self.launch(configs, no_debug, group, env),
+                false => ui::notify(outcome.error.unwrap_or_else(|| "The preLaunchTask failed, so debugging did not start.".to_owned())),
             }
         }
         let now = env.ctx.input(|i| i.time);
-        let Some(live) = self.live.as_mut() else {
+        if self.live.is_empty() {
             env.bottom.console.submitted.clear();
             return;
-        };
-        let incoming = live.client.poll();
-        for message in incoming {
-            self.handle(message, env);
         }
-        let Some(live) = self.live.as_mut() else { return };
-        for expression in std::mem::take(&mut env.bottom.console.submitted) {
-            live.evaluate(&expression, "repl", Want::Repl);
-        }
-        if live.configured {
+        if self.live.iter().any(|l| l.configured) {
             for path in std::mem::take(&mut env.marks.changed) {
                 let list = env.marks.of(&path).to_vec();
-                live.send_breakpoints(&path, &list);
+                self.live.iter_mut().filter(|l| l.configured).for_each(|l| l.send_breakpoints(&path, &list));
             }
+        }
+        for id in self.live.iter().map(|l| l.id).collect::<Vec<_>>() {
+            let Some(index) = self.live.iter().position(|l| l.id == id) else { continue };
+            for message in self.live[index].client.poll() {
+                let Some(index) = self.live.iter().position(|l| l.id == id) else { break };
+                self.handle(index, message, env);
+            }
+        }
+        env.marks.stopped = self.live.get(self.focus).and_then(|l| l.place.clone());
+        env.marks.paused = self.live.iter().filter_map(|l| l.place.clone()).collect();
+        let Some(live) = self.live.get_mut(self.focus) else { return };
+        for expression in std::mem::take(&mut env.bottom.console.submitted) {
+            live.evaluate(&expression, "repl", Want::Repl);
         }
         if let Some(hover) = env.marks.hover.as_mut().filter(|h| !h.asked && now - h.since >= 0.35 && live.state == State::Stopped) {
             hover.asked = true;
@@ -925,27 +1061,28 @@ impl Debug {
         self.views.poll(live, env.marks);
     }
 
-    fn handle(&mut self, message: Incoming, env: &mut Env) {
-        let Some(live) = self.live.as_mut() else { return };
+    fn handle(&mut self, index: usize, message: Incoming, env: &mut Env) {
+        let tag = self.tag(index);
+        let Some(live) = self.live.get_mut(index) else { return };
         match message {
             Incoming::Response { request, command, success, message, body } => {
                 let want = live.wants.remove(&request).unwrap_or(Want::Plain(command.clone()));
-                self.reply(want, success, message, body, env);
+                self.reply(index, want, success, message, body, env);
             }
-            Incoming::Event(name, body) => self.event(&name, &body, env),
+            Incoming::Event(name, body) => self.event(index, &name, &body, env),
             Incoming::Request { seq, command, args } => {
                 let result = match command.as_str() {
                     "runInTerminal" => run_in_terminal(&args, env),
                     _ => Err(format!("Halo does not support the {command} request.")),
                 };
                 if let Err(error) = &result {
-                    env.bottom.console.push("stderr", &format!("{error}\n"));
+                    env.bottom.console.tagged(&tag, "stderr", &format!("{error}\n"));
                 }
                 live.client.respond(seq, &command, result);
             }
             Incoming::Stderr(line) => {
                 crate::output::log("Debug", format!("[{}] {line}", live.config.name));
-                env.bottom.console.push("console", &format!("{line}\n"))
+                env.bottom.console.tagged(&tag, "console", &format!("{line}\n"))
             }
             Incoming::Closed(error) => {
                 crate::output::log("Debug", format!("The debug adapter for \"{}\" exited{}", live.config.name, error.as_ref().map_or(String::new(), |e| format!(": {e}"))));
@@ -955,38 +1092,42 @@ impl Debug {
                     ui::notify(format!("The debug adapter for \"{}\" exited before the session started. See the Debug Console.", live.config.name));
                 }
                 live.stopping = 2;
-                self.end(env);
+                self.end(index, env);
             }
         }
     }
 
-    fn reply(&mut self, want: Want, success: bool, message: String, body: Value, env: &mut Env) {
-        let Some(live) = self.live.as_mut() else { return };
+    fn reply(&mut self, index: usize, want: Want, success: bool, message: String, body: Value, env: &mut Env) {
+        let tag = self.tag(index);
+        let Some(live) = self.live.get_mut(index) else { return };
         match want {
             Want::Initialize if !success => {
                 ui::notify(format!("The debug adapter could not be initialized: {message}"));
-                self.end(env);
+                self.end(index, env);
             }
             Want::Initialize => {
                 live.caps = body;
-                let old = std::mem::take(&mut self.filters);
-                for filter in live.caps["exceptionBreakpointFilters"].as_array().into_iter().flatten() {
-                    let id = filter["filter"].as_str().unwrap_or_default().to_owned();
-                    let on = old.iter().find(|f| f.0 == id).map_or(filter["default"] == true, |f| f.2);
-                    self.filters.push((id, filter["label"].as_str().unwrap_or_default().to_owned(), on));
-                }
                 let mut args = Value::Object(live.config.raw.clone());
                 if live.no_debug {
                     args["noDebug"] = json!(true);
                 }
                 let request = if live.config.request == "attach" { "attach" } else { "launch" };
                 live.ask(request, args, Want::Launch);
+                let old = std::mem::take(&mut self.filters);
+                for filter in self.live.iter().flat_map(|l| l.caps["exceptionBreakpointFilters"].as_array().into_iter().flatten()) {
+                    let id = filter["filter"].as_str().unwrap_or_default().to_owned();
+                    if self.filters.iter().any(|f| f.0 == id) {
+                        continue;
+                    }
+                    let on = old.iter().find(|f| f.0 == id).map_or(filter["default"] == true, |f| f.2);
+                    self.filters.push((id, filter["label"].as_str().unwrap_or_default().to_owned(), on));
+                }
             }
             Want::Launch if !success => {
                 let text = format!("{} \"{}\" failed: {message}", live.config.request, live.config.name);
-                env.bottom.console.push("stderr", &format!("{text}\n"));
+                env.bottom.console.tagged(&tag, "stderr", &format!("{text}\n"));
                 ui::notify(text);
-                self.end(env);
+                self.end(index, env);
             }
             Want::Launch => {
                 if live.state == State::Starting {
@@ -1008,6 +1149,7 @@ impl Debug {
                 };
                 live.frames = body["stackFrames"].as_array().into_iter().flatten().map(frame).collect();
                 if live.state == State::Stopped {
+                    self.focus = index;
                     let index = live.frames.iter().position(|f| f.path.as_deref().is_some_and(Path::is_file)).unwrap_or(0);
                     live.select(index, &self.watches, env.marks, env.cmds);
                     let at = live.frames.get(index).map(|f| format!("{}:{}", f.path.as_deref().and_then(Path::file_name).unwrap_or_default().to_string_lossy(), f.line));
@@ -1027,8 +1169,8 @@ impl Debug {
                 live.watch.insert(expression, if success { Ok(body["result"].as_str().unwrap_or_default().to_owned()) } else { Err(message) });
             }
             Want::Repl => match success {
-                true => env.bottom.console.push("repl", &format!("{}\n", body["result"].as_str().unwrap_or_default())),
-                false => env.bottom.console.push("stderr", &format!("{message}\n")),
+                true => env.bottom.console.tagged(&tag, "repl", &format!("{}\n", body["result"].as_str().unwrap_or_default())),
+                false => env.bottom.console.tagged(&tag, "stderr", &format!("{message}\n")),
             },
             Want::Hover(word) if success => {
                 if let Some(hover) = env.marks.hover.as_mut().filter(|h| h.word == word) {
@@ -1043,14 +1185,14 @@ impl Debug {
             }
             Want::SetVariable(..) => ui::notify(format!("The value could not be set: {message}")),
             Want::Run if success => live.running(env.marks),
-            Want::Disconnect => self.end(env),
+            Want::Disconnect => self.end(index, env),
             Want::Restart if !success => {
                 live.restart = true;
-                self.stop(env);
+                self.stop(index, env);
             }
             Want::Restart => live.running(env.marks),
-            Want::Run => env.bottom.console.push("stderr", &format!("{message}\n")),
-            Want::Plain(command) if !success => env.bottom.console.push("stderr", &format!("{command}: {message}\n")),
+            Want::Run => env.bottom.console.tagged(&tag, "stderr", &format!("{message}\n")),
+            Want::Plain(command) if !success => env.bottom.console.tagged(&tag, "stderr", &format!("{command}: {message}\n")),
             Want::Disassemble(ip) => self.views.disassembled(live, &ip, success, &message, &body, env.marks),
             Want::ReadMemory(reference) => self.views.memory_read(&reference, success, &message, &body),
             Want::MemoryAt(expression) => self.views.memory_found(live, &expression, success, &message, &body),
@@ -1058,8 +1200,9 @@ impl Debug {
         }
     }
 
-    fn event(&mut self, name: &str, body: &Value, env: &mut Env) {
-        let Some(live) = self.live.as_mut() else { return };
+    fn event(&mut self, index: usize, name: &str, body: &Value, env: &mut Env) {
+        let tag = self.tag(index);
+        let Some(live) = self.live.get_mut(index) else { return };
         match name {
             "initialized" => live.configure(env.marks, &self.filters),
             "stopped" => {
@@ -1072,11 +1215,11 @@ impl Debug {
                 live.ask("stackTrace", json!({"threadId": thread, "startFrame": 0, "levels": 50}), Want::Stack);
             }
             "continued" => live.running(env.marks),
-            "exited" => env.bottom.console.push("console", &format!("Process exited with code {}.\n", body["exitCode"])),
-            "terminated" => self.end(env),
+            "exited" => env.bottom.console.tagged(&tag, "console", &format!("Process exited with code {}.\n", body["exitCode"])),
+            "terminated" => self.end(index, env),
             "output" if body["category"] != "telemetry" => {
                 let category = body["category"].as_str().unwrap_or("console");
-                env.bottom.console.push(category, body["output"].as_str().unwrap_or_default());
+                env.bottom.console.tagged(&tag, category, body["output"].as_str().unwrap_or_default());
             }
             "breakpoint" => env.marks.update(&body["breakpoint"]),
             "thread" => live.ask("threads", json!({}), Want::Threads),
@@ -1085,13 +1228,12 @@ impl Debug {
     }
 
     pub fn status(&self) -> Option<(String, String)> {
-        let live = self.live.as_ref()?;
-        let state = match live.state {
-            State::Starting => "starting",
-            State::Running => "running",
-            State::Stopped => "paused",
+        let live = self.live.get(self.focus)?;
+        let tip = match self.live.len() {
+            1 => format!("Debugging {} ({})", live.config.name, live.config.kind),
+            count => format!("Debugging {} ({}), {count} sessions running", live.config.name, live.config.kind),
         };
-        Some((format!("{} {} ({state})", icons::BUG, live.config.name), format!("Debugging {} ({})", live.config.name, live.config.kind)))
+        Some((format!("{} {} ({})", icons::BUG, live.config.name, live.shown_state()), tip))
     }
 }
 
@@ -1233,15 +1375,20 @@ impl Debug {
                 ui.add(egui::Label::new(RichText::new(error).size(12.0).color(theme.error)).wrap());
             }
             ui.horizontal(|ui| {
-                let running = self.live.is_some();
-                let tip = if running { "Debugging is running" } else { "Start Debugging (F5)" };
-                if ui::icon_button(ui, theme, icons::PLAY, 24.0, false, tip).clicked() && !running {
-                    env.cmds.push(Command::StartDebugging);
+                if ui::icon_button(ui, theme, icons::PLAY, 24.0, false, "Start Debugging (F5)").clicked() {
+                    env.cmds.push(Command::SaveAll);
+                    self.start(false, env);
                 }
                 let width = (ui.available_width() - 30.0).max(60.0);
                 egui::ComboBox::from_id_salt("debug_config").selected_text(&self.selected).width(width).show_ui(ui, |ui| {
                     for config in &self.configs {
                         ui.selectable_value(&mut self.selected, config.name.clone(), &config.name);
+                    }
+                    if !self.compounds.is_empty() {
+                        ui.separator();
+                    }
+                    for compound in &self.compounds {
+                        ui.selectable_value(&mut self.selected, compound.name.clone(), &compound.name);
                     }
                     ui.separator();
                     if ui.button("Add Configuration...").clicked() {
@@ -1282,8 +1429,8 @@ impl Debug {
     }
 
     fn variables(&mut self, ui: &mut Ui, theme: &Theme) {
-        let Some(live) = self.live.as_ref().filter(|l| l.state == State::Stopped) else {
-            return note(ui, theme, if self.live.is_some() { "Variables show while the program is paused." } else { "Not debugging." });
+        let Some(live) = self.live.get(self.focus).filter(|l| l.state == State::Stopped) else {
+            return note(ui, theme, if self.active() { "Variables show while the program is paused." } else { "Not debugging." });
         };
         if live.scopes.is_empty() {
             return ui::skeleton(ui, theme, 3);
@@ -1303,13 +1450,13 @@ impl Debug {
             Some(TreeAction::Edit(reference, name, value)) => self.editing = Some(Editing::Value(reference, name, value)),
             Some(TreeAction::Cancel) => self.editing = None,
             Some(TreeAction::Memory(reference, name)) => {
-                if let Some(live) = self.live.as_mut() {
+                if let Some(live) = self.live.get_mut(self.focus) {
                     self.views.open_memory(live, reference, name);
                 }
             }
             Some(TreeAction::Commit(reference, name, value)) => {
                 self.editing = None;
-                if let Some(live) = self.live.as_mut() {
+                if let Some(live) = self.live.get_mut(self.focus) {
                     live.ask("setVariable", json!({"variablesReference": reference, "name": name, "value": value}), Want::SetVariable(reference, name));
                 }
             }
@@ -1331,12 +1478,12 @@ impl Debug {
                 continue;
             }
             let (r, resp) = row(ui, theme, false);
-            let value = self.live.as_ref().and_then(|l| l.watch.get(expression));
+            let value = self.live.get(self.focus).and_then(|l| l.watch.get(expression));
             ui::item(ui, &resp, ui::Role::ListItem, expression, false);
             let (shown, color) = match value {
                 Some(Ok(value)) => (value.clone(), theme.text_dim),
                 Some(Err(error)) => (error.clone(), theme.error),
-                None => (String::from(if self.live.as_ref().is_some_and(|l| l.state == State::Stopped) { "..." } else { "not available" }), theme.text_dim),
+                None => (String::from(if self.paused() { "..." } else { "not available" }), theme.text_dim),
             };
             pair(ui, r, r.left() + 26.0, theme, &format!("{expression}:"), &shown, color);
             if resp.hovered() || ui.rect_contains_pointer(r) {
@@ -1371,7 +1518,7 @@ impl Debug {
                 (None, Some(text)) => self.watches.push(text),
                 _ => {}
             }
-            if let Some(live) = self.live.as_mut() {
+            for live in &mut self.live {
                 live.watch_all(&self.watches);
             }
         }
@@ -1381,45 +1528,67 @@ impl Debug {
     }
 
     fn stack_ui(&mut self, ui: &mut Ui, theme: &Theme, env: &mut Env) {
-        let Some(live) = self.live.as_mut() else { return note(ui, theme, "Not debugging.") };
-        if live.threads.is_empty() {
-            return note(ui, theme, if live.state == State::Stopped { "Loading threads..." } else { "Running." });
+        if self.live.is_empty() {
+            return note(ui, theme, "Not debugging.");
         }
+        let multi = self.live.len() > 1;
+        let (depth, indent) = (multi as usize, if multi { 14.0 } else { 0.0 });
         let (mut pick, mut disassemble) = (None, false);
-        let can_disassemble = live.can("supportsDisassembleRequest");
-        for (id, name) in live.threads.clone() {
-            let (r, thread) = row(ui, theme, false);
-            let current = live.thread == Some(id) && live.state == State::Stopped;
-            ui::tree_item(ui, &thread, &name, current, 0, Some(current));
-            let state = if current { format!("Paused on {}", live.reason) } else { String::from(if live.state == State::Stopped { "Paused" } else { "Running" }) };
-            pair(ui, r, r.left() + 12.0, theme, &format!("{} {name}", icons::STACK), &state, theme.text_dim);
-            if !current {
+        for (session, live) in self.live.iter().enumerate() {
+            let can_disassemble = live.can("supportsDisassembleRequest");
+            if multi {
+                let (r, resp) = row(ui, theme, false);
+                let focused = session == self.focus;
+                ui::tree_item(ui, &resp, &format!("{} {}", live.config.name, live.shown_state()), focused, 0, Some(true));
+                pair(ui, r, r.left() + 12.0, theme, &format!("{} {}", icons::BUG, live.config.name), live.shown_state(), if focused { theme.accent } else { theme.text_dim });
+                if resp.clicked() {
+                    pick = Some((session, None));
+                }
+            }
+            if live.threads.is_empty() {
+                note(ui, theme, if live.state == State::Stopped { "Loading threads..." } else { "Running." });
                 continue;
             }
-            for (index, frame) in live.frames.iter().enumerate() {
-                let (r, resp) = row(ui, theme, index == live.frame);
-                let place = frame.path.as_deref().map(|p| format!("{}:{}", p.file_name().unwrap_or_default().to_string_lossy(), frame.line)).unwrap_or_else(|| "unknown source".into());
-                ui::tree_item(ui, &resp, &format!("{} {place}", frame.name), index == live.frame, 1, None);
-                pair(ui, r, r.left() + 26.0, theme, &frame.name, &place, theme.text_dim);
-                if resp.clicked() {
-                    pick = Some(index);
+            for (id, name) in &live.threads {
+                let (r, thread) = row(ui, theme, false);
+                let current = live.thread == Some(*id) && live.state == State::Stopped;
+                ui::tree_item(ui, &thread, name, current, depth, Some(current));
+                let state = if current { format!("Paused on {}", live.reason) } else { String::from(if live.state == State::Stopped { "Paused" } else { "Running" }) };
+                pair(ui, r, r.left() + 12.0 + indent, theme, &format!("{} {name}", icons::STACK), &state, theme.text_dim);
+                if !current {
+                    continue;
                 }
-                if can_disassemble && frame.ip.is_some() {
-                    resp.context_menu(|ui| {
-                        ui::menu_pad(ui);
-                        if ui.button("Open Disassembly View").clicked() {
-                            (pick, disassemble) = (Some(index), true);
-                            ui.close();
-                        }
-                    });
+                for (index, frame) in live.frames.iter().enumerate() {
+                    let selected = index == live.frame && session == self.focus;
+                    let (r, resp) = row(ui, theme, selected);
+                    let place = frame.path.as_deref().map(|p| format!("{}:{}", p.file_name().unwrap_or_default().to_string_lossy(), frame.line)).unwrap_or_else(|| "unknown source".into());
+                    ui::tree_item(ui, &resp, &format!("{} {place}", frame.name), selected, depth + 1, None);
+                    pair(ui, r, r.left() + 26.0 + indent, theme, &frame.name, &place, theme.text_dim);
+                    if resp.clicked() {
+                        pick = Some((session, Some(index)));
+                    }
+                    if can_disassemble && frame.ip.is_some() {
+                        resp.context_menu(|ui| {
+                            ui::menu_pad(ui);
+                            if ui.button("Open Disassembly View").clicked() {
+                                (pick, disassemble) = (Some((session, Some(index))), true);
+                                ui.close();
+                            }
+                        });
+                    }
                 }
             }
         }
-        if let Some(index) = pick {
-            live.select(index, &self.watches, env.marks, env.cmds);
+        match pick {
+            Some((session, Some(index))) => {
+                self.focus = session;
+                self.live[session].select(index, &self.watches, env.marks, env.cmds);
+            }
+            Some((session, None)) => self.focus_on(session, env.cmds),
+            None => {}
         }
         if disassemble {
-            self.views.open_disassembly(self.live.as_ref());
+            self.views.open_disassembly(self.live.get(self.focus));
         }
     }
 
@@ -1434,8 +1603,8 @@ impl Debug {
             });
             ui.add_space(4.0);
         }
-        if send_filters && let Some(live) = self.live.as_mut().filter(|l| l.configured) {
-            live.send_filters(&self.filters);
+        if send_filters {
+            self.live.iter_mut().filter(|l| l.configured).for_each(|l| l.send_filters(&self.filters));
         }
         if env.marks.files.is_empty() && self.filters.is_empty() {
             return note(ui, theme, "Click left of a line number or press F9 to add a breakpoint.");
@@ -1472,13 +1641,23 @@ impl Debug {
     }
 
     pub fn toolbar(&mut self, ctx: &egui::Context, theme: &Theme, top: f32, cmds: &mut Vec<Command>) {
-        let Some(live) = &self.live else { return };
-        let stopped = live.state == State::Stopped;
+        if self.live.is_empty() {
+            return;
+        }
+        let stopped = self.paused();
+        let mut focus = self.focus;
         egui::Area::new(Id::new("debug_toolbar")).order(egui::Order::Foreground).anchor(Align2::CENTER_TOP, vec2(0.0, top)).show(ctx, |ui| {
             ui.set_opacity(ui::fade_in(ui, Id::new("debug_toolbar_fade")));
             egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
+                    if self.live.len() > 1 {
+                        egui::ComboBox::from_id_salt("debug_session").selected_text(&self.live[focus].config.name).width(130.0).show_ui(ui, |ui| {
+                            for (index, live) in self.live.iter().enumerate() {
+                                ui.selectable_value(&mut focus, index, format!("{} ({})", live.config.name, live.shown_state()));
+                            }
+                        });
+                    }
                     let (icon, cmd, tip) = if stopped { (icons::PLAY, Command::StartDebugging, "Continue (F5)") } else { (icons::PAUSE, Command::PauseDebugging, "Pause (F6)") };
                     let buttons = [
                         (icon, cmd, tip, true),
@@ -1497,6 +1676,9 @@ impl Debug {
                 });
             });
         });
+        if focus != self.focus {
+            self.focus_on(focus, cmds);
+        }
     }
 
     pub fn dialogs(&mut self, ctx: &egui::Context, env: &mut Env) {
@@ -1579,7 +1761,7 @@ impl Debug {
                 }
             }
         }
-        self.views.dialog(ctx, self.live.as_mut());
+        self.views.dialog(ctx, self.live.get_mut(self.focus));
     }
 }
 
@@ -1611,7 +1793,7 @@ pub fn gutter_menu(ui: &mut Ui, list: &[Breakpoint], line: usize) -> Option<Gutt
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn paint_gutter(painter: &egui::Painter, theme: &Theme, list: &[Breakpoint], live: bool, stopped: Option<usize>, line: usize, center: Pos2, radius: f32, hovered: bool) {
+pub fn paint_gutter(painter: &egui::Painter, theme: &Theme, list: &[Breakpoint], live: bool, stopped: bool, line: usize, center: Pos2, radius: f32, hovered: bool) {
     match list.iter().find(|b| b.line == line) {
         Some(b) => {
             let color = if b.enabled { theme.error } else { theme.text_dim };
@@ -1636,7 +1818,7 @@ pub fn paint_gutter(painter: &egui::Painter, theme: &Theme, list: &[Breakpoint],
         }
         None => {}
     }
-    if stopped == Some(line) {
+    if stopped {
         let (w, h) = (radius * 1.1, radius * 1.1);
         let points = vec![center + vec2(-w, -h * 0.55), center + vec2(0.0, -h * 0.55), center + vec2(w, 0.0), center + vec2(0.0, h * 0.55), center + vec2(-w, h * 0.55)];
         painter.add(egui::Shape::convex_polygon(points, theme.warning, Stroke::new(1.0, theme.bg)));
@@ -1935,9 +2117,9 @@ mod tests {
         }
         assert!(debug.exec(&Command::StartDebugging, &mut env!()));
         assert!(debug.active() && bottom.console.active && marks.live);
-        pump!(|d: &Debug, _: &BottomPanel| d.live.as_ref().is_some_and(|l| l.children.contains_key(&100)));
+        pump!(|d: &Debug, _: &BottomPanel| d.live.first().is_some_and(|l| l.children.contains_key(&100)));
 
-        let live = debug.live.as_ref().unwrap();
+        let live = &debug.live[0];
         assert_eq!(live.state, State::Stopped);
         assert_eq!(live.threads, [(1, "main".to_owned())]);
         assert_eq!(live.frames.len(), 2);
@@ -1957,20 +2139,20 @@ mod tests {
         });
         out.textures_delta.clear();
 
-        pump!(|d: &Debug, _: &BottomPanel| d.live.as_ref().is_some_and(|l| l.watch.contains_key("x * 2")));
-        assert_eq!(debug.live.as_ref().unwrap().watch["x * 2"], Ok("84".to_owned()));
+        pump!(|d: &Debug, _: &BottomPanel| d.live.first().is_some_and(|l| l.watch.contains_key("x * 2")));
+        assert_eq!(debug.live[0].watch["x * 2"], Ok("84".to_owned()));
         bottom.console.submitted.push("x".into());
         pump!(|_: &Debug, b: &BottomPanel| b.console.text().ends_with("the program\n42\n"));
 
         let shown = |d: &Debug, title: &str, part: &str| d.views.out.iter().any(|o| o.0 == title && o.1.contains(part));
-        assert_eq!(debug.live.as_ref().unwrap().children[&100][0].memory.as_deref(), Some("0x2000"));
+        assert_eq!(debug.live[0].children[&100][0].memory.as_deref(), Some("0x2000"));
         assert!(debug.exec(&Command::OpenDisassembly, &mut env!()));
         assert!(debug.views.out.iter().any(|o| o.0 == views::DISASSEMBLY && o.3));
         pump!(|d: &Debug, _: &BottomPanel| shown(d, views::DISASSEMBLY, "ret"));
         assert!(shown(&debug, views::DISASSEMBLY, "main:\n  0x0ffe  90  nop  ; main.py:3\n  0x1000  c3  ret\n"));
         assert!(debug.views.out.iter().any(|o| o.0 == views::DISASSEMBLY && o.2 == Some(2)));
         assert_eq!(marks.band, Some((views::DISASSEMBLY.to_owned(), 2)));
-        let live = debug.live.as_mut().unwrap();
+        let live = &mut debug.live[0];
         debug.views.open_memory(live, "0x2000".into(), "x".into());
         pump!(|d: &Debug, _: &BottomPanel| shown(d, views::MEMORY, "00002000"));
         assert!(shown(&debug, views::MEMORY, "x at 0x2000, 7 bytes\n\n00002000  48 65 6C 6C 6F ?? ?? "));
@@ -2010,6 +2192,118 @@ mod tests {
         assert_eq!(sent.iter().find(|r| r["command"] == "next").unwrap()["arguments"], json!({"threadId": 1, "granularity": "instruction"}));
         assert_eq!(sent.iter().find(|r| r["command"] == "continue").unwrap()["arguments"], json!({"threadId": 1}));
         assert_eq!(sent[0]["arguments"]["supportsMemoryReferences"], json!(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reads_compounds_and_resolves_their_names_across_folders() {
+        let text = r#"{"configurations": [{"name": "Run", "type": "x"}, {"name": "Api", "type": "x"}],
+            "compounds": [{"name": "All", "configurations": ["Run", {"name": "Api"}, "Gone"], "stopAll": true, "preLaunchTask": "build"}, {"name": "Plain", "configurations": []}]}"#;
+        let compounds = parse_compounds(text);
+        let all = Compound { name: "All".into(), configurations: vec!["Run".into(), "Api".into(), "Gone".into()], stop_all: true, pre_launch_task: Some("build".into()) };
+        assert_eq!(compounds[0], all);
+        assert!(!compounds[1].stop_all && compounds[1].pre_launch_task.is_none() && compounds[1].configurations.is_empty());
+        assert!(parse_compounds("{ bad").is_empty());
+        let other = r#"{"configurations": [{"name": "Run", "type": "y"}], "compounds": [{"name": "Two", "configurations": ["Run"]}]}"#;
+        let (configs, compounds, error) = launch_configs(&[(PathBuf::from("/a"), "a".into(), text.into()), (PathBuf::from("/b"), "b".into(), other.into())]);
+        assert!(error.is_none());
+        assert_eq!(configs.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Run (a)", "Api", "Run (b)"]);
+        assert_eq!(compounds[0].configurations, ["Run (a)", "Api", "Gone"]);
+        assert_eq!(compounds[2].configurations, ["Run (b)"]);
+        let mut console = Console::default();
+        console.tagged("A", "stdout", "one ");
+        console.tagged("B", "stdout", "two\n");
+        console.tagged("A", "stdout", "done\n");
+        console.push("stdout", "plain\n");
+        assert_eq!(console.text(), "[A] one done\n[B] two\nplain\n");
+    }
+
+    #[test]
+    fn runs_several_sessions_and_compounds_against_fake_adapters() {
+        let dir = std::env::temp_dir().join(format!("halo-debug-multi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".vscode")).unwrap();
+        let file = dir.join("main.py");
+        std::fs::write(&file, "a = 1\nb = 2\nx = 42\nprint(x)\n").unwrap();
+        let adapters: Vec<(u16, Receiver<Value>)> = (0..4).map(|_| adapter(file.clone())).collect();
+        let entry = |name: &str, port: u16| format!("{{\"type\": \"fake\", \"request\": \"launch\", \"name\": \"{name}\", \"debugServer\": {port}}}");
+        let entries: Vec<String> = ["A", "B", "C", "D"].iter().zip(&adapters).map(|(name, (port, _))| entry(name, *port)).collect();
+        let compounds = r#"[{"name": "Both", "configurations": ["A", "B"], "stopAll": true}, {"name": "Bad", "configurations": ["A", "Nope"]}]"#;
+        std::fs::write(launch_path(&dir), format!("{{\"configurations\": [{}], \"compounds\": {compounds}}}", entries.join(", "))).unwrap();
+
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let (mut marks, mut bottom, mut panel, mut cmds, mut tasks) = (Marks::default(), BottomPanel::new(), false, vec![], Tasks::default());
+        marks.toggle(&file, 2);
+        let mut debug = Debug::default();
+        let workspace = Workspace::single(dir.clone());
+        macro_rules! env {
+            () => {
+                Env { folder: Some(&dir), workspace: &workspace, file: Some(file.clone()), settings: &settings, marks: &mut marks, bottom: &mut bottom, tasks: &mut tasks, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
+            };
+        }
+        macro_rules! pump {
+            ($done:expr) => {{
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !($done)(&debug) {
+                    assert!(Instant::now() < deadline, "the sessions did not reach the expected state");
+                    debug.poll(&mut env!());
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }};
+        }
+        let paused = |d: &Debug, count: usize| d.live.len() == count && d.live.iter().all(|l| l.state == State::Stopped && l.place.is_some());
+
+        debug.selected = "Bad".into();
+        debug.exec(&Command::StartDebugging, &mut env!());
+        assert_eq!(debug.compounds.len(), 2);
+        assert!(!debug.active());
+
+        debug.selected = "Both".into();
+        debug.exec(&Command::StartDebugging, &mut env!());
+        assert_eq!(debug.live.len(), 2);
+        pump!(|d: &Debug| paused(d, 2));
+        assert!(debug.live.iter().all(|l| l.group.as_deref() == Some("Both")));
+        assert_eq!(marks.stopped_lines(&file), [2, 2]);
+        assert_eq!(marks.stopped, Some((file.clone(), 2)));
+        pump!(|_: &Debug| bottom.console.text().contains("[A] hello from the program\n") && bottom.console.text().contains("[B] hello from the program\n"));
+        marks.toggle(&file, 0);
+        debug.poll(&mut env!());
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(320.0, 700.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            debug.ui(ui, &Theme::dark(), &mut env!());
+            debug.toolbar(ui.ctx(), &Theme::dark(), 40.0, &mut vec![]);
+        });
+        out.textures_delta.clear();
+
+        debug.focus_on(0, &mut cmds);
+        debug.exec(&Command::StopDebugging, &mut env!());
+        pump!(|d: &Debug| !d.active());
+        assert!(!marks.live && marks.paused.is_empty() && marks.stopped.is_none());
+        assert!(bottom.console.text().contains("[A] Debugging ended.\n"));
+
+        debug.selected = "C".into();
+        debug.exec(&Command::StartDebugging, &mut env!());
+        pump!(|d: &Debug| paused(d, 1));
+        debug.selected = "D".into();
+        debug.exec(&Command::RunWithoutDebugging, &mut env!());
+        pump!(|d: &Debug| paused(d, 2));
+        assert_eq!((debug.focus, debug.live[1].config.name.as_str()), (1, "D"));
+        debug.exec(&Command::StopDebugging, &mut env!());
+        pump!(|d: &Debug| d.live.len() == 1);
+        assert_eq!((debug.focus, debug.live[0].config.name.as_str()), (0, "C"));
+        assert!(debug.active() && bottom.console.active && marks.live);
+        debug.poll(&mut env!());
+        assert_eq!(marks.stopped, Some((file.clone(), 2)));
+        debug.exec(&Command::StartDebugging, &mut env!());
+        pump!(|d: &Debug| !d.active());
+
+        let sent: Vec<Vec<Value>> = adapters.iter().map(|(_, rx)| rx.try_iter().collect()).collect();
+        let count = |i: usize, name: &str| sent[i].iter().filter(|r| r["command"] == name).count();
+        assert_eq!((count(0, "setBreakpoints"), count(1, "setBreakpoints")), (2, 2));
+        assert_eq!((count(0, "disconnect"), count(1, "disconnect")), (1, 1));
+        assert_eq!((count(2, "continue"), count(3, "disconnect")), (1, 1));
+        assert!(sent[3].iter().any(|r| r["command"] == "launch" && r["arguments"]["noDebug"] == true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

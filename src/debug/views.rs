@@ -251,10 +251,10 @@ impl Halo {
         }
         views.disasm &= self.editors.text_view(DISASSEMBLY).is_some();
         views.focused = self.editors.text_view(DISASSEMBLY) == Some(true);
-        if self.editors.text_view(MEMORY).is_none() || self.debug.live.is_none() {
+        if self.editors.text_view(MEMORY).is_none() || self.debug.live.is_empty() {
             views.memory = None;
         }
-        if self.debug.live.is_none() {
+        if self.debug.live.is_empty() {
             views.seen = None;
             self.editors.marks.band = None;
         }
