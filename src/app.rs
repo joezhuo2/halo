@@ -453,11 +453,12 @@ impl Halo {
                 if cmd == AddWatch {
                     self.reveal(View::RunAndDebug);
                 }
-                if !self.debug.active() && matches!(cmd, StartDebugging | RunWithoutDebugging) {
+                if cmd == RunWithoutDebugging || (cmd == StartDebugging && !self.debug.paused()) {
                     self.editors.exec(&SaveAll, &self.settings, ctx);
                 }
                 self.debug_exec(&cmd, ctx);
             }
+            OpenDisassembly | OpenMemory => _ = self.debug_exec(&cmd, ctx),
             ToggleSidebar => self.session.sidebar ^= true,
             TogglePanel => self.session.panel ^= true,
             ToggleAi => self.toggle_view(View::Ai),

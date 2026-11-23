@@ -883,6 +883,40 @@ impl Editors {
         self.show_doc(id);
     }
 
+    fn text_doc(&self, title: &str) -> Option<u64> {
+        self.docs.iter().find(|(_, d)| d.buf.read_only && d.buf.path.is_none() && d.buf.title == title).map(|(id, _)| *id)
+    }
+
+    pub fn text_view(&self, title: &str) -> Option<bool> {
+        let id = self.text_doc(title)?;
+        Some(self.focused && self.active_tab().is_some_and(|(g, t)| self.groups[g].tabs[t].doc == id))
+    }
+
+    pub fn show_text(&mut self, title: &str, text: &str, line: Option<usize>, focus: bool) {
+        match self.text_doc(title) {
+            _ if focus => self.open_text(title, text, None),
+            Some(id) => {
+                let doc = self.docs.get_mut(&id).unwrap();
+                doc.buf = Document::from_text(text, title.to_owned());
+                doc.buf.read_only = true;
+                doc.hl = Highlighter::new(None, &doc.buf.rope);
+                doc.max_cols = (0, 0);
+            }
+            None => return,
+        }
+        let Some(id) = self.text_doc(title) else { return };
+        let doc = &self.docs[&id];
+        for tab in self.groups.iter_mut().flat_map(|g| &mut g.tabs).filter(|t| t.doc == id) {
+            match line {
+                Some(line) => {
+                    tab.sels = vec![Sel::caret(doc.buf.rope.line_to_char(line.min(doc.buf.rope.len_lines() - 1)))];
+                    tab.reveal = Some(tab.sels[0].head);
+                }
+                None => doc.buf.clamp(&mut tab.sels),
+            }
+        }
+    }
+
     fn references(&self, doc: u64) -> usize {
         self.groups.iter().flat_map(|g| &g.tabs).filter(|t| t.doc == doc).count()
     }
@@ -2284,7 +2318,9 @@ impl Editors {
             _ => &[],
         };
         let hover_word = self.intel.hover.as_ref().filter(|h| h.doc == doc_id && h.group == g).map(|h| h.word);
-        let marks = path.as_deref().map(|p| (self.marks.of(p).to_vec(), self.marks.stopped_line(p), self.marks.live));
+        let marks = path.as_deref().map(|p| (self.marks.of(p).to_vec(), self.marks.stopped_lines(p), self.marks.live));
+        let stopped = path.as_deref().and_then(|p| self.marks.stopped_line(p));
+        let band = self.marks.band.as_ref().filter(|b| path.is_none() && buf.read_only && b.0 == buf.title).map(|b| b.1);
         let (mut bp_action, bp_w) = (None, glyph_w * 2.2 + 2.0);
         let (test_marks, mut test_click) = (path.as_deref().and_then(|p| self.tests.of(p)).cloned(), None);
         let test_at = |line: usize| test_marks.as_ref()?.tests.iter().find(|t| t.0 == line && !marks.as_ref().is_some_and(|m| m.0.iter().any(|b| b.line == line)));
@@ -2705,7 +2741,7 @@ impl Editors {
                             painter.rect_filled(band, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, 0.4));
                             ui::contrast_border(&painter, theme, band, theme.border);
                         }
-                        if marks.as_ref().is_some_and(|m| m.1 == Some(line)) {
+                        if marks.as_ref().is_some_and(|m| m.1.contains(&line)) || band == Some(line) {
                             let band = Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom));
                             painter.rect_filled(band, CornerRadius::ZERO, ui::with_alpha(theme.warning, 0.14));
                         }
@@ -2806,7 +2842,7 @@ impl Editors {
                         }
                         let last = row.pieces.last().unwrap();
                         let mut after = pos2(text_x + last.galley.size().x + char_w * 3.0, bottom - line_h / 2.0);
-                        if !diffed && settings.inline_values && marks.as_ref().and_then(|m| m.1).is_some_and(|stop| (stop.saturating_sub(50)..=stop).contains(&line)) {
+                        if !diffed && settings.inline_values && stopped.is_some_and(|stop| (stop.saturating_sub(50)..=stop).contains(&line)) {
                             let label = self.marks.inline_label(&buf_ref.line_text(line));
                             if !label.is_empty() {
                                 after.x = painter.text(after, Align2::LEFT_CENTER, label, font.clone(), theme.text_dim).right() + char_w * 3.0;
@@ -2914,7 +2950,7 @@ impl Editors {
                         let bulb = bulb_line.filter(|b| b.0 == line && test.is_none() && !marks.as_ref().is_some_and(|m| m.0.iter().any(|bp| bp.line == line)));
                         if let Some((list, stopped, live)) = &marks {
                             let center = pos2(clip.left() + bp_w / 2.0 + 1.0, y);
-                            crate::debug::paint_gutter(&painter, theme, list, *live, *stopped, line, center, (line_h * 0.26).min(glyph_w * 0.8), bp_hover == Some(line) && test.is_none() && bulb.is_none());
+                            crate::debug::paint_gutter(&painter, theme, list, *live, stopped.contains(&line), line, center, (line_h * 0.26).min(glyph_w * 0.8), bp_hover == Some(line) && test.is_none() && bulb.is_none());
                         }
                         if let Some((_, quick)) = bulb {
                             let size = line_h.min(bp_w);
@@ -4192,6 +4228,29 @@ end", "word ".repeat(100)))], &settings);
         assert_eq!(editors.docs.values().next().unwrap().buf.rope.to_string(), "No differences.\n");
         assert_eq!(editors.status().unwrap().language, "Diff");
         assert!(!editors.any_dirty());
+    }
+
+    #[test]
+    fn shows_debug_text_views_and_refreshes_them_in_place() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        editors.show_text("Disassembly", "a\n", Some(0), false);
+        assert!(editors.docs.is_empty() && editors.text_view("Disassembly").is_none());
+        editors.show_text("Disassembly", "Loading\n", None, true);
+        frame(&ctx, &mut editors, vec![]);
+        assert_eq!(editors.text_view("Disassembly"), Some(true));
+        editors.open_untitled("other");
+        editors.show_text("Disassembly", "  0x1  nop\n  0x2  ret\n  0x3  int3\n", Some(1), false);
+        assert_eq!((editors.groups[0].tabs.len(), editors.text_view("Disassembly")), (2, Some(false)));
+        let id = editors.text_doc("Disassembly").unwrap();
+        let tab = editors.groups[0].tabs.iter().find(|t| t.doc == id).unwrap();
+        assert_eq!((tab.sels[0].head, tab.reveal), (11, Some(11)));
+        assert!(editors.docs[&id].buf.read_only && editors.docs[&id].buf.rope.to_string().ends_with("int3\n"));
+        editors.marks.band = Some(("Disassembly".into(), 1));
+        editors.show_text("Disassembly", "x\n", None, true);
+        frame(&ctx, &mut editors, vec![Event::Text("y".into())]);
+        assert_eq!(editors.docs[&id].buf.rope.to_string(), "x\n");
+        assert!(editors.groups[0].tabs.iter().find(|t| t.doc == id).unwrap().sels[0].head <= 2);
     }
 
     #[test]

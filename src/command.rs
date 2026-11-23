@@ -295,6 +295,8 @@ pub enum Command {
     RemoveAllBreakpoints,
     AddWatch,
     AddConfiguration,
+    OpenDisassembly,
+    OpenMemory,
     RunAllTests,
     RunFailedTests,
     RunTestAtCursor,
@@ -727,6 +729,7 @@ pub fn all() -> Vec<Command> {
         ShowHover, ShowColorPicker, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut, RunToCursor, JumpToCursor,
         ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
+        OpenDisassembly, OpenMemory,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
         OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
         ShowTestOutput, RunAllTestsWithCoverage, ToggleCoverageDisplay, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
@@ -945,6 +948,7 @@ impl Command {
             | StepInto | StepOut | RunToCursor | JumpToCursor | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
             | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
+            OpenDisassembly | OpenMemory => "Run",
             NewTerminal | NewTerminalWith(_) | NewTerminalIn(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
             | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
             | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel | ClearRestoredHistory => "Terminal",
@@ -1243,6 +1247,8 @@ impl Command {
             RemoveAllBreakpoints => "Remove All Breakpoints",
             AddWatch => "Debug: Add Watch Expression",
             AddConfiguration => "Debug: Add Configuration...",
+            OpenDisassembly => "Debug: Open Disassembly View",
+            OpenMemory => "Debug: Open Memory View...",
             RunAllTests => "Test: Run All Tests",
             RunFailedTests => "Test: Run Failed Tests",
             RunTestAtCursor => "Test: Run Test at Cursor",
