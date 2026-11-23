@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+mod procs;
 mod views;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -724,6 +725,7 @@ enum Editing {
 }
 
 type Pending = (Vec<Config>, bool, Option<String>, std::sync::mpsc::Receiver<Outcome>);
+type Picking = (Vec<Config>, bool, Option<String>, Option<std::sync::mpsc::Receiver<Vec<procs::Process>>>);
 
 pub struct Debug {
     configs: Vec<Config>,
@@ -744,6 +746,8 @@ pub struct Debug {
     dialog: Option<Dialog>,
     confirm_clear: bool,
     views: views::Views,
+    picking: Option<Picking>,
+    choices: Option<Vec<crate::search::Choice>>,
 }
 
 impl Default for Debug {
@@ -767,6 +771,8 @@ impl Default for Debug {
             dialog: None,
             confirm_clear: false,
             views: Default::default(),
+            picking: None,
+            choices: None,
         }
     }
 }
@@ -837,6 +843,7 @@ impl Debug {
 
     fn start(&mut self, no_debug: bool, env: &mut Env) {
         let now = env.ctx.input(|i| i.time);
+        self.picking = None;
         self.reload(env.workspace, env.folder, now, true);
         let Some(folder) = env.folder.filter(|_| self.present) else { return env.cmds.push(Command::RunFile) };
         if let Some(error) = &self.error {
@@ -865,7 +872,11 @@ impl Debug {
         }
     }
 
-    fn launch(&mut self, configs: Vec<Config>, no_debug: bool, group: Option<String>, env: &mut Env) {
+    fn launch(&mut self, mut configs: Vec<Config>, no_debug: bool, group: Option<String>, env: &mut Env) {
+        let rest = configs.split_off(configs.iter().position(|c| c.raw.values().any(procs::wants)).unwrap_or(configs.len()));
+        if !rest.is_empty() {
+            self.picking = Some((rest, no_debug, group.clone(), Some(procs::list(env.ctx))));
+        }
         for mut config in configs {
             match config.pre_launch_task.take() {
                 Some(task) => match env.tasks.run_label(&task, env.workspace, env.file.clone(), env.settings, env.bottom, env.ctx) {
@@ -1027,6 +1038,7 @@ impl Debug {
             RunWithoutDebugging => self.start(true, env),
             StopDebugging => {
                 self.pending.clear();
+                self.picking = None;
                 self.stop(self.focus, env);
             }
             RestartDebugging => match self.live.get_mut(self.focus) {
@@ -1072,6 +1084,12 @@ impl Debug {
             }
             OpenDisassembly => self.views.open_disassembly(self.live.get(self.focus)),
             OpenMemory => self.views.ask_memory(self.live.get(self.focus)),
+            AttachProcess(pid) => {
+                if let Some((mut configs, no_debug, group, _)) = self.picking.take() {
+                    configs[0].raw.values_mut().for_each(|v| procs::fill(v, *pid));
+                    self.launch(configs, no_debug, group, env);
+                }
+            }
             _ => return false,
         }
         env.marks.cursor = self.live.get(self.focus).map(Live::cursor_commands).unwrap_or_default();
@@ -1089,6 +1107,18 @@ impl Debug {
             match outcome.ok {
                 true => self.launch(configs, no_debug, group, env),
                 false => ui::notify(outcome.error.unwrap_or_else(|| "The preLaunchTask failed, so debugging did not start.".to_owned())),
+            }
+        }
+        if let Some(picking) = self.picking.as_mut()
+            && let Some(found) = picking.3.as_ref().and_then(|rx| rx.try_recv().ok())
+        {
+            picking.3 = None;
+            match found.is_empty() {
+                true => {
+                    self.picking = None;
+                    ui::notify_error("Could not list the running processes, so debugging did not start.");
+                }
+                false => self.choices = Some(procs::choices(found)),
             }
         }
         let now = env.ctx.input(|i| i.time);
@@ -1985,6 +2015,9 @@ impl Halo {
         debug.dialogs(ctx, &mut env);
         debug.toolbar(ctx, &theme, top, env.marks, env.cmds);
         self.debug_views();
+        if let Some(items) = self.debug.choices.take() {
+            self.search.pick("Select the process to attach to", items);
+        }
     }
 
     pub(crate) fn debug_view(&mut self, ui: &mut Ui) {
@@ -2492,6 +2525,62 @@ mod tests {
         assert_eq!(d[1], &json!([{"line": 1}, {"line": 3}, {"line": 4}]));
         assert_eq!(c[3], d[1]);
         assert!(sent[3].iter().any(|r| r["command"] == "launch" && r["arguments"]["noDebug"] == true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn picks_a_process_before_attaching_to_a_fake_adapter() {
+        let dir = std::env::temp_dir().join(format!("halo-debug-pick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".vscode")).unwrap();
+        let file = dir.join("main.py");
+        std::fs::write(&file, "x = 42\n").unwrap();
+        let (port, requests) = adapter(file.clone());
+        let entry = format!("{{\"type\": \"fake\", \"request\": \"attach\", \"name\": \"Attach\", \"debugServer\": {port}, \"processId\": \"${{command:pickProcess}}\", \"note\": \"pid ${{command:pickMyProcess}} in ${{workspaceFolder}}\"}}");
+        std::fs::write(launch_path(&dir), format!("{{\"configurations\": [{entry}]}}")).unwrap();
+
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let (mut marks, mut bottom, mut panel, mut cmds, mut tasks) = (Marks::default(), BottomPanel::new(), false, vec![], Tasks::default());
+        let mut debug = Debug::default();
+        let workspace = Workspace::single(dir.clone());
+        macro_rules! env {
+            () => {
+                Env { folder: Some(&dir), workspace: &workspace, file: Some(file.clone()), settings: &settings, marks: &mut marks, bottom: &mut bottom, tasks: &mut tasks, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
+            };
+        }
+        macro_rules! pump {
+            ($done:expr) => {{
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while !($done)(&debug) {
+                    assert!(Instant::now() < deadline, "the session did not reach the expected state");
+                    debug.poll(&mut env!());
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }};
+        }
+        let me = std::process::id();
+        debug.exec(&Command::StartDebugging, &mut env!());
+        assert!(!debug.active() && debug.picking.is_some());
+        debug.exec(&Command::StopDebugging, &mut env!());
+        debug.exec(&Command::AttachProcess(me), &mut env!());
+        assert!(!debug.active() && debug.picking.is_none());
+
+        debug.exec(&Command::StartDebugging, &mut env!());
+        pump!(|d: &Debug| d.choices.is_some());
+        let choices = debug.choices.take().unwrap();
+        assert!(choices.iter().any(|c| c.2 == Command::AttachProcess(me)));
+        debug.exec(&Command::AttachProcess(me), &mut env!());
+        assert!(debug.active() && debug.picking.is_none());
+        pump!(|d: &Debug| d.live.first().is_some_and(|l| l.state == State::Stopped));
+        debug.exec(&Command::StopDebugging, &mut env!());
+        pump!(|d: &Debug| !d.active());
+
+        let sent: Vec<Value> = requests.try_iter().collect();
+        let attach = sent.iter().find(|r| r["command"] == "attach").unwrap();
+        assert_eq!(attach["arguments"]["processId"], json!(me));
+        assert_eq!(attach["arguments"]["note"], json!(format!("pid {me} in {}", dir.to_string_lossy())));
+        assert!(!sent.iter().any(|r| r["command"] == "launch"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -297,6 +297,7 @@ pub enum Command {
     AddConfiguration,
     OpenDisassembly,
     OpenMemory,
+    AttachProcess(u32),
     RunAllTests,
     RunFailedTests,
     RunTestAtCursor,
@@ -948,7 +949,7 @@ impl Command {
             | StepInto | StepOut | RunToCursor | JumpToCursor | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
             | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
-            OpenDisassembly | OpenMemory => "Run",
+            OpenDisassembly | OpenMemory | AttachProcess(_) => "Run",
             NewTerminal | NewTerminalWith(_) | NewTerminalIn(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
             | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
             | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel | ClearRestoredHistory => "Terminal",
@@ -1249,6 +1250,7 @@ impl Command {
             AddConfiguration => "Debug: Add Configuration...",
             OpenDisassembly => "Debug: Open Disassembly View",
             OpenMemory => "Debug: Open Memory View...",
+            AttachProcess(_) => "Debug: Attach to Process",
             RunAllTests => "Test: Run All Tests",
             RunFailedTests => "Test: Run Failed Tests",
             RunTestAtCursor => "Test: Run Test at Cursor",
