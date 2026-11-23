@@ -13,6 +13,7 @@ mod layout;
 mod prefs;
 mod load;
 mod markdown;
+mod md_links;
 mod merge;
 mod merge_view;
 mod open_tabs;
@@ -305,6 +306,7 @@ pub struct Editors {
     renaming: Option<(u64, String, bool)>,
     grid: grid::Grid,
     searches: Vec<(u64, std::sync::mpsc::Receiver<String>)>,
+    links: md_links::Links,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -662,6 +664,7 @@ impl Editors {
             renaming: None,
             grid: Default::default(),
             searches: vec![],
+            links: Default::default(),
         }
     }
 
@@ -1531,6 +1534,7 @@ impl Editors {
     }
 
     pub fn reload_clean(&mut self) {
+        self.links.stale();
         for doc in self.docs.values_mut().filter(|d| !d.buf.is_dirty() && d.content.is_text() && !d.buf.large) {
             let Some(path) = doc.buf.path.clone() else { continue };
             match Document::load(&path) {
@@ -1550,6 +1554,7 @@ impl Editors {
     }
 
     pub fn path_changed(&mut self, old: &Path, new: Option<&Path>) {
+        self.links.stale();
         let affected: Vec<u64> = self
             .docs
             .iter()

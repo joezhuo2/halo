@@ -108,6 +108,7 @@ pub const SETTINGS: &[Meta] = &[
     m("linked_editing", 0, ED, "Linked Editing", "Rename the matching HTML, XML or JSX tag while you edit a tag name.", Kind::Toggle),
     m("diagnostics", 0, PROBLEMS, "Diagnostics", "Underline errors and warnings, and list them in the Problems panel.", Kind::Toggle),
     m("status_problems", 0, PROBLEMS, "Status Bar Counts", "Show the number of errors and warnings in the status bar.", Kind::Toggle),
+    m("markdown_validate", 0, PROBLEMS, "Validate Markdown Links", "Warn about links in Markdown files to files, headings and link definitions that do not exist.", Kind::Toggle),
     m("auto_save", 1, FILES, "Auto Save", "When changed files are saved.", Kind::Choice(&[("off", "Off"), ("afterDelay", "After a delay"), ("onFocusChange", "When the editor loses focus"), ("onWindowChange", "When the window loses focus")])),
     m("auto_save_delay", 1, FILES, "Auto Save Delay", "Milliseconds after the last edit before a file is saved, when Auto Save is After a delay.", Kind::Int(100, 60000)),
     m("hot_exit", 1, FILES, "Hot Exit", "Keep unsaved and untitled files when Halo closes and bring them back the next time it opens.", Kind::Toggle),

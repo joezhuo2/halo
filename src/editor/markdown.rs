@@ -262,7 +262,7 @@ pub enum Link {
     None,
 }
 
-fn unescape(text: &str) -> String {
+pub(super) fn unescape(text: &str) -> String {
     let bytes = text.as_bytes();
     let (mut out, mut i) = (vec![], 0);
     while i < bytes.len() {

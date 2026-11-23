@@ -35,6 +35,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("copy_with_syntax_highlighting", "editor.copyWithSyntaxHighlighting"),
     ("code_lens", "editor.codeLens"),
     ("lightbulb", "editor.lightbulb.enabled"),
+    ("markdown_validate", "markdown.validate.enabled"),
     ("inlay_hints", "editor.inlayHints.enabled"),
     ("color_decorators", "editor.colorDecorators"),
     ("unicode_invisible", "editor.unicodeHighlight.invisibleCharacters"),
