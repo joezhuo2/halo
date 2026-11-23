@@ -47,6 +47,7 @@ impl Spec {
             ["diff"] => (String::new(), None),
             ["diff", "--cached"] => ("HEAD".to_owned(), Some(String::new())),
             ["show", "--format=", "--diff-merges=first-parent", hash] => (format!("{hash}^"), Some(hash.to_owned())),
+            ["diff", left, right] if !left.starts_with('-') && !right.starts_with('-') => (left.to_owned(), Some(right.to_owned())),
             _ => return None,
         };
         Some(Spec { rel: args[at + 1].clone(), left, right })
@@ -66,7 +67,8 @@ impl Spec {
             Some("") => "Index".to_owned(),
             Some(rev) => {
                 let (hash, parent) = rev.strip_suffix('^').map_or((rev, ""), |hash| (hash, "^"));
-                format!("{}{parent}", &hash[..hash.len().min(8)])
+                let hash = if hash.len() > 8 && hash.bytes().all(|b| b.is_ascii_hexdigit()) { &hash[..8] } else { hash };
+                format!("{hash}{parent}")
             }
         }
     }
@@ -1184,6 +1186,10 @@ mod tests {
         let shown = Spec::parse(&strings(&["show", "--format=", "--diff-merges=first-parent", "abcdef1234", "--", "b.rs"])).unwrap();
         assert_eq!((shown.left.as_str(), shown.right.as_deref(), shown.side()), ("abcdef1234^", Some("abcdef1234"), Side::Fixed));
         assert_eq!((Spec::label(Some(&shown.left)), Spec::label(shown.right.as_deref())), ("abcdef12^".to_owned(), "abcdef12".to_owned()));
+        let compared = Spec::parse(&strings(&["diff", "main", "feature/é-long", "--", "c.rs"])).unwrap();
+        assert_eq!((compared.left.as_str(), compared.right.as_deref(), compared.side()), ("main", Some("feature/é-long"), Side::Fixed));
+        assert_eq!(Spec::label(compared.right.as_deref()), "feature/é-long");
+        assert!(Spec::parse(&strings(&["diff", "--stat", "main", "--", "c.rs"])).is_none());
         assert!(Spec::parse(&strings(&["log", "--", "a"])).is_none());
         assert!(Spec::parse(&strings(&["diff", "--", "a", "b"])).is_none());
     }
