@@ -121,6 +121,7 @@ pub struct Explorer {
     roots: Vec<(PathBuf, String)>,
     title: Option<String>,
     children: HashMap<PathBuf, Vec<Entry>>,
+    stamps: HashMap<PathBuf, std::time::SystemTime>,
     expanded: HashSet<PathBuf>,
     rows: Vec<Row>,
     dirty: bool,
@@ -254,6 +255,7 @@ impl Explorer {
             roots: vec![],
             title: None,
             children: HashMap::new(),
+            stamps: HashMap::new(),
             expanded: HashSet::new(),
             rows: vec![],
             dirty: true,
@@ -339,20 +341,35 @@ impl Explorer {
 
     fn load(&mut self, dir: &Path) {
         if !self.children.contains_key(dir) {
-            let entries = self.read_dir(dir);
-            self.children.insert(dir.to_path_buf(), entries);
+            let modified = std::fs::metadata(dir).and_then(|m| m.modified()).ok();
+            self.reload(dir, modified);
         }
+    }
+
+    fn reload(&mut self, dir: &Path, modified: Option<std::time::SystemTime>) {
+        match modified.filter(|m| m.elapsed().is_ok_and(|age| age.as_secs() >= 2)) {
+            Some(stamp) => self.stamps.insert(dir.to_path_buf(), stamp),
+            None => self.stamps.remove(dir),
+        };
+        let entries = self.read_dir(dir);
+        self.children.insert(dir.to_path_buf(), entries);
     }
 
     pub fn refresh(&mut self) {
         let loaded: Vec<PathBuf> = self.children.keys().cloned().collect();
         for dir in loaded {
-            if dir.is_dir() {
-                let entries = self.read_dir(&dir);
-                self.children.insert(dir, entries);
-            } else {
-                self.children.remove(&dir);
-                self.expanded.remove(&dir);
+            match std::fs::metadata(&dir) {
+                Ok(meta) if meta.is_dir() => {
+                    let modified = meta.modified().ok();
+                    if self.sort == "modified" || modified.is_none() || self.stamps.get(&dir) != modified.as_ref() {
+                        self.reload(&dir, modified);
+                    }
+                }
+                _ => {
+                    self.children.remove(&dir);
+                    self.stamps.remove(&dir);
+                    self.expanded.remove(&dir);
+                }
             }
         }
         self.flipped.retain(|p| p.parent().is_some_and(|d| self.children.contains_key(d)));
@@ -866,7 +883,10 @@ impl Explorer {
             Action::Copy(text) => ui.ctx().copy_text(text),
             Action::Reveal(path) => reveal(&path),
             Action::Compare(cmd) => cmds.push(cmd),
-            Action::Refresh => cmds.push(Command::RefreshExplorer),
+            Action::Refresh => {
+                self.stamps.clear();
+                cmds.push(Command::RefreshExplorer);
+            }
             Action::CollapseAll => self.toggle_folders(None, ui.input(|i| i.time)),
         }
     }
@@ -1123,6 +1143,7 @@ impl Explorer {
             self.exclude = settings.files_exclude.clone();
             self.compact = settings.compact_folders;
             self.sort = settings.explorer_sort.clone();
+            self.stamps.clear();
             self.refresh();
         }
         if (self.nest, self.nest_expand, &self.patterns) != (settings.file_nesting, settings.file_nesting_expand, &settings.file_nesting_patterns) {
