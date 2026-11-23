@@ -53,13 +53,14 @@ pub struct Scm {
     review: Option<(u64, bool, String)>,
     new_pr: Option<(String, String)>,
     ops: ops::Ops,
+    ai: Option<crate::commit_ai::Job>,
 }
 
 impl Scm {
     pub fn new() -> Self {
         Self {
             open: [true; 3], sizes: [None; 4], message: String::new(), committing: false, discard: None,
-            new_branch: None, commit: None, review: None, new_pr: None, ops: ops::Ops::default(),
+            new_branch: None, commit: None, review: None, new_pr: None, ops: ops::Ops::default(), ai: None,
         }
     }
 
@@ -90,6 +91,13 @@ impl Scm {
             self.apply(action, git, ui);
             return;
         };
+        if let Some(result) = self.ai.as_ref().and_then(|job| job.poll()) {
+            self.ai = None;
+            match result {
+                Ok(message) => self.message = message,
+                Err(error) => ui::notify_error(format!("Could not generate a commit message: {error}")),
+            }
+        }
         if self.committing && !git.busy() {
             self.committing = false;
             if git.error().is_none() {
@@ -118,11 +126,19 @@ impl Scm {
             ui.add_space(6.0);
             let label = RichText::new(format!("{}  Commit", icons::CHECK)).color(theme.accent);
             ui.horizontal(|ui| {
-                let width = (ui.available_width() - 65.0).max(50.0);
+                let width = (ui.available_width() - 91.0).max(50.0);
                 let button = ui.add_enabled(can_commit, egui::Button::new(label).min_size(vec2(width, 26.0)))
                     .on_disabled_hover_text("Type a message to commit.");
                 if can_commit && (button.clicked() || submit) {
                     action = Some(Action::Commit);
+                }
+                let tip = if self.ai.is_some() { "Generating a commit message. Click to cancel." } else { "Generate Commit Message with AI" };
+                let sparkle = ui::icon_button(ui, theme, if self.ai.is_some() { "" } else { icons::SPARKLE }, 26.0, false, tip);
+                if self.ai.is_some() {
+                    ui::spinner(ui, sparkle.rect.center(), 6.0, theme.accent);
+                }
+                if sparkle.clicked() {
+                    cmds.push(Command::Git(GitCommand::GenerateMessage));
                 }
                 let amend = git.details().and_then(|d| d.as_ref().ok()).is_some_and(|d| !d.head.is_empty() && d.operation.is_none());
                 if ui.add_enabled(amend && !busy, egui::Button::new("Amend"))

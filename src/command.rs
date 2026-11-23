@@ -384,6 +384,7 @@ pub enum GitCommand {
     PopStash,
     DropStash,
     ShowStash,
+    GenerateMessage,
 }
 
 impl GitCommand {
@@ -393,7 +394,7 @@ impl GitCommand {
         Self::DeleteTag, Self::PushTag, Self::PushTags, Self::Remotes, Self::AddRemote, Self::RemoveRemote,
         Self::RemoteUrl, Self::Fetch, Self::FetchPrune, Self::FetchAll, Self::Pull, Self::Push, Self::Clone,
         Self::Init, Self::Worktrees, Self::AddWorktree, Self::RemoveWorktree, Self::OpenWorktree,
-        Self::Stash, Self::ApplyStash, Self::PopStash, Self::DropStash, Self::ShowStash,
+        Self::Stash, Self::ApplyStash, Self::PopStash, Self::DropStash, Self::ShowStash, Self::GenerateMessage,
     ];
 
     pub fn label(self) -> &'static str {
@@ -433,6 +434,7 @@ impl GitCommand {
             Self::PopStash => "Git: Pop Stash...",
             Self::DropStash => "Git: Drop Stash...",
             Self::ShowStash => "Git: Show Stash Changes...",
+            Self::GenerateMessage => "Git: Generate Commit Message",
         }
     }
 }
