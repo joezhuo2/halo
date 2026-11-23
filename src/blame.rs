@@ -1,6 +1,8 @@
 use crate::command::Command;
 use crate::history::{Temp, age, no_index};
-use eframe::egui;
+use crate::theme::Theme;
+use crate::ui;
+use eframe::egui::{self, RichText, Ui};
 use ropey::Rope;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,7 +30,7 @@ pub fn changes(dir: &Path, file: &str, hash: &str) -> Command {
 impl Commit {
     pub fn label(&self) -> String { format!("{}, {}", self.author, age(self.time)) }
 
-    pub fn tip(&self) -> String {
+    fn date(&self) -> String {
         let offset = self.zone.parse::<i32>().unwrap_or(0);
         let local = self.time as i64 + (offset / 100 * 3600 + offset % 100 * 60) as i64;
         let day = local.div_euclid(86400) + 719468;
@@ -41,13 +43,51 @@ impl Commit {
         let month = if m < 10 { m + 3 } else { m - 9 };
         let year = year + era * 400 + i64::from(month <= 2);
         let hm = local.rem_euclid(86400) / 60;
-        format!("{}\n{}, {year:04}-{month:02}-{d:02} {:02}:{:02} {}\n\n{}", self.hash, self.author, hm / 60, hm % 60, self.zone, self.subject)
+        format!("{year:04}-{month:02}-{d:02} {:02}:{:02} {}", hm / 60, hm % 60, self.zone)
+    }
+
+    pub fn tip(&self) -> String {
+        format!("{}\n{}, {}\n\n{}", self.hash, self.author, self.date(), self.subject)
+    }
+
+    pub fn open_remote(&self, path: &Path) {
+        let (dir, hash) = (path.parent().unwrap_or(path).to_owned(), self.hash.clone());
+        std::thread::spawn(move || match web_url(&remote(&dir), &hash) {
+            Some((_, url)) => ui::open_url(&url),
+            None => ui::notify("The remote of this repository is not a GitHub, GitLab or Bitbucket host."),
+        });
     }
 
     pub fn diff(&self, path: &Path) -> Command {
         changes(path.parent().unwrap_or(path), &self.file, &self.hash)
     }
 }
+
+fn remote(dir: &Path) -> String {
+    crate::git::read(dir, &["ls-remote", "--get-url"]).unwrap_or_default().trim().to_owned()
+}
+
+pub fn web_url(remote: &str, hash: &str) -> Option<(&'static str, String)> {
+    let remote = remote.trim().trim_end_matches('/');
+    let remote = remote.strip_suffix(".git").unwrap_or(remote);
+    let (authority, path) = match remote.split_once("://") {
+        Some((_, rest)) => rest.split_once('/')?,
+        None => remote.split_once(':')?,
+    };
+    let host = authority.rsplit('@').next()?.split(':').next()?;
+    let host = host.trim_start_matches("ssh.").trim_start_matches("altssh.");
+    let path = path.trim_matches('/');
+    let lower = host.to_ascii_lowercase();
+    let (name, route) = match () {
+        _ if lower.contains("github") => ("GitHub", "commit"),
+        _ if lower.contains("gitlab") => ("GitLab", "-/commit"),
+        _ if lower.contains("bitbucket") => ("Bitbucket", "commits"),
+        _ => return None,
+    };
+    (!path.is_empty()).then(|| (name, format!("https://{host}/{path}/{route}/{hash}")))
+}
+
+type Detail = (String, Option<(&'static str, String)>);
 
 fn filename(raw: &str) -> String {
     let Some(quoted) = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else { return raw.into() };
@@ -129,6 +169,7 @@ pub struct Blame {
     pending: Option<(u64, bool, Receiver<Reply>)>,
     wait: Option<(u64, Instant)>,
     failed: bool,
+    detail: Option<(String, Receiver<Detail>, Option<Detail>)>,
 }
 
 impl Blame {
@@ -204,6 +245,52 @@ impl Blame {
         self.line(line).map(|c| c.map_or_else(|| "Not committed yet".into(), |c| format!("{} • {}", c.label(), c.subject)))
     }
 
+    fn detail(&mut self, hash: &str, ctx: &egui::Context) -> Option<Detail> {
+        if self.detail.as_ref().is_none_or(|d| d.0 != hash) {
+            let (tx, rx) = channel();
+            let (dir, owned, ctx) = (self.path.parent().unwrap_or(&self.path).to_owned(), hash.to_owned(), ctx.clone());
+            std::thread::spawn(move || {
+                let message = crate::git::read(&dir, &["show", "-s", "--format=%B", &owned]).unwrap_or_default();
+                let _ = tx.send((message.trim().to_owned(), web_url(&remote(&dir), &owned)));
+                ctx.request_repaint();
+            });
+            self.detail = Some((hash.to_owned(), rx, None));
+        }
+        let (_, rx, detail) = self.detail.as_mut()?;
+        if detail.is_none() {
+            *detail = rx.try_recv().ok();
+        }
+        detail.clone()
+    }
+
+    pub fn card(&mut self, ui: &mut Ui, theme: &Theme, line: usize, cmds: &mut Vec<Command>) {
+        let Some(Some(commit)) = self.line(line).map(|c| c.cloned()) else { return };
+        ui.set_max_width(440.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&commit.hash[..commit.hash.len().min(8)]).monospace().color(theme.accent));
+            ui.label(RichText::new(&commit.author).strong().color(theme.text));
+            ui.label(RichText::new(commit.date()).color(theme.text_dim));
+        });
+        ui.add_space(4.0);
+        let detail = self.detail(&commit.hash, ui.ctx());
+        let message = detail.as_ref().map_or(commit.subject.as_str(), |d| d.0.as_str());
+        ui.add(egui::Label::new(RichText::new(message).color(theme.text)).wrap());
+        if detail.is_none() {
+            ui::skeleton(ui, theme, 1);
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.button("Open Changes").clicked() {
+                cmds.push(commit.diff(&self.path));
+            }
+            if let Some((host, url)) = detail.and_then(|d| d.1)
+                && ui.button(format!("Open on {host}")).on_hover_text(&url).clicked()
+            {
+                ui::open_url(&url);
+            }
+        });
+    }
+
     pub fn loading(&self) -> bool { self.lines.is_none() && !self.failed && (self.pending.is_some() || self.wait.is_some()) }
 }
 
@@ -225,6 +312,19 @@ mod tests {
         let mapped = map_edits(&rows, "@@ -0,0 +1 @@\n+head\n@@ -2 +3,2 @@\n");
         assert_eq!(mapped.len(), 5);
         assert!(mapped[0].is_none() && mapped[1].is_some() && mapped[2..].iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn builds_commit_urls_for_known_hosts() {
+        let url = |remote: &str| web_url(remote, "abc").map(|(host, url)| format!("{host} {url}"));
+        assert_eq!(url("git@github.com:o/r.git").as_deref(), Some("GitHub https://github.com/o/r/commit/abc"));
+        assert_eq!(url("https://tok:x@github.com/o/r/\n").as_deref(), Some("GitHub https://github.com/o/r/commit/abc"));
+        assert_eq!(url("ssh://git@ssh.github.com:443/o/r.git").as_deref(), Some("GitHub https://github.com/o/r/commit/abc"));
+        assert_eq!(url("ssh://git@gitlab.example.com:2222/g/sub/r.git").as_deref(), Some("GitLab https://gitlab.example.com/g/sub/r/-/commit/abc"));
+        assert_eq!(url("https://ada@bitbucket.org/team/r.git").as_deref(), Some("Bitbucket https://bitbucket.org/team/r/commits/abc"));
+        for other in ["origin", "", r"C:\repos\r", "/srv/git/r.git", "https://example.com/o/r", "git@github.com:"] {
+            assert_eq!(url(other), None, "{other}");
+        }
     }
 
     #[test]

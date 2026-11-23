@@ -1368,6 +1368,20 @@ impl Editors {
         }
     }
 
+    pub fn blame_card(&mut self, ui: &mut Ui, theme: &Theme, cmds: &mut Vec<Command>) {
+        let Some((doc, tab)) = self.active_doc() else { return };
+        let line = doc.buf.line_of(tab.sels.first().map_or(0, |s| s.head).min(doc.buf.len()));
+        doc.blame.card(ui, theme, line, cmds);
+    }
+
+    pub fn open_line_commit_on_remote(&mut self) -> bool {
+        let Some((doc, tab)) = self.active_doc() else { return false };
+        let line = doc.buf.line_of(tab.sels.first().map_or(0, |s| s.head).min(doc.buf.len()));
+        let (Some(path), Some(Some(commit))) = (doc.buf.path.as_deref(), doc.blame.line(line)) else { return false };
+        commit.open_remote(path);
+        true
+    }
+
     pub fn blame_loading(&mut self) -> bool {
         self.active_doc().is_some_and(|(doc, _)| doc.blame.loading())
     }
@@ -2857,7 +2871,11 @@ impl Editors {
                         if is_active && settings.inline_blame && !buf_ref.large && buf_ref.line_of(tab.sels[0].head) == line
                             && let Some(label) = doc.blame.inline(line)
                         {
-                            after.x = painter.text(after, Align2::LEFT_CENTER, label, FontId::proportional(settings.font_size), ui::with_alpha(theme.text_dim, 0.75)).right() + char_w * 3.0;
+                            let drawn = painter.text(after, Align2::LEFT_CENTER, label, FontId::proportional(settings.font_size), ui::with_alpha(theme.text_dim, 0.75));
+                            after.x = drawn.right() + char_w * 3.0;
+                            if matches!(doc.blame.line(line), Some(Some(_))) {
+                                ui.interact(drawn, id.with("blame_card"), Sense::hover()).on_hover_ui(|ui| doc.blame.card(ui, theme, line, pending));
+                            }
                         }
                         if let Some((_, message)) = test_marks.as_ref().and_then(|m| m.failures.iter().find(|f| f.0 == line)) {
                             painter.rect_filled(Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom)), CornerRadius::ZERO, ui::with_alpha(theme.error, 0.08));

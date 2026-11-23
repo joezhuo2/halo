@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 const CLIS: [(&str, &str); 2] = [("Claude", "claude"), ("Codex", "codex")];
 const TERMINAL_ID: u64 = 1 << 40;
 
-fn locate(cli: &str) -> Option<PathBuf> {
+pub(crate) fn locate(cli: &str) -> Option<PathBuf> {
     let exe = if cfg!(windows) { format!("{cli}.exe") } else { cli.to_owned() };
     // Claude's native installer puts it in ~/.local/bin, which this process's PATH may not have yet
     crate::lsp::find_program(cli).or_else(|| Some(dirs::home_dir()?.join(".local").join("bin").join(exe)).filter(|p| p.is_file()))
