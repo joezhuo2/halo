@@ -50,6 +50,7 @@ const FILES: &str = "Files";
 const LANG: &str = "Languages";
 const A11Y: &str = "Accessibility";
 const THEMES: &[(&str, &str)] = &[("dark", "Dark"), ("light", "Light"), ("hc-dark", "High Contrast Dark"), ("hc-light", "High Contrast Light")];
+const SIGNAL: &[(&str, &str)] = &[("auto", "Auto"), ("on", "On"), ("off", "Off")];
 
 pub const SETTINGS: &[Meta] = &[
     m("font_family", 0, ED, "Font Family", "The font of the editor and the terminal.", Kind::Custom),
@@ -122,6 +123,13 @@ pub const SETTINGS: &[Meta] = &[
     m("preferred_high_contrast_theme", 2, A11Y, "Preferred High Contrast Theme", "The theme used when the operating system is in a dark high contrast mode.", Kind::Choice(THEMES)),
     m("preferred_high_contrast_light_theme", 2, A11Y, "Preferred High Contrast Light Theme", "The theme used when the operating system is in a light high contrast mode.", Kind::Choice(THEMES)),
     m("accessibility_support", 2, A11Y, "Accessibility Support", "Optimize for screen readers: word wrap, minimap, code lens, inlay hints and animations are turned off. Auto follows whether a screen reader is active.", Kind::Choice(&[("auto", "Auto"), ("on", "On"), ("off", "Off")])),
+    m("signal_line_error", 2, A11Y, "Signal: Line Has Error", "Play a sound when the cursor moves onto a line with an error (Windows). Auto plays it only while a screen reader is active.", Kind::Choice(SIGNAL)),
+    m("signal_line_warning", 2, A11Y, "Signal: Line Has Warning", "Play a sound when the cursor moves onto a line with a warning and no error (Windows). Auto plays it only while a screen reader is active.", Kind::Choice(SIGNAL)),
+    m("signal_line_breakpoint", 2, A11Y, "Signal: Line Has Breakpoint", "Play a sound when the cursor moves onto a line with a breakpoint (Windows). Auto plays it only while a screen reader is active.", Kind::Choice(SIGNAL)),
+    m("signal_line_folded", 2, A11Y, "Signal: Line Has Folded Area", "Play a sound when the cursor moves onto a folded line (Windows). Auto plays it only while a screen reader is active.", Kind::Choice(SIGNAL)),
+    m("signal_diff_inserted", 2, A11Y, "Signal: Diff Line Inserted", "Play a sound when the accessible diff viewer moves to an inserted line (Windows). Auto plays it only while a screen reader is active.", Kind::Choice(SIGNAL)),
+    m("signal_diff_deleted", 2, A11Y, "Signal: Diff Line Deleted", "Play a sound when the accessible diff viewer moves to a removed line (Windows). Auto plays it only while a screen reader is active.", Kind::Choice(SIGNAL)),
+    m("signal_volume", 2, A11Y, "Signal Volume", "The volume of the signal sounds, from 0 to 100.", Kind::Int(0, 100)),
     m("reduce_motion", 2, A11Y, "Reduce Motion", "Jump animations to their end, stop loading shimmers and spinners, and stop the cursor blinking. Auto follows the operating system (Windows).", Kind::Choice(&[("auto", "Auto"), ("on", "On"), ("off", "Off")])),
     m("restore_session", 2, "Window", "Restore Session", "Open the last folder and its files when Halo starts.", Kind::Toggle),
     m("tab_close_button", 2, "Workbench", "Tab Close Button", "Where the close button of an editor tab is.", Kind::Choice(&[("right", "Right"), ("left", "Left"), ("off", "Off")])),

@@ -2299,6 +2299,10 @@ impl Editors {
         let (mut over_problem, mut ctrl_span) = (None, None);
         let mut toggle_fold = None;
         let folded: &[(usize, usize)] = if diffed { &[] } else { folds };
+        if has_focus {
+            let at = (doc_id, buf.line_of(tab.sels.first().map_or(0, |s| s.head)), buf.version);
+            crate::sound::cursor(settings, at, problems, marks.as_ref().map_or(&[], |m| &m.0), folded);
+        }
         let ranges: &[lsp::FoldRange] = if diffed { &[] } else { folding::cached(buf, lang, ranges) };
         let opens = |line: usize| ranges.binary_search_by_key(&line, |r| r.0).ok();
         let changes = path.as_deref().and_then(|p| git.line_changes(p)).filter(|_| !diffed && !buf.large);
