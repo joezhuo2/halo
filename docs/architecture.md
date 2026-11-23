@@ -72,7 +72,8 @@ Halo is a single Rust binary: eframe/egui 0.36 on the OpenGL (glow) renderer. No
 - A view only draws and queues. While `view` runs, its document and tab are taken out of `Editors`, so anything that opens files or edits other documents (jumps, workspace edits, code actions, opening the peek list) is pushed to `Intel::queued` and done in `after_views`.
 - Server data is kept in the document's current line numbers. When a document is edited, `settle` shifts symbols, tokens, hints and diagnostics below the edited line by the change in line count and drops what was on the edited line, so nothing jumps while the next reply is on its way.
 - Code lens rows are extra rows in the view. `lens_rows` lists the lines that have one, `row_of` maps a line to its row and `locate` maps a row back to a line or a lens. Inlay hints are extra sections in a line's layout; `display` and `undisplay` map between document columns and columns in the laid-out line, for carets, selections and clicks.
-- Reference counts are Halo's own: one `textDocument/references` request per visible function, method or type from the document symbols. Lenses that servers offer through `textDocument/codeLens` are not used.
+- Reference counts are Halo's own: one `textDocument/references` request per visible function, method or type from the document symbols. Lenses that servers offer through `textDocument/codeLens` share the same rows; a line where the server already shows a references or implementations lens drops Halo's own count.
+- Peeks (references, definitions and the gutter change peek) are a zone of extra rows after their line in the tab that opened them, so the text below moves down.
 
 ## Conventions
 

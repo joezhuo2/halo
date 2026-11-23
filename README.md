@@ -81,15 +81,25 @@ language you want diagnostics and completion in. Each is optional.
   `Ctrl+Shift+Alt+Arrow` select a box (plain drags do too in Toggle Column
   Selection Mode),
   `Ctrl+Shift+L` selects every occurrence, `Shift+Alt+Right` and
-  `Shift+Alt+Left` grow and shrink the selection, and `Ctrl+U` undoes the
-  last cursor move.
+  `Shift+Alt+Left` grow and shrink the selection (by the language server's
+  selection ranges when it has them), and `Ctrl+U` undoes the last cursor
+  move.
+- **Subword navigation:** Cursor Word Part Left and Right (and their Select
+  forms) stop at camelCase humps, acronyms, underscores, hyphens and digits;
+  `Ctrl+Alt+Backspace` and `Ctrl+Alt+Delete` delete a word part.
 - **Find and replace** in the file (`Ctrl+F`, `Ctrl+H`) with match case,
   whole word, regular expressions (`$1` in the replacement), find in
   selection and preserve case. `Up` and `Down` in the find box recall earlier
   searches. **Go to Line** is `Ctrl+G`.
 - **Search in files** (`Ctrl+Shift+F`) in the side bar: replace in files,
-  include and exclude globs, a results tree, and the results as a tab whose
-  lines open on a double-click.
+  include and exclude globs and a results tree.
+- **Search editor:** New Search Editor, or Open Results in Editor
+  (`Alt+Enter` in the search panel), shows the results as an editable tab.
+  Edit the query, flags or globs in its header and press `Enter` or
+  `Ctrl+Shift+R` to search again; `Alt+C`, `Alt+W`, `Alt+R` and `Alt+L`
+  toggle match case, whole word, regex and context lines. Double-click,
+  `F12` or `Ctrl+Click` opens a result. It saves and opens as VS Code
+  `.code-search` files.
 - **Line operations:** move (`Alt+Up`, `Alt+Down`), copy (`Shift+Alt+Up`,
   `Shift+Alt+Down`), delete (`Ctrl+Shift+K`), join, and insert a line above
   (`Ctrl+Shift+Enter`) or below (`Ctrl+Enter`). Comments toggle with `Ctrl+/`
@@ -98,9 +108,24 @@ language you want diagnostics and completion in. Each is optional.
   are colored by depth, with indentation guides. `Ctrl+Shift+\` jumps to the
   matching bracket, and Select to Bracket selects the brackets and what is
   between them.
-- **Word wrap** (`Alt+Z`), **code folding** by indentation (the gutter arrows,
-  `Ctrl+Shift+[` and `Ctrl+Shift+]`), **sticky scroll**, rulers and visible
-  whitespace. Each has a switch in Settings.
+- **Code folding** from the language server's folding ranges, by
+  indentation, and between `#region` / `#endregion` markers (the gutter
+  arrows, `Ctrl+Shift+[` and `Ctrl+Shift+]`). `Ctrl+K Ctrl+1` to
+  `Ctrl+K Ctrl+7` fold a level, `Ctrl+K Ctrl+[` and `Ctrl+K Ctrl+]` fold and
+  unfold recursively, and `Ctrl+K Ctrl+/` folds all block comments.
+- **Word wrap** (`Alt+Z`), **sticky scroll**, rulers and visible whitespace.
+  Each has a switch in Settings.
+- **Linked editing:** renaming an HTML, XML, SVG, Vue, Svelte, JSX or TSX tag
+  renames its closing tag, with or without a language server.
+- **Color decorators:** a swatch before each hex, `rgb()` and `hsl()` value
+  (or the colors the language server reports); click it, or run Show Color
+  Picker, to pick a color in the value's own format.
+- **Unicode highlighting:** invisible characters and characters that look
+  like ASCII ones (a Cyrillic `а` in a name) get a box and a tooltip.
+- **Fonts:** font ligatures (`editor.fontLigatures`, with a font such as
+  Cascadia Code or Fira Code), letter spacing, and a smooth caret animation.
+- **Copy with syntax highlighting:** on Windows, copied code pastes into
+  Word, Outlook or OneNote with its colors.
 - **Snippets** with tab stops from `snippets.json` and from language servers,
   **word completion** in files without a server, and **Emmet**: `Tab` expands
   an abbreviation such as `ul>li*3` in HTML, Vue, Svelte and PHP files.
@@ -141,7 +166,13 @@ language you want diagnostics and completion in. Each is optional.
 - **Compare** the active file with another file, the clipboard or its saved
   version.
 - **Markdown preview** (`Ctrl+Shift+V`, or `Ctrl+K V` to the side) follows
-  the source as you type and scroll.
+  the source as you type and scroll. Tables size their columns to the
+  content and code blocks have a copy button.
+- **Markdown editing:** completions for paths and heading anchors inside
+  links, warnings for links to missing files and headings
+  (`markdown.validate.enabled`), `Ctrl+V` with an image on the clipboard
+  saves it as `image.png` next to the file and links it (Windows), and
+  `Shift`+drop of files inserts links to them.
 - **Images** (png, jpg, gif, webp, bmp, ico, svg) open in a viewer with zoom
   and pan. Binary files show a notice instead of text, and files over 20 MB
   open in a light mode without highlighting or language servers.
@@ -172,16 +203,18 @@ file extension.
 - **Go to Definition** (`F12` or `Ctrl+Click`), declaration, type definition
   and implementations, **Peek Definition** (`Alt+F12`) and **Find All
   References** (`Shift+F12`). Several results open a peek list with a preview
-  of each place. `Alt+Left` goes back.
+  of each place, between the lines of the file. `Alt+Left` goes back.
 - **Symbol highlights:** when the caret rests on a name, the other places
   that use it in the file are highlighted.
-- **Reference counts** sit on a line above each function, method and type.
-  Click one to peek at the places that use it. Interfaces and traits also
-  show their implementations.
+- **Code lenses:** reference counts sit on a line above each function,
+  method and type, next to the server's own lenses such as rust-analyzer's
+  Run and Debug. Click a count to peek at the places, Run to run in the
+  terminal, or Debug to debug a single test.
 - **Rename Symbol** (`F2`) across files, **Quick Fix** and refactorings
-  (`Ctrl+.`), and **Organize Imports** (`Shift+Alt+O`).
+  (`Ctrl+.`, or the lightbulb in the gutter when the line has some), and
+  **Organize Imports** (`Shift+Alt+O`).
 - **Format Document** (`Shift+Alt+F`) and **Format Selection**
-  (`Ctrl+K Ctrl+F`), with optional format on save and on paste.
+  (`Ctrl+K Ctrl+F`), with optional format on save, on paste and on type.
 - **Symbols:** `Ctrl+T` searches the workspace, the **Outline** section under
   the explorer lists the active file (it follows the caret and sorts by
   position, name or kind), and the breadcrumbs above the text show
@@ -404,16 +437,17 @@ The sun or moon at the right end of the status bar also switches the theme.
 
 - Language features need a server that is installed and on `PATH` (inside
   the distro for WSL folders).
-- The peek list and the popups sit over the text instead of pushing it down.
-- Completions insert plain text, without snippet tab stops. Server code
-  lenses such as Run and Debug, and the quick fix lightbulb, are not shown.
+- Debug lenses work for single cargo tests; other runnables fall back to
+  Run.
+- The Markdown preview does not render HTML tags.
+- Copy with syntax highlighting and pasting images are Windows only.
 - Call and type hierarchy list one level at a time.
 - New grammars and file associations load when Halo starts.
 - Debugging and testing need the adapter or test tool on `PATH`; one debug
   session runs at a time.
 - Imported icon themes must use SVG or PNG icons, and imported color themes
   must be JSON.
-- No font ligatures or letter spacing, and no VS Code extensions.
+- No VS Code extensions.
 - Restored terminals show their old output and start a fresh shell; the
   programs that were running in them are not kept alive.
 - High contrast and reduced motion follow the operating system on Windows

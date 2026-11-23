@@ -6,6 +6,59 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+Checked with tests on Windows. Not yet tried by hand in the running app or
+against real language servers.
+
+### Added
+
+- **Folding from language servers**, plus `#region` / `#endregion` markers.
+  Fold Level 1–7 (`Ctrl+K Ctrl+1` to `Ctrl+K Ctrl+7`), Fold and Unfold
+  Recursively (`Ctrl+K Ctrl+[`, `Ctrl+K Ctrl+]`) and Fold All Block Comments
+  (`Ctrl+K Ctrl+/`). Expand Selection uses the server's selection ranges
+  when it has them.
+- **Quick fix lightbulb** in the gutter when the cursor line has code
+  actions (`editor.lightbulb.enabled`).
+- **Server code lenses** such as rust-analyzer's Run and Debug show beside
+  Halo's reference counts. Run types the command into the terminal, Debug
+  debugs a single cargo test.
+- **Linked editing:** renaming an HTML, XML, SVG, Vue, Svelte, JSX or TSX tag
+  renames its partner, from the server or a built-in matcher
+  (`editor.linkedEditing`, on by default).
+- **Format on type** from the language server (`editor.formatOnType`, off by
+  default).
+- **Color decorators:** a swatch before each color value, from the server or
+  a built-in scan of hex, `rgb()` and `hsl()`. Click it, or run Show Color
+  Picker, to change the color in the value's own format
+  (`editor.colorDecorators`).
+- **Unicode highlighting** of invisible characters and ASCII look-alikes,
+  with VS Code's tooltips (`editor.unicodeHighlight.invisibleCharacters`,
+  `editor.unicodeHighlight.ambiguousCharacters`).
+- **Inline peek:** the peek list and the change peek open between lines and
+  push the text below down instead of covering it.
+- **Font ligatures** (`editor.fontLigatures`), **letter spacing**
+  (`editor.letterSpacing`) and a **smooth caret** animation
+  (`editor.cursorSmoothCaretAnimation`).
+- **Subword navigation:** Cursor Word Part Left/Right and their Select forms,
+  and Delete Word Part Left/Right (`Ctrl+Alt+Backspace`, `Ctrl+Alt+Delete`).
+- **Copy with syntax highlighting** on Windows: copied code keeps its colors
+  in Word, Outlook and OneNote (`editor.copyWithSyntaxHighlighting`).
+- **Markdown:** path and heading completions inside links, warnings for
+  broken links (`markdown.validate.enabled`), `Ctrl+V` of a clipboard image
+  saves `image.png` next to the file and links it (Windows), and `Shift`+drop
+  inserts links to the dropped files.
+- **Search editor:** search results open as an editable tab whose header
+  reruns the search (`Enter` or `Ctrl+Shift+R`), with `Alt+C/W/R/L` toggles
+  and VS Code `.code-search` files. New Search Editor is in the Go menu and
+  the search panel; Open Results in Editor is `Alt+Enter` there.
+
+### Fixed
+
+- Markdown preview tables size their columns to the content, wrap long cells
+  and stay inside the preview.
+- Markdown preview code blocks have a Copy code button.
+- `Ctrl+Shift+V` in a Markdown editor opens the preview instead of pasting;
+  it still pastes elsewhere.
+
 ## [0.1.8] - 2026-11-22
 
 Checked with tests on Windows, including WSL tests against a real clangd and
