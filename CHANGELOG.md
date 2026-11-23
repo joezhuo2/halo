@@ -8,6 +8,9 @@ All notable changes to Halo are documented here. The format follows
 
 ### Added
 
+- **Gemini and OpenCode in the AI panel:** two more tabs beside Claude and
+  Codex that run the `gemini` and `opencode` CLIs, with an Install button
+  (`npm install -g`) when the CLI is missing.
 - **Open with Halo from Windows:** the installer lists Halo in the "Open
   with" menu for common text and code files, so it can be picked once or set
   as the default app, also under Settings > Apps > Default apps.

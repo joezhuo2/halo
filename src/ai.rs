@@ -5,7 +5,8 @@ use crate::ui::{self, icons};
 use eframe::egui::{self, Align, Align2, CornerRadius, FontId, Id, Layout, Rect, RichText, Sense, Ui, UiBuilder, ViewportCommand, pos2, vec2};
 use std::path::{Path, PathBuf};
 
-const CLIS: [(&str, &str); 2] = [("Claude", "claude"), ("Codex", "codex")];
+const CLIS: [(&str, &str, &str); 4] =
+    [("Claude", "claude", ""), ("Codex", "codex", "@openai/codex"), ("Gemini", "gemini", "@google/gemini-cli"), ("OpenCode", "opencode", "opencode-ai")];
 const TERMINAL_ID: u64 = 1 << 40;
 
 pub(crate) fn locate(cli: &str) -> Option<PathBuf> {
@@ -15,13 +16,14 @@ pub(crate) fn locate(cli: &str) -> Option<PathBuf> {
 }
 
 fn install(tab: usize) -> (String, Vec<String>) {
-    let (program, args): (&str, &[&str]) = match (tab, cfg!(windows)) {
-        (0, true) => ("powershell.exe", &["-NoProfile", "-Command", "irm https://claude.ai/install.ps1 | iex"]),
-        (0, false) => ("bash", &["-c", "curl -fsSL https://claude.ai/install.sh | bash"]),
-        (_, true) => ("cmd.exe", &["/c", "npm install -g @openai/codex"]),
-        (_, false) => ("npm", &["install", "-g", "@openai/codex"]),
+    let npm = format!("npm install -g {}", CLIS[tab].2);
+    let (program, args): (&str, [&str; 3]) = match (tab, cfg!(windows)) {
+        (0, true) => ("powershell.exe", ["-NoProfile", "-Command", "irm https://claude.ai/install.ps1 | iex"]),
+        (0, false) => ("bash", ["-c", "curl -fsSL https://claude.ai/install.sh | bash", ""]),
+        (_, true) => ("cmd.exe", ["/c", &npm, ""]),
+        (_, false) => ("bash", ["-lc", &npm, ""]),
     };
-    (program.into(), args.iter().map(|a| a.to_string()).collect())
+    (program.into(), args.iter().filter(|a| !a.is_empty()).map(|a| a.to_string()).collect())
 }
 
 fn launch(cli: &str, cwd: Option<&Path>) -> (String, Vec<String>) {
@@ -39,9 +41,9 @@ fn launch(cli: &str, cwd: Option<&Path>) -> (String, Vec<String>) {
 #[derive(Default)]
 pub struct AiPanel {
     tab: usize,
-    sessions: [Option<Terminal>; 2],
-    errors: [Option<String>; 2],
-    found: [Option<bool>; 2],
+    sessions: [Option<Terminal>; 4],
+    errors: [Option<String>; 4],
+    found: [Option<bool>; 4],
     focused: bool,
 }
 
@@ -114,7 +116,7 @@ impl AiPanel {
             session.focus();
         }
 
-        let (name, cli) = CLIS[self.tab];
+        let (name, cli, _) = CLIS[self.tab];
         let ended = self.sessions[self.tab].as_ref().is_some_and(|s| !s.is_alive());
         let note = match &self.errors[self.tab] {
             Some(error) => Some((error.clone(), theme.error)),
@@ -188,5 +190,7 @@ mod tests {
         }
         assert!(ended(&panel));
         assert_eq!(panel.sessions[0].is_some(), cfg!(windows));
+        assert_eq!(install(2).1.last().unwrap().split(' ').next_back(), Some("@google/gemini-cli"));
+        assert!(install(3).1.iter().any(|a| a.ends_with("opencode-ai")));
     }
 }

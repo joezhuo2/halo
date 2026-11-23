@@ -317,10 +317,12 @@ Each of these can be switched off under **Settings > Text Editor**.
 ### AI panel
 
 - `Ctrl+Alt+B`, or the robot button beside Split Editor, opens a panel with a
-  **Claude** tab and a **Codex** tab. Each runs that CLI in the open folder
-  when you press **Start session**. Nothing starts until you ask.
-- If a CLI is missing, the tab offers **Install Claude CLI** or **Install
-  Codex CLI**, which runs the official installer in the panel's terminal.
+  **Claude**, **Codex**, **Gemini** and **OpenCode** tab. Each runs that CLI
+  in the open folder when you press **Start session**. Nothing starts until
+  you ask.
+- If a CLI is missing, the tab offers **Install <name> CLI**, which runs the
+  official installer (Claude's install script, or `npm install -g` for the
+  others) in the panel's terminal.
 
 ### Search
 

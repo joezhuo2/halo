@@ -24,7 +24,7 @@ Halo is a single Rust binary: eframe/egui 0.36 on the OpenGL (glow) renderer. No
 | `src/editor/buffer.rs` | `Document`: rope, selections, edit engine, undo/redo, motions, find, load/save. |
 | `src/editor/highlight.rs` | syntect highlighting with checkpoints and a per-frame time budget. |
 | `src/terminal.rs` | `Terminal` (reusable PTY terminal widget) and `BottomPanel` (panel tabs, terminal groups, Ports). |
-| `src/ai.rs` | `AiPanel`: the right panel. One `Terminal` per CLI (`claude`, `codex`), started on demand; on Windows through `cmd.exe /c` so `.cmd` shims on `PATH` resolve. |
+| `src/ai.rs` | `AiPanel`: the right panel. One `Terminal` per CLI (`claude`, `codex`, `gemini`, `opencode`), started on demand; on Windows through `cmd.exe /c` so `.cmd` shims on `PATH` resolve. |
 
 ## Frame flow
 
