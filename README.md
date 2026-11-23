@@ -341,6 +341,12 @@ Each of these can be switched off under **Settings > Text Editor**.
   and **Keep** or **Undo** it per file or all at once (Undo asks first and
   sends created files to the recycle bin). The palette has **Agent Changes:
   Keep All**, **Undo All**, **Show** and **Reset Baseline**.
+- **Inline chat** (`Ctrl+I`, also in the editor's right-click menu) opens a
+  prompt above the selected lines, or the cursor line. Describe the change and
+  press `Enter`; the Claude or Codex CLI answers and the change shows in place,
+  removed lines in red and new lines in green. `Ctrl+Enter` accepts it as one
+  undo step, `Escape` discards it, and another prompt refines it. `Up` and
+  `Down` recall earlier prompts.
 
 ### Search
 
@@ -464,6 +470,7 @@ The defaults follow VS Code:
 | `F12` | Go to definition |
 | `Shift+F12` | Find all references |
 | `F2` | Rename symbol |
+| `Ctrl+I` | Inline chat |
 | `Ctrl+.` | Quick fix |
 | `Shift+Alt+F` | Format document |
 | `Ctrl+Space` | Trigger suggest |

@@ -256,6 +256,7 @@ pub enum Command {
     OrganizeImports,
     FormatDocument,
     FormatSelection,
+    InlineChat,
     ShowProblems,
     RestartLanguageServers,
 
@@ -551,6 +552,7 @@ fn defaults() -> Vec<Binding> {
         e(C, Key::Period, QuickFix),
         e(NONE, Key::F12, GoToDefinition),
         e(NONE, Key::F2, RenameSymbol),
+        e(C, Key::I, InlineChat),
         k(C, Key::Num0, FoldAll),
         k(C, Key::J, UnfoldAll),
         k(C, Key::Num1, FoldLevel(1)),
@@ -731,7 +733,7 @@ pub fn all() -> Vec<Command> {
         FoldLevel(6), FoldLevel(7),
         SortLinesAscending, SortLinesDescending, RemoveDuplicateLines, ReverseLines, TransformToUppercase, TransformToLowercase,
         TransformToTitlecase, TransformToSnakecase, TransformToCamelcase, TransformToKebabcase,
-        RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection, DeleteWordPartLeft, DeleteWordPartRight,
+        RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection, InlineChat, DeleteWordPartLeft, DeleteWordPartRight,
         SelectAll, AddCursorAbove, AddCursorBelow, AddCursorsToLineEnds, SelectNextOccurrence, MoveSelectionToNextFindMatch, SelectAllOccurrences, ExpandSelection, ShrinkSelection,
         CursorWordPartLeftSelect, CursorWordPartRightSelect,
         SelectToBracket, CursorUndo, ToggleColumnSelection, CursorColumnSelectLeft, CursorColumnSelectRight, CursorColumnSelectUp,
@@ -926,6 +928,7 @@ impl Command {
             Self::OpenSearchEditor => return "search.action.openInEditor".into(),
             Self::TriggerInlineSuggestion => return "editor.action.inlineSuggest.trigger".into(),
             Self::FoldLevel(level) => return format!("foldLevel{level}"),
+            Self::InlineChat => return "inlineChat.start".into(),
             _ => {}
         }
         let name = format!("{self:?}");
@@ -945,6 +948,7 @@ impl Command {
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
             | Unfold | FoldAll | UnfoldAll | FoldLevel(_) | FoldRecursively | UnfoldRecursively | FoldAllBlockComments
             | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection
+            | InlineChat
             | SortLinesAscending | SortLinesDescending | RemoveDuplicateLines | ReverseLines | TransformToUppercase | TransformToLowercase
             | TransformToTitlecase | TransformToSnakecase | TransformToCamelcase | TransformToKebabcase | DeleteWordPartLeft | DeleteWordPartRight => "Edit",
             SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | SelectAllOccurrences
@@ -1236,6 +1240,7 @@ impl Command {
             OrganizeImports => "Organize Imports",
             FormatDocument => "Format Document",
             FormatSelection => "Format Selection",
+            InlineChat => "Inline Chat: Start",
             ShowProblems => "Problems",
             RestartLanguageServers => "Restart Language Servers",
             NewTerminal => "New Terminal",
