@@ -449,8 +449,8 @@ impl Halo {
             RunAllTests | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => self.testing_exec(&cmd, ctx),
             StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver | StepInto | StepOut
-            | RunToCursor | JumpToCursor | RemoveAllBreakpoints | AddWatch | AddConfiguration => {
-                if cmd == AddWatch {
+            | RunToCursor | JumpToCursor | AddFunctionBreakpoint | BreakOnValueChange | RemoveAllBreakpoints | AddWatch | AddConfiguration => {
+                if matches!(cmd, AddWatch | AddFunctionBreakpoint | BreakOnValueChange) {
                     self.reveal(View::RunAndDebug);
                 }
                 if cmd == RunWithoutDebugging || (cmd == StartDebugging && !self.debug.paused()) {

@@ -22,6 +22,9 @@ use std::time::SystemTime;
 
 mod procs;
 mod views;
+mod breakpoints;
+pub use breakpoints::{BreakpointCommands, FunctionBreakpoint};
+use breakpoints::{DataBreakpoint, Verification};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
@@ -63,6 +66,8 @@ struct Hover {
 #[derive(Default)]
 pub struct Marks {
     pub files: Vec<(PathBuf, Vec<Breakpoint>)>,
+    functions: Vec<FunctionBreakpoint>,
+    functions_changed: bool,
     changed: Vec<PathBuf>,
     folder: Option<PathBuf>,
     pub live: bool,
@@ -145,6 +150,8 @@ impl Marks {
     }
 
     pub fn clear(&mut self) {
+        self.functions.clear();
+        self.functions_changed = true;
         for (path, _) in std::mem::take(&mut self.files) {
             self.changed.push(path);
         }
@@ -201,6 +208,11 @@ impl Marks {
 pub fn store(session: &mut crate::settings::Session, marks: &Marks) {
     let Some(folder) = &marks.folder else { return };
     let files: BTreeMap<PathBuf, Vec<Breakpoint>> = marks.files.iter().filter(|f| !f.1.is_empty()).cloned().collect();
+    if marks.functions.is_empty() {
+        session.function_breakpoints.remove(folder);
+    } else {
+        session.function_breakpoints.insert(folder.clone(), marks.functions.clone());
+    }
     if files.is_empty() {
         session.breakpoints.remove(folder);
     } else {
@@ -210,6 +222,8 @@ pub fn store(session: &mut crate::settings::Session, marks: &Marks) {
 
 pub fn restore(session: &crate::settings::Session, marks: &mut Marks) {
     marks.folder = session.folder.clone();
+    marks.functions = marks.folder.as_ref().and_then(|f| session.function_breakpoints.get(f)).cloned().unwrap_or_default();
+    marks.functions_changed = true;
     marks.files = marks.folder.as_ref().and_then(|f| session.breakpoints.get(f)).map(|m| m.clone().into_iter().collect()).unwrap_or_default();
     marks.changed.clear();
 }
@@ -515,6 +529,9 @@ enum Want {
     Initialize,
     Launch,
     Breakpoints(PathBuf),
+    Functions(Vec<String>),
+    DataInfo(String),
+    Data(Vec<String>),
     Plain(String),
     Threads,
     Stack,
@@ -551,6 +568,8 @@ struct Live {
     asked: HashSet<i64>,
     watch: HashMap<String, Result<String, String>>,
     wants: HashMap<i64, Want>,
+    function_status: HashMap<String, Verification>,
+    data: Vec<DataBreakpoint>,
     configured: bool,
     stopping: u8,
     restart: bool,
@@ -663,6 +682,7 @@ impl Live {
             }
         }
         marks.changed.clear();
+        self.send_functions(&marks.functions);
         if !filters.is_empty() {
             self.send_filters(filters);
         }
@@ -721,6 +741,9 @@ struct Dialog {
 
 enum Editing {
     Watch(Option<usize>, String),
+    FunctionName(String),
+    FunctionCondition(String, Ask, String),
+    PickData(u64),
     Value(i64, String, String),
 }
 
@@ -931,6 +954,8 @@ impl Debug {
             asked: HashSet::new(),
             watch: HashMap::new(),
             wants: HashMap::new(),
+            function_status: HashMap::new(),
+            data: vec![],
             configured: false,
             stopping: 0,
             restart: false,
@@ -1077,7 +1102,18 @@ impl Debug {
                 },
                 None => ui::notify("Open a folder to add a launch configuration."),
             },
-            RemoveAllBreakpoints => self.confirm_clear = !env.marks.files.is_empty(),
+            RemoveAllBreakpoints => self.confirm_clear = self.breakpoint_count(env.marks) > 0,
+            AddFunctionBreakpoint | BreakOnValueChange => {
+                if self.breakpoint_commands(env.folder.is_some()).allows(cmd) {
+                    if *cmd == AddFunctionBreakpoint {
+                        self.open[3] = true;
+                        self.editing = Some(Editing::FunctionName(String::new()));
+                    } else {
+                        self.open[0] = true;
+                        self.editing = Some(Editing::PickData(self.live[self.focus].id));
+                    }
+                }
+            }
             AddWatch => {
                 self.open[1] = true;
                 self.editing = Some(Editing::Watch(None, String::new()));
@@ -1122,6 +1158,11 @@ impl Debug {
             }
         }
         let now = env.ctx.input(|i| i.time);
+        if std::mem::take(&mut env.marks.functions_changed) {
+            for live in self.live.iter_mut().filter(|l| l.configured) {
+                live.send_functions(&env.marks.functions);
+            }
+        }
         if self.live.is_empty() {
             env.bottom.console.submitted.clear();
             return;
@@ -1229,6 +1270,21 @@ impl Debug {
                     live.state = State::Running;
                 }
             }
+            Want::Functions(names) => {
+                live.function_status = breakpoints::verification(names, &body);
+                if !success { ui::notify(message); }
+            }
+            Want::DataInfo(name) if success => match DataBreakpoint::from_info(name, &body) {
+                Ok(point) => live.add_data(point),
+                Err(description) => ui::notify(description),
+            },
+            Want::Data(ids) if success => {
+                let mut status = breakpoints::verification(ids, &body);
+                for point in &mut live.data {
+                    point.status = status.remove(&point.id).unwrap_or_default();
+                }
+            }
+            Want::DataInfo(_) | Want::Data(_) => ui::notify(message),
             Want::Breakpoints(path) if success => env.marks.verify(&path, &body),
             Want::Threads if success => {
                 live.threads = body["threads"].as_array().into_iter().flatten().map(|t| (t["id"].as_i64().unwrap_or(0), t["name"].as_str().unwrap_or_default().to_owned())).collect();
@@ -1352,7 +1408,11 @@ impl Debug {
                 let category = body["category"].as_str().unwrap_or("console");
                 env.bottom.console.tagged(&tag, category, body["output"].as_str().unwrap_or_default());
             }
-            "breakpoint" => env.marks.update(&body["breakpoint"]),
+            "breakpoint" => {
+                if !live.update_breakpoint(&body["breakpoint"]) {
+                    env.marks.update(&body["breakpoint"]);
+                }
+            }
             "thread" => live.ask("threads", json!({}), Want::Threads),
             _ => {}
         }
@@ -1407,6 +1467,7 @@ enum TreeAction {
     Commit(i64, String, String),
     Cancel,
     Memory(String, String),
+    BreakOnChange(i64, String),
 }
 
 struct Tree<'a> {
@@ -1443,10 +1504,13 @@ impl Tree<'_> {
             if var.reference > 0 {
                 ui::caret(ui.painter(), pos2(x + 4.0, r.center().y), ui::anim(ui, resp.id.with("open"), open), theme.text_dim);
             }
+            let picking_data = parent != 0 && matches!(self.editing, Some(Editing::PickData(id)) if *id == self.live.id);
+            let mut label = r;
+            if picking_data { label.max.x -= 24.0; }
             if parent == 0 {
-                pair(ui, r, x + 14.0, theme, &var.name, "", theme.text_dim);
+                pair(ui, label, x + 14.0, theme, &var.name, "", theme.text_dim);
             } else {
-                pair(ui, r, x + 14.0, theme, &format!("{}:", var.name), &var.value, theme.text_dim);
+                pair(ui, label, x + 14.0, theme, &format!("{}:", var.name), &var.value, theme.text_dim);
             }
             let resp = match (parent, var.kind.is_empty()) {
                 (0, _) => resp,
@@ -1456,9 +1520,16 @@ impl Tree<'_> {
             if resp.clicked() && var.reference > 0 {
                 *self.action = Some(TreeAction::Toggle(path.clone()));
             }
+            if picking_data && hover_button(ui, theme, r, 0, icons::PLUS, "Break on Value Change") {
+                *self.action = Some(TreeAction::BreakOnChange(parent, var.name.clone()));
+            }
             if parent != 0 {
                 resp.context_menu(|ui| {
                     ui::menu_pad(ui);
+                    if self.live.can("supportsDataBreakpoints") && ui.button("Break on Value Change").clicked() {
+                        *self.action = Some(TreeAction::BreakOnChange(parent, var.name.clone()));
+                        ui.close();
+                    }
                     if self.settable && ui.button("Set Value").clicked() {
                         *self.action = Some(TreeAction::Edit(parent, var.name.clone(), var.value.clone()));
                         ui.close();
@@ -1547,7 +1618,12 @@ impl Debug {
                 self.stack_ui(ui, theme, env);
             }
             let rect = ui::section(ui, theme, "BREAKPOINTS", &mut self.open[3]).rect;
-            if !env.marks.files.is_empty() {
+            if self.breakpoint_commands(true).allows(&Command::AddFunctionBreakpoint)
+                && hover_button(ui, theme, rect, 1, icons::PLUS, "Add Function Breakpoint")
+            {
+                env.cmds.push(Command::AddFunctionBreakpoint);
+            }
+            if self.breakpoint_count(env.marks) > 0 {
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_center_size(pos2(rect.right() - 14.0, rect.center().y), vec2(20.0, 20.0))));
                 if ui::icon_button(&mut child, theme, icons::X_SQUARE, 20.0, false, "Remove All Breakpoints").clicked() {
                     self.confirm_clear = true;
@@ -1566,6 +1642,12 @@ impl Debug {
         if live.scopes.is_empty() {
             return ui::skeleton(ui, theme, 3);
         }
+        if matches!(self.editing, Some(Editing::PickData(id)) if id == live.id) {
+            ui.horizontal(|ui| {
+                ui.label("Choose + beside a variable.");
+                if ui.button("Cancel").clicked() { self.editing = None; }
+            });
+        }
         let mut action = None;
         let mut editing = self.editing.take();
         let memory = live.can("supportsReadMemoryRequest");
@@ -1577,6 +1659,10 @@ impl Debug {
                 if !self.expanded.remove(&path) {
                     self.expanded.insert(path);
                 }
+            }
+            Some(TreeAction::BreakOnChange(reference, name)) => {
+                self.editing = None;
+                self.live[self.focus].data_info(reference, name);
             }
             Some(TreeAction::Edit(reference, name, value)) => self.editing = Some(Editing::Value(reference, name, value)),
             Some(TreeAction::Cancel) => self.editing = None,
@@ -1737,7 +1823,8 @@ impl Debug {
         if send_filters {
             self.live.iter_mut().filter(|l| l.configured).for_each(|l| l.send_filters(&self.filters));
         }
-        if env.marks.files.is_empty() && self.filters.is_empty() {
+        self.additional_breakpoints_ui(ui, theme, env.marks);
+        if self.breakpoint_count(env.marks) == 0 && self.filters.is_empty() && !matches!(self.editing, Some(Editing::FunctionName(_))) {
             return note(ui, theme, "Click left of a line number or press F9 to add a breakpoint.");
         }
         let mut action = None;
@@ -1864,34 +1951,7 @@ impl Debug {
                 None => {}
             }
         }
-        if self.confirm_clear {
-            let mut choice = None;
-            let modal = ui::modal(ctx, "confirm_clear_breakpoints", ui::Enter::Primary, |ui, keys| {
-                ui::outline(ui);
-                ui.set_width(340.0);
-                ui.heading("Remove all breakpoints?");
-                let count: usize = env.marks.files.iter().map(|f| f.1.len()).sum();
-                ui.label(format!("This removes {count} breakpoints in {} files.", env.marks.files.len()));
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if keys.primary(ui, "Remove All", true) {
-                        choice = Some(true);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        choice = Some(false);
-                    }
-                });
-            });
-            if modal.should_close() {
-                choice = choice.or(Some(false));
-            }
-            if let Some(remove) = choice {
-                self.confirm_clear = false;
-                if remove {
-                    env.marks.clear();
-                }
-            }
-        }
+        self.confirm_breakpoint_removal(ctx, env.marks);
         self.views.dialog(ctx, self.live.get_mut(self.focus));
     }
 }
@@ -2142,7 +2202,7 @@ mod tests {
         assert!(marks.files.is_empty() && marks.changed.iter().any(|c| same(c, &path)));
     }
 
-    fn adapter(file: PathBuf, x: &'static str) -> (u16, Receiver<Value>) {
+    pub(super) fn adapter(file: PathBuf, x: &'static str) -> (u16, Receiver<Value>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let (tx, rx) = channel();
@@ -2166,10 +2226,21 @@ mod tests {
                 match command.as_str() {
                     "initialize" => {
                         let caps = json!({"supportsConfigurationDoneRequest": true, "supportsSetVariable": true, "supportsGotoTargetsRequest": true, "supportsConditionalBreakpoints": true,
+                            "supportsFunctionBreakpoints": x != "4", "supportsDataBreakpoints": x != "4", "supportsHitConditionalBreakpoints": x != "2",
                             "supportsLogPoints": true, "exceptionBreakpointFilters": [{"filter": "raised", "label": "Raised Exceptions", "default": true}],
                             "supportsDisassembleRequest": true, "supportsReadMemoryRequest": true, "supportsSteppingGranularity": true});
                         send(&mut writer, reply(caps));
                         send(&mut writer, event("initialized", json!({})));
+                    }
+                    "dataBreakpointInfo" => {
+                        let name = &request["arguments"]["name"];
+                        let id = name.as_str().filter(|s| *s != "unavailable").map(|s| format!("{x}-{s}"));
+                        send(&mut writer, reply(json!({"dataId": id, "accessTypes": ["read", "write"], "description": "No storage"})));
+                    }
+                    "setFunctionBreakpoints" | "setDataBreakpoints" => {
+                        let found: Vec<_> = request["arguments"]["breakpoints"].as_array().unwrap().iter().enumerate()
+                            .map(|(i, b)| json!({"id": i + if command == "setFunctionBreakpoints" { 50 } else { 100 }, "verified": b["name"] != "missing"})).collect();
+                        send(&mut writer, reply(json!({"breakpoints": found})));
                     }
                     "setBreakpoints" => {
                         let count = request["arguments"]["breakpoints"].as_array().map_or(0, Vec::len);

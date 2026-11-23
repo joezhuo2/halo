@@ -292,6 +292,8 @@ pub enum Command {
     StepOut,
     ToggleBreakpoint,
     EditBreakpoint,
+    AddFunctionBreakpoint,
+    BreakOnValueChange,
     RemoveAllBreakpoints,
     AddWatch,
     AddConfiguration,
@@ -729,7 +731,7 @@ pub fn all() -> Vec<Command> {
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy, CursorWordPartLeft, CursorWordPartRight,
         ShowHover, ShowColorPicker, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut, RunToCursor, JumpToCursor,
-        ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration,
+        ToggleBreakpoint, EditBreakpoint, AddFunctionBreakpoint, BreakOnValueChange, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         OpenDisassembly, OpenMemory,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
         OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
@@ -946,7 +948,7 @@ impl Command {
             RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_)
             | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
-            | StepInto | StepOut | RunToCursor | JumpToCursor | ToggleBreakpoint | EditBreakpoint | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
+            | StepInto | StepOut | RunToCursor | JumpToCursor | ToggleBreakpoint | EditBreakpoint | AddFunctionBreakpoint | BreakOnValueChange | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
             | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
             OpenDisassembly | OpenMemory | AttachProcess(_) => "Run",
@@ -1245,6 +1247,8 @@ impl Command {
             StepOut => "Step Out",
             ToggleBreakpoint => "Toggle Breakpoint",
             EditBreakpoint => "Edit Breakpoint Condition...",
+            AddFunctionBreakpoint => "Debug: Add Function Breakpoint…",
+            BreakOnValueChange => "Debug: Break on Value Change",
             RemoveAllBreakpoints => "Remove All Breakpoints",
             AddWatch => "Debug: Add Watch Expression",
             AddConfiguration => "Debug: Add Configuration...",
