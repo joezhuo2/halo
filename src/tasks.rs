@@ -765,7 +765,7 @@ pub struct Tasks {
     problems: Vec<Problem>,
 }
 
-fn quote(arg: &str) -> String {
+pub(crate) fn quote(arg: &str) -> String {
     if arg.is_empty() || (arg.contains(char::is_whitespace) && !arg.starts_with(['"', '\''])) {
         format!("\"{}\"", arg.replace('"', "\\\""))
     } else {

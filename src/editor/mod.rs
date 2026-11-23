@@ -2139,7 +2139,10 @@ impl Editors {
         };
         let stuck = tab.stuck;
         let mut lens_rows: Vec<(usize, usize)> = match settings.code_lens && !crate::a11y::optimized() && lang.attached && !diffed {
-            true => lang.lens.iter().enumerate().filter_map(|(index, lens)| Some((lang.symbols.get(lens.symbol)?.line.min(total - 1), index))).collect(),
+            true => {
+                let own = lang.lens.iter().enumerate().filter_map(|(index, lens)| Some((lang.symbols.get(lens.symbol)?.line.min(total - 1), index)));
+                own.chain(lang.code_lens.iter().map(|lens| (lens.0.line.min(total - 1), usize::MAX))).collect()
+            }
             false => vec![],
         };
         lens_rows.sort_unstable();
@@ -2209,6 +2212,10 @@ impl Editors {
         let unicode = (settings.unicode_invisible, settings.unicode_ambiguous && !decor::prose(path.as_deref()));
         let pick_caret = is_active && std::mem::take(&mut self.intel.pick_caret);
         let mut picked = None;
+        let offered = path.as_deref().filter(|_| !lang.code_lens.is_empty()).map_or(serde_json::Value::Null, |p| self.lsp.provider(p, "executeCommandProvider"));
+        let cursor_at = (buf.version, buf.line_of(tab.sels[0].head));
+        let bulb_line = lang.bulb.as_ref().filter(|_| settings.lightbulb && is_active && lang.bulb_at == Some(cursor_at)).map(|bulb| (cursor_at.1, bulb.0));
+        let mut bulb_click = false;
         let (mut activated, mut touched, mut pressed_text) = (false, false, false);
         let (mut caret_at, mut hover_at, mut peek_y, mut over_word, mut lens_open) = (None, None, None, None, None);
         let (mut over_problem, mut ctrl_span) = (None, None);
@@ -2525,11 +2532,13 @@ impl Editors {
                         };
                         let indent = buf_ref.rope.line(line).chars().take_while(|c| *c == ' ' || *c == '\t').count();
                         if let Some(index) = lens_at(line) {
-                            let lens = &lang_ref.lens[index];
-                            let interface = lang_ref.symbols.get(lens.symbol).is_some_and(|s| s.kind == 11);
-                            let mut x = at(indent).x;
-                            for (found, noun, impls) in [(&lens.refs, "reference", false), (&lens.impls, "implementation", true)] {
-                                if impls && !interface {
+                            let lens = lang_ref.lens.get(index);
+                            let server: Vec<(usize, &lsp::CodeLens)> =
+                                lang_ref.code_lens.iter().enumerate().filter(|(_, l)| l.0.line.min(total - 1) == line).map(|(at, l)| (at, &l.0)).collect();
+                            let interface = lens.and_then(|lens| lang_ref.symbols.get(lens.symbol)).is_some_and(|s| s.kind == 11);
+                            let mut items: Vec<(String, bool, Option<intel::LensClick>)> = vec![];
+                            for (found, noun, impls) in lens.into_iter().flat_map(|lens| [(&lens.refs, "reference", false), (&lens.impls, "implementation", true)]) {
+                                if (impls && !interface) || server.iter().any(|(_, l)| l.title.contains(noun)) {
                                     continue;
                                 }
                                 let text = match found.as_ref().map(Vec::len) {
@@ -2537,21 +2546,33 @@ impl Editors {
                                     Some(count) => format!("{count} {noun}s"),
                                     None => format!("... {noun}s"),
                                 };
+                                items.push((text, found.is_some(), found.is_some().then_some(intel::LensClick::Own(index, impls))));
+                            }
+                            for (at, l) in &server {
+                                let ready = !l.title.is_empty();
+                                let click = (ready && intel::runs_lens(&l.command, &offered)).then_some(intel::LensClick::Server(*at));
+                                items.push((if ready { l.title.clone() } else { "...".into() }, ready, click));
+                            }
+                            let mut x = at(indent).x;
+                            for (n, (text, ready, click)) in items.into_iter().enumerate() {
+                                if n > 0 {
+                                    x = painter.text(pos2(x, y - line_h / 2.0 + 1.0), Align2::LEFT_CENTER, " | ", lens_font.clone(), ui::with_alpha(theme.text_dim, 0.5)).right();
+                                }
                                 let galley = painter.layout_no_wrap(text, lens_font.clone(), Color32::PLACEHOLDER);
                                 let r = Rect::from_min_size(pos2(x, y - line_h + (line_h - galley.size().y) / 2.0 + 1.0), galley.size());
-                                let over = on_lens && resp.hovered() && pointer.is_some_and(|p| r.expand(3.0).contains(p));
-                                if over && found.is_some() {
+                                let over = click.is_some() && on_lens && resp.hovered() && pointer.is_some_and(|p| r.expand(3.0).contains(p));
+                                if over {
                                     ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                                     if lens_press {
-                                        lens_open = Some((index, impls));
+                                        lens_open = click;
                                     }
                                 }
-                                x = r.right() + 16.0;
-                                if found.is_none() {
+                                x = r.right();
+                                if !ready {
                                     ui::shimmer_text(&painter, theme, r.min, galley);
                                     continue;
                                 }
-                                painter.galley(r.min, galley, if over && found.is_some() { theme.accent } else { ui::with_alpha(theme.text_dim, 0.85) });
+                                painter.galley(r.min, galley, if over { theme.accent } else { ui::with_alpha(theme.text_dim, 0.85) });
                             }
                         }
                         if current_line == Some(line) && matches!(settings.render_line_highlight.as_str(), "line" | "all") {
@@ -2750,9 +2771,16 @@ impl Editors {
                             painter.rect_filled(tint, CornerRadius::ZERO, ui::with_alpha(if *hits > 0 { theme.added } else { theme.deleted }, 0.22));
                         }
                         let test = test_at(line);
+                        let bulb = bulb_line.filter(|b| b.0 == line && test.is_none() && !marks.as_ref().is_some_and(|m| m.0.iter().any(|bp| bp.line == line)));
                         if let Some((list, stopped, live)) = &marks {
                             let center = pos2(clip.left() + bp_w / 2.0 + 1.0, y);
-                            crate::debug::paint_gutter(&painter, theme, list, *live, *stopped, line, center, (line_h * 0.26).min(char_w * 0.8), bp_hover == Some(line) && test.is_none());
+                            crate::debug::paint_gutter(&painter, theme, list, *live, *stopped, line, center, (line_h * 0.26).min(char_w * 0.8), bp_hover == Some(line) && test.is_none() && bulb.is_none());
+                        }
+                        if let Some((_, quick)) = bulb {
+                            let size = line_h.min(bp_w);
+                            let mut slot = ui.new_child(UiBuilder::new().max_rect(Rect::from_center_size(pos2(clip.left() + bp_w / 2.0 + 1.0, y), vec2(size, size))));
+                            let tip = command::shortcut_text(ui.ctx(), &Command::QuickFix).map_or("Show Code Actions".into(), |keys| format!("Show Code Actions ({keys})"));
+                            bulb_click |= ui::icon_button(&mut slot, theme, icons::LIGHTBULB, size, quick, &tip).clicked();
                         }
                         if let Some(test) = test {
                             crate::testing::paint_glyph(&painter, theme, test.1, pos2(clip.left() + bp_w / 2.0 + 1.0, y), (line_h * 0.62).min(char_w * 1.6));
@@ -2962,7 +2990,16 @@ impl Editors {
         if let Some(line) = change_click {
             self.open_change_peek(doc_id, buf, tab, line, &ctx);
         }
-        if let Some((index, impls)) = lens_open
+        if let Some(intel::LensClick::Server(index)) = lens_open
+            && let Some((lens, _)) = lang.code_lens.get(index)
+        {
+            self.intel.queued.push(Queued::Lens(doc_id, lens.clone()));
+        }
+        if bulb_click && let Some((_, actions)) = &lang.bulb {
+            self.intel.show_actions(doc_id, actions.clone());
+            self.want_focus = true;
+        }
+        if let Some(intel::LensClick::Own(index, impls)) = lens_open
             && let Some(lens) = lang.lens.get(index)
             && let Some(symbol) = lang.symbols.get(lens.symbol)
             && let Some(found) = if impls { &lens.impls } else { &lens.refs }
