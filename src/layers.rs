@@ -42,6 +42,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("unicode_ambiguous", "editor.unicodeHighlight.ambiguousCharacters"),
     ("semantic_highlighting", "editor.semanticHighlighting.enabled"),
     ("breadcrumbs", "breadcrumbs.enabled"),
+    ("inline_values", "debug.inlineValues"),
     ("inline_blame", "git.blame.editorDecoration.enabled"),
     ("local_history", "workbench.localHistory.enabled"),
     ("format_on_save", "editor.formatOnSave"),

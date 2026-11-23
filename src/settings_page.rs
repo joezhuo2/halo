@@ -175,6 +175,7 @@ pub const SETTINGS: &[Meta] = &[
     m("associations", 5, LANG, "File Associations", "Open files with an extension as another language, given by its name or its extension.", Kind::Custom),
     m("lsp", 5, "Language Servers", "Enabled", "Start the language server of a file for diagnostics, completion, hover, navigation, rename and formatting.", Kind::Toggle),
     m("servers", 5, "Language Servers", "Commands", "The command that starts the server for each file extension. It must be on PATH and speak LSP over standard input and output.", Kind::Custom),
+    m("inline_values", 5, "Debugging", "Inline Values", "Show variable values beside source lines while debugging is paused.", Kind::Toggle),
     m("debug_adapters", 5, "Debugging", "Debug Adapters", "The command that starts the debug adapter for each launch.json type. {port} makes Halo connect to it over TCP.", Kind::Custom),
 ];
 

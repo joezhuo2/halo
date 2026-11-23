@@ -168,6 +168,11 @@ impl Halo {
                 self.menu_item(ui, cmd);
             }
             ui.separator();
+            for cmd in [RunToCursor, JumpToCursor] {
+                if self.editors.marks.cursor.allows(&cmd) && self.editors.source_cursor().is_some() {
+                    self.menu_item(ui, cmd);
+                }
+            }
             for cmd in [ToggleBreakpoint, EditBreakpoint, RemoveAllBreakpoints, AddWatch, AddConfiguration] {
                 self.menu_item(ui, cmd);
             }

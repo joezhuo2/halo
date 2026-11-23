@@ -1369,6 +1369,16 @@ impl Editors {
         self.active_doc().is_some_and(|(doc, _)| doc.blame.loading())
     }
 
+    pub fn source_cursor(&self) -> Option<(&Path, usize)> {
+        let (g, t) = self.active_tab()?;
+        let tab = &self.groups[g].tabs[t];
+        let doc = self.docs.get(&tab.doc)?;
+        if !doc.content.is_text() || tab.diff.is_some() || tab.merge.is_some() || tab.md.is_some() {
+            return None;
+        }
+        Some((doc.buf.path.as_deref()?, doc.buf.line_of(tab.sels.first()?.head.min(doc.buf.len())) + 1))
+    }
+
     pub fn status(&self) -> Option<EditorStatus> {
         let (g, t) = self.active_tab()?;
         let tab = &self.groups[g].tabs[t];
@@ -2309,6 +2319,7 @@ impl Editors {
         };
         let hover_word = self.intel.hover.as_ref().filter(|h| h.doc == doc_id && h.group == g).map(|h| h.word);
         let marks = path.as_deref().map(|p| (self.marks.of(p).to_vec(), self.marks.stopped_lines(p), self.marks.live));
+        let stopped = path.as_deref().and_then(|p| self.marks.stopped_line(p));
         let band = self.marks.band.as_ref().filter(|b| path.is_none() && buf.read_only && b.0 == buf.title).map(|b| b.1);
         let (mut bp_action, bp_w) = (None, glyph_w * 2.2 + 2.0);
         let (test_marks, mut test_click) = (path.as_deref().and_then(|p| self.tests.of(p)).cloned(), None);
@@ -2563,7 +2574,10 @@ impl Editors {
                         }
                         if resp.secondary_clicked() && !on_lens {
                             let line = (marks.is_some() && pos.x < clip.left() + bp_w).then(|| row_at(pos.y).0);
-                            ui.data_mut(|d| d.insert_temp(id.with("bp_menu"), line));
+                            ui.data_mut(|d| {
+                                d.insert_temp(id.with("bp_menu"), line);
+                                d.insert_temp(id.with("cursor_menu"), hit(&painter, pos));
+                            });
                             let p = hit(&painter, pos);
                             if !tab.sels.iter().any(|s| s.start() <= p && p <= s.end()) {
                                 tab.sels = vec![Sel::caret(p)];
@@ -2610,6 +2624,20 @@ impl Editors {
                         }
                         ui.set_min_width(230.0);
                         ui::menu_pad(ui);
+                        if path.is_some() && !diffed && self.marks.cursor.allows(&RunToCursor) {
+                            for cmd in [RunToCursor, JumpToCursor] {
+                                if self.marks.cursor.allows(&cmd) && ui.button(cmd.label()).clicked() {
+                                    if let Some(p) = ui.data(|d| d.get_temp::<usize>(id.with("cursor_menu"))) {
+                                        tab.sels = vec![Sel::caret(p.min(buf_ref.len()))];
+                                    }
+                                    activated = true;
+                                    resp.request_focus();
+                                    pending.push(cmd);
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                        }
                         let items = [
                             Some(GoToDefinition), Some(PeekDefinition), Some(GoToImplementation), Some(FindReferences), Some(ShowCallHierarchy), None,
                             Some(RenameSymbol), Some(QuickFix), Some(FormatDocument), None,
@@ -2812,18 +2840,25 @@ impl Editors {
                                 resp.clone().on_hover_text_at_pointer(decor::describe(*c, *ascii));
                             }
                         }
+                        let last = row.pieces.last().unwrap();
+                        let mut after = pos2(text_x + last.galley.size().x + char_w * 3.0, bottom - line_h / 2.0);
+                        if !diffed && settings.inline_values && stopped.is_some_and(|stop| (stop.saturating_sub(50)..=stop).contains(&line)) {
+                            let label = self.marks.inline_label(&buf_ref.line_text(line));
+                            if !label.is_empty() {
+                                after.x = painter.text(after, Align2::LEFT_CENTER, label, font.clone(), theme.text_dim).right() + char_w * 3.0;
+                                if wrap_cols.is_none() {
+                                    ui.expand_to_include_x(after.x);
+                                }
+                            }
+                        }
                         if is_active && settings.inline_blame && !buf_ref.large && buf_ref.line_of(tab.sels[0].head) == line
                             && let Some(label) = doc.blame.inline(line)
                         {
-                            let last = row.pieces.last().unwrap();
-                            let pos = pos2(text_x + last.galley.size().x + char_w * 3.0, bottom - line_h / 2.0);
-                            painter.text(pos, Align2::LEFT_CENTER, label, FontId::proportional(settings.font_size), ui::with_alpha(theme.text_dim, 0.75));
+                            after.x = painter.text(after, Align2::LEFT_CENTER, label, FontId::proportional(settings.font_size), ui::with_alpha(theme.text_dim, 0.75)).right() + char_w * 3.0;
                         }
                         if let Some((_, message)) = test_marks.as_ref().and_then(|m| m.failures.iter().find(|f| f.0 == line)) {
-                            let last = row.pieces.last().unwrap();
                             painter.rect_filled(Rect::from_min_max(pos2(clip.left(), y), pos2(clip.right(), bottom)), CornerRadius::ZERO, ui::with_alpha(theme.error, 0.08));
-                            let pos = pos2(text_x + last.galley.size().x + char_w * 3.0, bottom - line_h / 2.0);
-                            painter.text(pos, Align2::LEFT_CENTER, message, FontId::proportional(settings.font_size), theme.error);
+                            painter.text(after, Align2::LEFT_CENTER, message, FontId::proportional(settings.font_size), theme.error);
                         }
                         let linked = if len >= 10 { buf_ref.line_text(line) } else { String::new() };
                         for (x0, x1, y) in links(&linked).into_iter().flat_map(|link| spans(link.0, link.1)) {

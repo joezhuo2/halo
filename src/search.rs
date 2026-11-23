@@ -44,6 +44,7 @@ pub struct Search {
     servers: bool,
     items: (String, Vec<Item>),
     stale: bool,
+    cursor: crate::debug::CursorCommands,
     opened: u32,
     pick: Option<(String, Vec<Choice>)>,
 }
@@ -187,6 +188,9 @@ impl Search {
     }
 
     fn load(&mut self, roots: &[(PathBuf, String)], editors: &mut Editors, ctx: &egui::Context) {
+        let cursor = if editors.source_cursor().is_some() { editors.marks.cursor } else { Default::default() };
+        self.stale |= self.cursor != cursor;
+        self.cursor = cursor;
         self.load_globals(editors, ctx);
         if let Some((folder, files)) = self.files_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.files = Some((folder, files));
@@ -245,7 +249,7 @@ impl Search {
         }
         let none = |items: Vec<Item>, note| if items.is_empty() { vec![Item::Note(note)] } else { items };
         if let Some(q) = query.strip_prefix('>') {
-            return none(rank(q, command::all().into_iter().map(Item::Command), |i| match i {
+            return none(rank(q, command::all().into_iter().filter(|c| self.cursor.allows(c)).map(Item::Command), |i| match i {
                 Item::Command(c) => score(q, c.label()),
                 _ => None,
             }), "No matching commands");

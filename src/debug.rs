@@ -1,3 +1,6 @@
+mod cursor;
+pub use cursor::CursorCommands;
+
 use crate::app::{Halo, note};
 use crate::command::Command;
 use crate::dap::{self, Incoming};
@@ -66,6 +69,8 @@ pub struct Marks {
     pub paused: Vec<(PathBuf, usize)>,
     ask: Option<(PathBuf, usize, Ask)>,
     hover: Option<Hover>,
+    pub cursor: CursorCommands,
+    inline: HashMap<String, String>,
     pub band: Option<(String, usize)>,
 }
 
@@ -76,6 +81,10 @@ fn same(a: &Path, b: &Path) -> bool {
 impl Marks {
     pub fn of(&self, path: &Path) -> &[Breakpoint] {
         self.files.iter().find(|f| same(&f.0, path)).map_or(&[], |f| f.1.as_slice())
+    }
+
+    pub fn stopped_line(&self, path: &Path) -> Option<usize> {
+        self.stopped.as_ref().filter(|s| same(&s.0, path)).map(|s| s.1)
     }
 
     pub fn stopped_lines(&self, path: &Path) -> Vec<usize> {
@@ -177,6 +186,8 @@ impl Marks {
 
     fn reset(&mut self, live: bool) {
         self.live = live;
+        self.cursor = CursorCommands::default();
+        self.inline.clear();
         self.stopped = None;
         self.paused.clear();
         self.hover = None;
@@ -513,6 +524,9 @@ enum Want {
     Hover(String),
     SetVariable(i64, String),
     Run,
+    RunTo(i64, usize),
+    GotoTargets(i64),
+    Goto,
     Disconnect,
     Restart,
     Disassemble(String),
@@ -539,6 +553,7 @@ struct Live {
     configured: bool,
     stopping: u8,
     restart: bool,
+    temporary: Option<(PathBuf, usize)>,
     id: u64,
     group: Option<String>,
     place: Option<(PathBuf, usize)>,
@@ -585,28 +600,53 @@ impl Live {
     }
 
     fn select(&mut self, index: usize, watches: &[String], marks: &mut Marks, cmds: &mut Vec<Command>) {
+        self.place = None;
+        marks.inline.clear();
+        marks.stopped = None;
+        marks.cursor = self.cursor_commands();
+        self.wants.retain(|_, w| !matches!(w, Want::Scopes(_) | Want::Variables(_) | Want::SetVariable(..)));
         self.frame = index;
         (self.scopes, self.children, self.asked) = (vec![], HashMap::new(), HashSet::new());
         let Some(frame) = self.frames.get(index).cloned() else { return };
         marks.hover = None;
         if let Some(path) = frame.path.filter(|p| p.is_file()) {
             self.place = Some((path.clone(), frame.line.saturating_sub(1)));
+            marks.stopped.clone_from(&self.place);
             cmds.extend([Command::OpenPath(path), Command::GoTo(frame.line.max(1), frame.column.max(1))]);
         }
         self.ask("scopes", json!({"frameId": frame.id}), Want::Scopes(frame.id));
         self.watch_all(watches);
     }
 
-    fn running(&mut self, marks: &mut Marks) {
+    fn focus_marks(&self, marks: &mut Marks) {
+        marks.stopped.clone_from(&self.place);
+        marks.cursor = self.cursor_commands();
+        self.refresh_inline(marks);
+        marks.hover = None;
+    }
+
+    fn running(&mut self, marks: Option<&mut Marks>) {
+        self.wants.retain(|_, w| !matches!(w, Want::Threads | Want::Stack | Want::Scopes(_) | Want::Variables(_) | Want::SetVariable(..)
+            | Want::Run | Want::RunTo(..) | Want::GotoTargets(_) | Want::Goto));
         self.state = State::Running;
         (self.frames, self.scopes, self.children, self.asked) = (vec![], vec![], HashMap::new(), HashSet::new());
         self.watch.clear();
         self.place = None;
-        marks.hover = None;
+        if let Some(marks) = marks {
+            self.focus_marks(marks);
+        }
     }
 
     fn send_breakpoints(&mut self, path: &Path, list: &[Breakpoint]) {
-        self.ask("setBreakpoints", source_breakpoints(path, list), Want::Breakpoints(path.to_path_buf()));
+        let mut args = source_breakpoints(path, list);
+        if let Some((_, line)) = self.temporary.as_ref().filter(|(p, _)| same(p, path)) {
+            args = cursor::with_cursor(args, *line).0;
+        }
+        self.ask("setBreakpoints", args, Want::Breakpoints(path.to_path_buf()));
+    }
+
+    fn stack(&mut self, thread: i64) {
+        self.ask("stackTrace", json!({"threadId": thread, "startFrame": 0, "levels": 50}), Want::Stack);
     }
 
     fn send_filters(&mut self, filters: &[(String, String, bool)]) {
@@ -631,7 +671,7 @@ impl Live {
         self.configured = true;
     }
 
-    fn fetch(&mut self, expanded: &HashSet<String>) {
+    fn fetch(&mut self, expanded: &HashSet<String>, inline: bool) {
         fn walk(children: &HashMap<i64, Vec<Var>>, vars: &[Var], prefix: &str, expanded: &HashSet<String>, wanted: &mut Vec<i64>) {
             for var in vars.iter().filter(|v| v.reference > 0) {
                 let path = format!("{prefix}/{}", var.name);
@@ -645,6 +685,9 @@ impl Live {
         }
         let mut wanted = vec![];
         walk(&self.children, &self.scopes, "", expanded, &mut wanted);
+        if inline {
+            wanted.extend(self.scopes.iter().filter(|s| !s.expensive && s.reference > 0).map(|s| s.reference));
+        }
         for reference in wanted {
             if self.asked.insert(reference) {
                 self.ask("variables", json!({"variablesReference": reference}), Want::Variables(reference));
@@ -657,6 +700,7 @@ pub struct Env<'a> {
     pub folder: Option<&'a Path>,
     pub workspace: &'a Workspace,
     pub file: Option<PathBuf>,
+    pub cursor_line: Option<usize>,
     pub settings: &'a Settings,
     pub marks: &'a mut Marks,
     pub bottom: &'a mut BottomPanel,
@@ -751,9 +795,11 @@ impl Debug {
         if self.live.len() > 1 { self.live[index].config.name.clone() } else { String::new() }
     }
 
-    fn focus_on(&mut self, index: usize, cmds: &mut Vec<Command>) {
+    fn focus_on(&mut self, index: usize, marks: &mut Marks, cmds: &mut Vec<Command>) {
         self.focus = index;
-        let Some(frame) = self.live.get(index).filter(|l| l.state == State::Stopped).and_then(|l| l.frames.get(l.frame)) else { return };
+        let live = &self.live[index];
+        live.focus_marks(marks);
+        let Some(frame) = live.frames.get(live.frame) else { return };
         if let Some(path) = frame.path.clone().filter(|p| p.is_file()) {
             cmds.extend([Command::OpenPath(path), Command::GoTo(frame.line.max(1), frame.column.max(1))]);
         }
@@ -877,6 +923,7 @@ impl Debug {
             configured: false,
             stopping: 0,
             restart: false,
+            temporary: None,
             id: self.next,
             group: None,
             place: None,
@@ -904,6 +951,7 @@ impl Debug {
         }
         env.bottom.show_debug();
         *env.panel = true;
+        live.focus_marks(env.marks);
         self.live.push(live);
         self.focus = self.live.len() - 1;
     }
@@ -913,7 +961,9 @@ impl Debug {
             return;
         }
         let tag = self.tag(index);
+        let was_focused = self.focus == index;
         let mut live = self.live.remove(index);
+        live.clear_temporary(env.marks);
         if live.stopping < 2 {
             live.client.request("disconnect", json!({"restart": false, "terminateDebuggee": live.config.request == "launch"}));
         }
@@ -924,6 +974,8 @@ impl Debug {
         if self.live.is_empty() {
             env.marks.reset(false);
             env.bottom.console.active = false;
+        } else if was_focused {
+            self.live[self.focus].focus_marks(env.marks);
         }
         env.bottom.console.tagged(&tag, "console", "Debugging ended.\n");
         if live.restart {
@@ -941,6 +993,7 @@ impl Debug {
 
     fn stop(&mut self, index: usize, env: &mut Env) {
         let Some(live) = self.live.get_mut(index) else { return };
+        live.clear_temporary(env.marks);
         live.stopping += 1;
         match live.stopping {
             1 if live.can("supportsTerminateRequest") && live.config.request == "launch" => live.ask("terminate", json!({}), Want::Plain("terminate".into())),
@@ -955,6 +1008,9 @@ impl Debug {
 
     fn step(&mut self, command: &str) {
         let Some(live) = self.live.get_mut(self.focus).filter(|l| l.state == State::Stopped) else { return };
+        if live.moving() {
+            return;
+        }
         let thread = live.thread.or(live.threads.first().map(|t| t.0)).unwrap_or(0);
         let mut args = json!({"threadId": thread});
         if self.views.focused && command != "continue" && live.can("supportsSteppingGranularity") {
@@ -976,6 +1032,7 @@ impl Debug {
             RestartDebugging => match self.live.get_mut(self.focus) {
                 None => self.start(false, env),
                 Some(live) if live.can("supportsRestartRequest") => {
+                    live.clear_temporary(env.marks);
                     let args = json!({"arguments": Value::Object(live.config.raw.clone())});
                     live.ask("restart", args, Want::Restart);
                 }
@@ -988,6 +1045,11 @@ impl Debug {
                 if let Some(live) = self.live.get_mut(self.focus).filter(|l| l.state == State::Running) {
                     let thread = live.thread.or(live.threads.first().map(|t| t.0)).unwrap_or(0);
                     live.ask("pause", json!({"threadId": thread}), Want::Plain("pause".into()));
+                }
+            }
+            RunToCursor | JumpToCursor => {
+                if let (Some(live), Some(path), Some(line)) = (self.live.get_mut(self.focus), env.file.as_deref(), env.cursor_line) {
+                    live.start_cursor_command(cmd, path, line, env.marks);
                 }
             }
             StepOver => self.step("next"),
@@ -1012,6 +1074,7 @@ impl Debug {
             OpenMemory => self.views.ask_memory(self.live.get(self.focus)),
             _ => return false,
         }
+        env.marks.cursor = self.live.get(self.focus).map(Live::cursor_commands).unwrap_or_default();
         true
     }
 
@@ -1057,7 +1120,9 @@ impl Debug {
             let word = hover.word.clone();
             live.evaluate(&word, "hover", Want::Hover(word.clone()));
         }
-        live.fetch(&self.expanded);
+        let path = env.marks.stopped.as_ref().map(|s| s.0.as_path());
+        live.fetch(&self.expanded, path.is_some() && env.settings.of(path).inline_values);
+        env.marks.cursor = live.cursor_commands();
         self.views.poll(live, env.marks);
     }
 
@@ -1137,6 +1202,10 @@ impl Debug {
             Want::Breakpoints(path) if success => env.marks.verify(&path, &body),
             Want::Threads if success => {
                 live.threads = body["threads"].as_array().into_iter().flatten().map(|t| (t["id"].as_i64().unwrap_or(0), t["name"].as_str().unwrap_or_default().to_owned())).collect();
+                if live.state == State::Stopped && live.thread.is_none() && let Some(&(thread, _)) = live.threads.first() {
+                    live.thread = Some(thread);
+                    live.stack(thread);
+                }
             }
             Want::Stack if success => {
                 let frame = |f: &Value| Frame {
@@ -1164,6 +1233,9 @@ impl Debug {
             }
             Want::Variables(reference) => {
                 live.children.insert(reference, if success { vars(&body, "variables") } else { vec![] });
+                if index == self.focus && live.scopes.iter().any(|s| !s.expensive && s.reference == reference) {
+                    live.refresh_inline(env.marks);
+                }
             }
             Want::Watch(expression) => {
                 live.watch.insert(expression, if success { Ok(body["result"].as_str().unwrap_or_default().to_owned()) } else { Err(message) });
@@ -1172,7 +1244,7 @@ impl Debug {
                 true => env.bottom.console.tagged(&tag, "repl", &format!("{}\n", body["result"].as_str().unwrap_or_default())),
                 false => env.bottom.console.tagged(&tag, "stderr", &format!("{message}\n")),
             },
-            Want::Hover(word) if success => {
+            Want::Hover(word) if success && index == self.focus => {
                 if let Some(hover) = env.marks.hover.as_mut().filter(|h| h.word == word) {
                     hover.value = body["result"].as_str().map(str::to_owned);
                 }
@@ -1181,17 +1253,44 @@ impl Debug {
                 if let Some(var) = live.children.get_mut(&reference).into_iter().flatten().find(|v| v.name == name) {
                     var.value = body["value"].as_str().unwrap_or_default().to_owned();
                 }
+                if index == self.focus {
+                    live.refresh_inline(env.marks);
+                }
                 live.watch_all(&self.watches);
             }
             Want::SetVariable(..) => ui::notify(format!("The value could not be set: {message}")),
-            Want::Run if success => live.running(env.marks),
+            Want::RunTo(thread, index) => {
+                let Some((path, _)) = &live.temporary else { return };
+                if success {
+                    env.marks.verify(path, &body);
+                }
+                if success && body["breakpoints"][index]["verified"] == true && live.stopping == 0 {
+                    live.ask("continue", json!({"threadId": thread}), Want::Run);
+                } else {
+                    live.clear_temporary(env.marks);
+                    let reason = body["breakpoints"][index]["message"].as_str().unwrap_or(&message);
+                    ui::notify(format!("Run to Cursor could not set the breakpoint. {reason}"));
+                }
+            }
+            Want::GotoTargets(thread) if success && live.stopping == 0 => {
+                if let Some(target) = cursor::first_target(&body) {
+                    live.ask("goto", json!({"threadId": thread, "targetId": target}), Want::Goto);
+                } else {
+                    ui::notify("The debug adapter found no jump target on this line.");
+                }
+            }
+            Want::Goto | Want::GotoTargets(_) if !success => ui::notify(format!("Jump to Cursor failed: {message}")),
+            Want::Goto | Want::Run if success => live.running((index == self.focus).then_some(env.marks)),
             Want::Disconnect => self.end(index, env),
             Want::Restart if !success => {
                 live.restart = true;
                 self.stop(index, env);
             }
-            Want::Restart => live.running(env.marks),
-            Want::Run => env.bottom.console.tagged(&tag, "stderr", &format!("{message}\n")),
+            Want::Restart => live.running((index == self.focus).then_some(env.marks)),
+            Want::Run => {
+                live.clear_temporary(env.marks);
+                env.bottom.console.tagged(&tag, "stderr", &format!("{message}\n"));
+            }
             Want::Plain(command) if !success => env.bottom.console.tagged(&tag, "stderr", &format!("{command}: {message}\n")),
             Want::Disassemble(ip) => self.views.disassembled(live, &ip, success, &message, &body, env.marks),
             Want::ReadMemory(reference) => self.views.memory_read(&reference, success, &message, &body),
@@ -1206,15 +1305,17 @@ impl Debug {
         match name {
             "initialized" => live.configure(env.marks, &self.filters),
             "stopped" => {
-                live.running(env.marks);
+                live.clear_temporary(env.marks);
+                live.running((index == self.focus).then_some(env.marks));
                 live.state = State::Stopped;
                 live.reason = body["description"].as_str().or(body["reason"].as_str()).unwrap_or("paused").to_owned();
-                live.thread = body["threadId"].as_i64().or(live.thread);
+                live.thread = body["threadId"].as_i64();
                 live.ask("threads", json!({}), Want::Threads);
-                let thread = live.thread.unwrap_or(0);
-                live.ask("stackTrace", json!({"threadId": thread, "startFrame": 0, "levels": 50}), Want::Stack);
+                if let Some(thread) = live.thread {
+                    live.stack(thread);
+                }
             }
-            "continued" => live.running(env.marks),
+            "continued" => live.running((index == self.focus).then_some(env.marks)),
             "exited" => env.bottom.console.tagged(&tag, "console", &format!("Process exited with code {}.\n", body["exitCode"])),
             "terminated" => self.end(index, env),
             "output" if body["category"] != "telemetry" => {
@@ -1584,7 +1685,7 @@ impl Debug {
                 self.focus = session;
                 self.live[session].select(index, &self.watches, env.marks, env.cmds);
             }
-            Some((session, None)) => self.focus_on(session, env.cmds),
+            Some((session, None)) => self.focus_on(session, env.marks, env.cmds),
             None => {}
         }
         if disassemble {
@@ -1640,7 +1741,7 @@ impl Debug {
         }
     }
 
-    pub fn toolbar(&mut self, ctx: &egui::Context, theme: &Theme, top: f32, cmds: &mut Vec<Command>) {
+    pub fn toolbar(&mut self, ctx: &egui::Context, theme: &Theme, top: f32, marks: &mut Marks, cmds: &mut Vec<Command>) {
         if self.live.is_empty() {
             return;
         }
@@ -1677,7 +1778,7 @@ impl Debug {
             });
         });
         if focus != self.focus {
-            self.focus_on(focus, cmds);
+            self.focus_on(focus, marks, cmds);
         }
     }
 
@@ -1858,6 +1959,7 @@ impl Halo {
             folder: workspace.folders.get(owner).map(|f| f.path.as_path()),
             workspace,
             file,
+            cursor_line: None,
             settings: &self.settings,
             marks: &mut self.editors.marks,
             bottom: &mut self.bottom,
@@ -1870,7 +1972,9 @@ impl Halo {
     }
 
     pub(crate) fn debug_exec(&mut self, cmd: &Command, ctx: &egui::Context) -> bool {
+        let line = if matches!(cmd, Command::RunToCursor | Command::JumpToCursor) { self.editors.source_cursor().map(|(_, line)| line) } else { None };
         let (debug, mut env) = self.debug_env(ctx);
+        env.cursor_line = line;
         debug.exec(cmd, &mut env)
     }
 
@@ -1879,7 +1983,7 @@ impl Halo {
         let (debug, mut env) = self.debug_env(ctx);
         debug.poll(&mut env);
         debug.dialogs(ctx, &mut env);
-        debug.toolbar(ctx, &theme, top, env.cmds);
+        debug.toolbar(ctx, &theme, top, env.marks, env.cmds);
         self.debug_views();
     }
 
@@ -2005,7 +2109,7 @@ mod tests {
         assert!(marks.files.is_empty() && marks.changed.iter().any(|c| same(c, &path)));
     }
 
-    fn adapter(file: PathBuf) -> (u16, Receiver<Value>) {
+    fn adapter(file: PathBuf, x: &'static str) -> (u16, Receiver<Value>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let (tx, rx) = channel();
@@ -2014,6 +2118,8 @@ mod tests {
             let mut writer = stream.try_clone().unwrap();
             let mut reader = BufReader::new(stream);
             let mut seq = 100;
+            let mut frame_line = 3;
+            let mut continued = false;
             let mut send = |writer: &mut std::net::TcpStream, mut message: Value| {
                 seq += 1;
                 message["seq"] = json!(seq);
@@ -2026,7 +2132,7 @@ mod tests {
                 let event = |name: &str, body: Value| json!({"type": "event", "event": name, "body": body});
                 match command.as_str() {
                     "initialize" => {
-                        let caps = json!({"supportsConfigurationDoneRequest": true, "supportsSetVariable": true, "supportsConditionalBreakpoints": true,
+                        let caps = json!({"supportsConfigurationDoneRequest": true, "supportsSetVariable": true, "supportsGotoTargetsRequest": true, "supportsConditionalBreakpoints": true,
                             "supportsLogPoints": true, "exceptionBreakpointFilters": [{"filter": "raised", "label": "Raised Exceptions", "default": true}],
                             "supportsDisassembleRequest": true, "supportsReadMemoryRequest": true, "supportsSteppingGranularity": true});
                         send(&mut writer, reply(caps));
@@ -2045,11 +2151,12 @@ mod tests {
                     }
                     "threads" => send(&mut writer, reply(json!({"threads": [{"id": 1, "name": "main"}]}))),
                     "stackTrace" => send(&mut writer, reply(json!({"stackFrames": [
-                        {"id": 7, "name": "main", "line": 3, "column": 5, "source": {"path": file.to_string_lossy()}, "instructionPointerReference": "0x1000"},
+                        {"id": 7, "name": "main", "line": frame_line, "column": 5, "source": {"path": file.to_string_lossy()}, "instructionPointerReference": "0x1000"},
                         {"id": 8, "name": "start", "line": 1, "column": 1},
                     ]}))),
-                    "scopes" => send(&mut writer, reply(json!({"scopes": [{"name": "Locals", "variablesReference": 100}, {"name": "Globals", "variablesReference": 200, "expensive": true}]}))),
-                    "variables" => send(&mut writer, reply(json!({"variables": [{"name": "x", "value": "42", "type": "int", "variablesReference": 0, "memoryReference": "0x2000"}, {"name": "items", "value": "[2]", "variablesReference": 101}]}))),
+                    "scopes" => send(&mut writer, reply(json!({"scopes": [{"name": "Locals", "variablesReference": 100}, {"name": "Arguments", "variablesReference": 150}, {"name": "Globals", "variablesReference": 200, "expensive": true}]}))),
+                    "variables" if request["arguments"]["variablesReference"] == 150 => send(&mut writer, reply(json!({"variables": [{"name": "arg", "value": "5"}]}))),
+                    "variables" => send(&mut writer, reply(json!({"variables": [{"name": "x", "value": x, "type": "int", "variablesReference": 0, "memoryReference": "0x2000"}, {"name": "items", "value": "[2]", "variablesReference": 101}]}))),
                     "disassemble" => send(&mut writer, reply(json!({"instructions": [
                         {"address": "0x0ffe", "instructionBytes": "90", "instruction": "nop", "symbol": "main", "location": {"path": file.to_string_lossy()}, "line": 3},
                         {"address": "0x1000", "instructionBytes": "c3", "instruction": "ret", "symbol": "main", "line": 3},
@@ -2063,6 +2170,21 @@ mod tests {
                         let expression = request["arguments"]["expression"].as_str().unwrap_or_default();
                         let result = if expression == "x * 2" { "84" } else { "42" };
                         send(&mut writer, reply(json!({"result": result, "variablesReference": 0})));
+                    }
+                    "gotoTargets" => {
+                        let targets = if request["arguments"]["line"] == 2 { json!([{"id": 17}, {"id": 18}]) } else { json!([]) };
+                        send(&mut writer, reply(json!({"targets": targets})));
+                    }
+                    "goto" => {
+                        frame_line = 2;
+                        send(&mut writer, event("stopped", json!({"reason": "goto"})));
+                        send(&mut writer, reply(json!({})));
+                    }
+                    "continue" if !continued => {
+                        continued = true;
+                        frame_line = 4;
+                        send(&mut writer, reply(json!({"allThreadsContinued": true})));
+                        send(&mut writer, event("stopped", json!({"reason": "exception", "threadId": 1})));
                     }
                     "continue" => {
                         send(&mut writer, reply(json!({"allThreadsContinued": true})));
@@ -2087,7 +2209,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".vscode")).unwrap();
         let file = dir.join("main.py");
         std::fs::write(&file, "a = 1\nb = 2\nx = 42\nprint(x)\n").unwrap();
-        let (port, requests) = adapter(file.clone());
+        let (port, requests) = adapter(file.clone(), "42");
         let launch = format!("{{\n // fake\n \"configurations\": [{{\"type\": \"fake\", \"request\": \"launch\", \"name\": \"Fake\", \"program\": \"${{file}}\", \"debugServer\": {port}, \"custom\": [1,],}},]}}");
         std::fs::write(launch_path(&dir), launch).unwrap();
 
@@ -2102,7 +2224,7 @@ mod tests {
         debug.watches.push("x * 2".into());
         macro_rules! env {
             () => {
-                Env { folder: Some(&dir), workspace: &workspace, file: Some(file.clone()), settings: &settings, marks: &mut marks, bottom: &mut bottom, tasks: &mut tasks, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
+                Env { folder: Some(&dir), workspace: &workspace, file: Some(file.clone()), cursor_line: Some(2), settings: &settings, marks: &mut marks, bottom: &mut bottom, tasks: &mut tasks, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
             };
         }
         macro_rules! pump {
@@ -2117,15 +2239,16 @@ mod tests {
         }
         assert!(debug.exec(&Command::StartDebugging, &mut env!()));
         assert!(debug.active() && bottom.console.active && marks.live);
-        pump!(|d: &Debug, _: &BottomPanel| d.live.first().is_some_and(|l| l.children.contains_key(&100)));
+        pump!(|d: &Debug, _: &BottomPanel| d.live.first().is_some_and(|l| l.children.contains_key(&100) && l.children.contains_key(&150)));
 
         let live = &debug.live[0];
         assert_eq!(live.state, State::Stopped);
         assert_eq!(live.threads, [(1, "main".to_owned())]);
         assert_eq!(live.frames.len(), 2);
-        assert_eq!(live.scopes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Locals", "Globals"]);
+        assert_eq!(live.scopes.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Locals", "Arguments", "Globals"]);
         assert!(debug.expanded.contains("/Locals") && !debug.expanded.contains("/Globals"));
         assert_eq!(live.children[&100].iter().map(|v| (v.name.as_str(), v.value.as_str())).collect::<Vec<_>>(), [("x", "42"), ("items", "[2]")]);
+        assert_eq!(marks.inline_label("arg + x + arg"), "arg = 5, x = 42");
         assert_eq!(marks.stopped, Some((file.clone(), 2)));
         assert!(cmds.contains(&Command::OpenPath(file.clone())) && cmds.contains(&Command::GoTo(3, 5)));
         assert_eq!(debug.filters, [("raised".to_owned(), "Raised Exceptions".to_owned(), true)]);
@@ -2134,7 +2257,7 @@ mod tests {
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(320.0, 700.0))), ..Default::default() };
         let mut out = ctx.run_ui(input, |ui| {
             debug.ui(ui, &Theme::dark(), &mut env!());
-            debug.toolbar(ui.ctx(), &Theme::dark(), 40.0, &mut vec![]);
+            debug.toolbar(ui.ctx(), &Theme::dark(), 40.0, &mut marks, &mut vec![]);
             bottom.console.ui(ui, Rect::from_min_size(pos2(0.0, 500.0), vec2(320.0, 200.0)), &Theme::dark(), 13.0);
         });
         out.textures_delta.clear();
@@ -2143,6 +2266,25 @@ mod tests {
         assert_eq!(debug.live[0].watch["x * 2"], Ok("84".to_owned()));
         bottom.console.submitted.push("x".into());
         pump!(|_: &Debug, b: &BottomPanel| b.console.text().ends_with("the program\n42\n"));
+
+        debug.live[0].caps["supportsGotoTargetsRequest"] = json!(false);
+        assert!(debug.exec(&Command::JumpToCursor, &mut env!()));
+        assert!(!marks.cursor.allows(&Command::JumpToCursor));
+        debug.live[0].caps["supportsGotoTargetsRequest"] = json!(true);
+        let mut missing = env!();
+        missing.cursor_line = Some(1);
+        assert!(debug.exec(&Command::JumpToCursor, &mut missing));
+        pump!(|d: &Debug, _: &BottomPanel| d.live[0].cursor_commands().allows(&Command::JumpToCursor));
+        assert_eq!(marks.stopped, Some((file.clone(), 2)));
+        assert!(debug.exec(&Command::JumpToCursor, &mut env!()));
+        pump!(|d: &Debug, _: &BottomPanel| d.live.first().is_some_and(|l| l.reason == "goto" && l.children.contains_key(&100)));
+        assert_eq!(marks.stopped, Some((file.clone(), 1)));
+
+        assert!(debug.exec(&Command::RunToCursor, &mut env!()));
+        assert!(!marks.of(&file).iter().any(|b| b.line == 1));
+        pump!(|d: &Debug, _: &BottomPanel| d.live.first().is_some_and(|l| l.reason == "exception" && l.children.contains_key(&100)));
+        assert_eq!(marks.stopped, Some((file.clone(), 3)));
+        assert!(debug.live[0].temporary.is_none());
 
         let shown = |d: &Debug, title: &str, part: &str| d.views.out.iter().any(|o| o.0 == title && o.1.contains(part));
         assert_eq!(debug.live[0].children[&100][0].memory.as_deref(), Some("0x2000"));
@@ -2165,6 +2307,7 @@ mod tests {
 
         assert!(debug.exec(&Command::StartDebugging, &mut env!()));
         pump!(|d: &Debug, _: &BottomPanel| !d.active());
+        assert!(marks.inline.is_empty());
         assert!(!marks.live && marks.stopped.is_none() && !bottom.console.active);
         assert!(bottom.console.text().contains("Process exited with code 0."));
 
@@ -2180,6 +2323,17 @@ mod tests {
         assert_eq!(launch["arguments"]["custom"], json!([1]));
         let breakpoints = sent.iter().find(|r| r["command"] == "setBreakpoints").unwrap();
         assert_eq!(breakpoints["arguments"]["breakpoints"], json!([{"line": 1, "logMessage": "a is {a}"}, {"line": 3}, {"line": 4, "condition": "x > 1"}]));
+        let sets: Vec<_> = sent.iter().filter(|r| r["command"] == "setBreakpoints").map(|r| &r["arguments"]).collect();
+        assert_eq!(sets.len(), 3);
+        assert_eq!(sets[1]["breakpoints"][3], json!({"line": 2}));
+        assert_eq!(sets[0], sets[2]);
+        assert!(!sent.iter().any(|r| r["command"] == "variables" && r["arguments"]["variablesReference"] == 200));
+        let targets: Vec<_> = sent.iter().filter(|r| r["command"] == "gotoTargets").map(|r| &r["arguments"]).collect();
+        assert_eq!(targets.len(), 2);
+        assert_eq!(*targets[1], json!({"source": {"path": file}, "line": 2}));
+        let jumps: Vec<_> = sent.iter().filter(|r| r["command"] == "goto").collect();
+        assert_eq!(jumps.len(), 1);
+        assert_eq!(jumps[0]["arguments"], json!({"threadId": 1, "targetId": 17}));
         let exceptions = sent.iter().find(|r| r["command"] == "setExceptionBreakpoints").unwrap();
         assert_eq!(exceptions["arguments"]["filters"], json!(["raised"]));
         assert!(sent.iter().any(|r| r["command"] == "evaluate" && r["arguments"]["context"] == "watch" && r["arguments"]["frameId"] == 7));
@@ -2225,7 +2379,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".vscode")).unwrap();
         let file = dir.join("main.py");
         std::fs::write(&file, "a = 1\nb = 2\nx = 42\nprint(x)\n").unwrap();
-        let adapters: Vec<(u16, Receiver<Value>)> = (0..4).map(|_| adapter(file.clone())).collect();
+        let adapters: Vec<(u16, Receiver<Value>)> = ["1", "2", "3", "4"].into_iter().map(|x| adapter(file.clone(), x)).collect();
         let entry = |name: &str, port: u16| format!("{{\"type\": \"fake\", \"request\": \"launch\", \"name\": \"{name}\", \"debugServer\": {port}}}");
         let entries: Vec<String> = ["A", "B", "C", "D"].iter().zip(&adapters).map(|(name, (port, _))| entry(name, *port)).collect();
         let compounds = r#"[{"name": "Both", "configurations": ["A", "B"], "stopAll": true}, {"name": "Bad", "configurations": ["A", "Nope"]}]"#;
@@ -2239,7 +2393,7 @@ mod tests {
         let workspace = Workspace::single(dir.clone());
         macro_rules! env {
             () => {
-                Env { folder: Some(&dir), workspace: &workspace, file: Some(file.clone()), settings: &settings, marks: &mut marks, bottom: &mut bottom, tasks: &mut tasks, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
+                Env { folder: Some(&dir), workspace: &workspace, file: Some(file.clone()), cursor_line: Some(2), settings: &settings, marks: &mut marks, bottom: &mut bottom, tasks: &mut tasks, panel: &mut panel, cmds: &mut cmds, ctx: &ctx }
             };
         }
         macro_rules! pump {
@@ -2272,11 +2426,22 @@ mod tests {
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(320.0, 700.0))), ..Default::default() };
         let mut out = ctx.run_ui(input, |ui| {
             debug.ui(ui, &Theme::dark(), &mut env!());
-            debug.toolbar(ui.ctx(), &Theme::dark(), 40.0, &mut vec![]);
+            debug.toolbar(ui.ctx(), &Theme::dark(), 40.0, &mut marks, &mut vec![]);
         });
         out.textures_delta.clear();
 
-        debug.focus_on(0, &mut cmds);
+        debug.focus_on(0, &mut marks, &mut cmds);
+        pump!(|d: &Debug| d.live[0].children.contains_key(&100));
+        debug.focus_on(1, &mut marks, &mut cmds);
+        pump!(|d: &Debug| d.live[1].children.contains_key(&100));
+        assert_eq!(marks.inline_label("x"), "x = 2");
+        debug.reply(0, Want::Variables(100), true, String::new(), json!({"variables": [{"name": "x", "value": "10"}]}), &mut env!());
+        assert_eq!(marks.inline_label("x"), "x = 2");
+        debug.event(0, "continued", &Value::Null, &mut env!());
+        assert_eq!(marks.inline_label("x"), "x = 2");
+        assert!(marks.cursor.allows(&Command::JumpToCursor));
+        debug.focus_on(0, &mut marks, &mut cmds);
+        assert!(marks.inline.is_empty() && !marks.cursor.allows(&Command::RunToCursor));
         debug.exec(&Command::StopDebugging, &mut env!());
         pump!(|d: &Debug| !d.active());
         assert!(!marks.live && marks.paused.is_empty() && marks.stopped.is_none());
@@ -2289,12 +2454,27 @@ mod tests {
         debug.exec(&Command::RunWithoutDebugging, &mut env!());
         pump!(|d: &Debug| paused(d, 2));
         assert_eq!((debug.focus, debug.live[1].config.name.as_str()), (1, "D"));
+        pump!(|d: &Debug| d.live[1].children.contains_key(&100));
+        debug.focus_on(0, &mut marks, &mut cmds);
+        debug.exec(&Command::JumpToCursor, &mut env!());
+        debug.focus_on(1, &mut marks, &mut cmds);
+        assert!(marks.cursor.allows(&Command::JumpToCursor));
+        pump!(|d: &Debug| d.live[0].reason == "goto" && d.live[0].children.contains_key(&100));
+        assert_eq!(marks.inline_label("x"), "x = 3");
+        debug.exec(&Command::RunToCursor, &mut env!());
+        debug.focus_on(1, &mut marks, &mut cmds);
+        marks.toggle(&file, 3);
+        pump!(|d: &Debug| d.live[0].reason == "exception" && d.live[0].children.contains_key(&100));
+        assert_eq!(marks.stopped_lines(&file), [3, 2]);
+        debug.focus_on(1, &mut marks, &mut cmds);
+        assert_eq!(marks.inline_label("x"), "x = 4");
         debug.exec(&Command::StopDebugging, &mut env!());
         pump!(|d: &Debug| d.live.len() == 1);
         assert_eq!((debug.focus, debug.live[0].config.name.as_str()), (0, "C"));
         assert!(debug.active() && bottom.console.active && marks.live);
-        debug.poll(&mut env!());
-        assert_eq!(marks.stopped, Some((file.clone(), 2)));
+        assert_eq!(marks.inline_label("x"), "x = 3");
+        assert_eq!(marks.stopped, Some((file.clone(), 3)));
+        assert!(marks.cursor.allows(&Command::RunToCursor));
         debug.exec(&Command::StartDebugging, &mut env!());
         pump!(|d: &Debug| !d.active());
 
@@ -2302,7 +2482,15 @@ mod tests {
         let count = |i: usize, name: &str| sent[i].iter().filter(|r| r["command"] == name).count();
         assert_eq!((count(0, "setBreakpoints"), count(1, "setBreakpoints")), (2, 2));
         assert_eq!((count(0, "disconnect"), count(1, "disconnect")), (1, 1));
-        assert_eq!((count(2, "continue"), count(3, "disconnect")), (1, 1));
+        assert_eq!((count(2, "gotoTargets"), count(2, "goto"), count(2, "continue")), (1, 1, 2));
+        assert_eq!((count(3, "gotoTargets"), count(3, "goto"), count(3, "continue"), count(3, "disconnect")), (0, 0, 0, 1));
+        let points = |i: usize| sent[i].iter().filter(|r| r["command"] == "setBreakpoints").map(|r| &r["arguments"]["breakpoints"]).collect::<Vec<_>>();
+        let (c, d) = (points(2), points(3));
+        assert_eq!(c.len(), 4);
+        assert_eq!(d.len(), 2);
+        assert_eq!(c[2], &json!([{"line": 1}, {"line": 3}, {"line": 4}, {"line": 2}]));
+        assert_eq!(d[1], &json!([{"line": 1}, {"line": 3}, {"line": 4}]));
+        assert_eq!(c[3], d[1]);
         assert!(sent[3].iter().any(|r| r["command"] == "launch" && r["arguments"]["noDebug"] == true));
         let _ = std::fs::remove_dir_all(&dir);
     }
