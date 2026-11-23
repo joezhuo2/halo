@@ -725,7 +725,7 @@ pub fn all() -> Vec<Command> {
         FoldLevel(6), FoldLevel(7),
         SortLinesAscending, SortLinesDescending, RemoveDuplicateLines, ReverseLines, TransformToUppercase, TransformToLowercase,
         TransformToTitlecase, TransformToSnakecase, TransformToCamelcase, TransformToKebabcase,
-        RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection, DeleteWordPartLeft, DeleteWordPartRight,
+        RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection, InlineChat, DeleteWordPartLeft, DeleteWordPartRight,
         SelectAll, AddCursorAbove, AddCursorBelow, AddCursorsToLineEnds, SelectNextOccurrence, MoveSelectionToNextFindMatch, SelectAllOccurrences, ExpandSelection, ShrinkSelection,
         CursorWordPartLeftSelect, CursorWordPartRightSelect,
         SelectToBracket, CursorUndo, ToggleColumnSelection, CursorColumnSelectLeft, CursorColumnSelectRight, CursorColumnSelectUp,
@@ -759,7 +759,6 @@ pub fn all() -> Vec<Command> {
     commands.extend([ShowOutput, ShowOutputChannels, ClearOutput, OpenOutputInEditor, ShowNotifications, ClearNotifications, ToggleDoNotDisturb, FocusNotification]);
     commands.extend([FocusNextRegion, FocusPrevRegion, ToggleTabFocus, ShowAccessibilityHelp, AnnounceCursorPosition, ToggleScreenReaderMode]);
     commands.extend([About, InstallInPath]);
-    commands.push(InlineChat);
     commands
 }
 

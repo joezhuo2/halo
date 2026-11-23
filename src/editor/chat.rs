@@ -18,6 +18,8 @@ const START: &str = "<<<SELECTION START>>>";
 const END: &str = "<<<SELECTION END>>>";
 const CONTEXT: usize = 40;
 
+type Added = (usize, u32, Range<usize>);
+
 #[derive(Default)]
 pub(super) struct Chat {
     sessions: HashMap<u64, Session>,
@@ -37,7 +39,7 @@ struct Session {
     job: Option<Job>,
     reply: Option<String>,
     hunks: Vec<Hunk>,
-    rows: Vec<(usize, u32, Range<usize>)>,
+    rows: Vec<Added>,
 }
 
 impl Session {
@@ -162,7 +164,7 @@ fn cleanup(reply: &str, original: &str) -> String {
     text
 }
 
-fn preview(first: usize, hunks: &[Hunk]) -> (Vec<usize>, Vec<(usize, u32, Range<usize>)>) {
+fn preview(first: usize, hunks: &[Hunk]) -> (Vec<usize>, Vec<Added>) {
     let removed = hunks.iter().flat_map(|h| h.left.clone()).map(|l| first + l).collect();
     let added = hunks.iter().filter(|h| !h.right.is_empty()).map(|h| (first + h.left.end, h.right.len() as u32, h.right.clone())).collect();
     (removed, added)
