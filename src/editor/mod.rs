@@ -1,4 +1,5 @@
 mod buffer;
+mod chat;
 mod clipboard;
 mod decor;
 pub mod diff;
@@ -311,6 +312,7 @@ pub struct Editors {
     grid: grid::Grid,
     searches: Vec<(u64, std::sync::mpsc::Receiver<String>)>,
     links: md_links::Links,
+    chat: chat::Chat,
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -670,6 +672,7 @@ impl Editors {
             grid: Default::default(),
             searches: vec![],
             links: Default::default(),
+            chat: Default::default(),
         }
     }
 
@@ -1088,6 +1091,9 @@ impl Editors {
         }
         if self.merge_exec(cmd, ctx) || self.diff_exec(cmd, ctx) || self.review_exec(cmd) {
             self.last_input = ctx.input(|i| i.time);
+            return true;
+        }
+        if self.chat_exec(cmd) {
             return true;
         }
         if self.intel_exec(cmd, settings, ctx) {
@@ -2307,6 +2313,9 @@ impl Editors {
                 Err(at) => pads.insert(at, (line + 1, size)),
             }
         }
+        if !diffed {
+            self.chat_pads(doc_id, buf, &mut pads);
+        }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         (buf.version, wrap_cols, row_folds, &lens_rows, &pads).hash(&mut hasher);
         if tab.rows.0 != hasher.finish() || tab.rows.1.len() != total + 1 {
@@ -2659,6 +2668,7 @@ impl Editors {
                         let items = [
                             Some(GoToDefinition), Some(PeekDefinition), Some(GoToImplementation), Some(FindReferences), Some(ShowCallHierarchy), None,
                             Some(RenameSymbol), Some(QuickFix), Some(FormatDocument), None,
+                            Some(InlineChat), None,
                             Some(Cut), Some(Copy), Some(Paste),
                         ];
                         for item in items {
@@ -3233,6 +3243,7 @@ impl Editors {
         if is_active {
             self.popups(ui, theme, doc_id, buf, tab, caret_at, line_h, &font);
         }
+        self.chat_ui(ui, theme, (doc_id, is_active), buf, tab, text_rect, (out.state.offset, gutter_w, line_h), (&font, style));
         if let (Some(top), Some((_, size, _))) = (zone_y, zone) {
             let rect = Rect::from_min_size(pos2(text_rect.left(), top), vec2(text_rect.width(), size as f32 * line_h));
             ui.scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
