@@ -22,6 +22,7 @@ pub enum Command {
     ComparePath(PathBuf),
     ToggleInlineBlame,
     OpenLineChanges,
+    OpenLineCommitOnRemote,
     RestoreSnapshot(PathBuf, PathBuf),
     Save,
     SaveAs,
@@ -737,7 +738,7 @@ pub fn all() -> Vec<Command> {
         OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
         ShowTestOutput, RunAllTestsWithCoverage, ToggleCoverageDisplay, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
         CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, NewTerminalInEditor, MoveTerminalToEditor, MoveTerminalToPanel, ClearRestoredHistory,
-        GitSync, ToggleInlineBlame, OpenLineChanges,
+        GitSync, ToggleInlineBlame, OpenLineChanges, OpenLineCommitOnRemote,
         StageHunk, RevertHunk, UnstageHunk, StageSelectedRanges, RevertSelectedRanges, UnstageSelectedRanges,
         MergeOpen, MergeAcceptIncoming, MergeAcceptCurrent, MergeAcceptBoth, MergeAcceptAllIncoming, MergeAcceptAllCurrent,
         MergeNextConflict, MergePrevConflict, MergeToggleBase, MergeComplete,
@@ -956,7 +957,7 @@ impl Command {
             | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
             | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel | ClearRestoredHistory => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
-            OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | RestoreSnapshot(..) | StageHunk | RevertHunk
+            OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | OpenLineCommitOnRemote | RestoreSnapshot(..) | StageHunk | RevertHunk
             | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges | MergeOpen | OpenMerge(_)
             | MergeAcceptIncoming | MergeAcceptCurrent | MergeAcceptBoth | MergeAcceptAllIncoming | MergeAcceptAllCurrent
             | MergeNextConflict | MergePrevConflict | MergeToggleBase | MergeComplete => "Source Control",
@@ -983,6 +984,7 @@ impl Command {
             CompareWithSelected | ComparePath(_) => "Compare with Selected",
             ToggleInlineBlame => "Git: Toggle Inline Blame",
             OpenLineChanges => "Git: Open Changes of Current Line's Commit",
+            OpenLineCommitOnRemote => "Git: Open Current Line's Commit on Remote",
             RestoreSnapshot(..) => "Restore Contents",
             Save => "Save",
             SaveAs => "Save As...",
