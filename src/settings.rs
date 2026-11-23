@@ -134,7 +134,8 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        let terminals = default_terminals();
+        static TERMINALS: std::sync::OnceLock<Vec<ShellProfile>> = std::sync::OnceLock::new();
+        let terminals = TERMINALS.get_or_init(default_terminals).clone();
         Self {
             theme: "dark".into(),
             icon_theme: "builtin".into(),
