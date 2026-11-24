@@ -157,6 +157,8 @@ pub const SETTINGS: &[Meta] = &[
     m("theme", 2, "Workbench", "Color Theme", "The base theme. Custom colors are kept for each theme. Import more with Preferences: Import VS Code Theme.", Kind::Custom),
     m("icon_theme", 2, "Workbench", "File Icon Theme", "The icons shown next to files and folders. Import more with Preferences: Import VS Code Icon Theme.", Kind::Custom),
     m("window_color", 2, "Workbench", "Window Color", "Tint the title bar so this window is easy to tell apart. Set it in the folder settings to give each folder its own color; Window: Set Color... does that.", Kind::Choice(crate::titlebar::WINDOW_COLORS)),
+    m("show_tabs", 2, "Workbench", "Show Tabs", "Whether editor groups show their tab strip. Hide it to use the Open Editors list in the Explorer as vertical tabs.", Kind::Choice(&[("multiple", "Show"), ("none", "Hide")])),
+    m("open_editors_tree", 2, "Workbench", "Open Editors Tree", "Group the Open Editors list in the Explorer by folder.", Kind::Toggle),
     m("colors", 2, "Workbench", "Colors", "Interface colors on the left, syntax colors on the right.", Kind::Custom),
     m("default_terminal", 3, "Terminal", "Default Profile", "The shell a new terminal starts with.", Kind::Custom),
     m("terminals", 3, "Terminal", "Profiles", "The name, program and arguments of each shell.", Kind::Custom),

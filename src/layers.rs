@@ -77,6 +77,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("cursor_surrounding_lines", "editor.cursorSurroundingLines"),
     ("mouse_wheel_zoom", "editor.mouseWheelZoom"),
     ("window_color", "peacock.color"),
+    ("show_tabs", "workbench.editor.showTabs"),
     ("multi_cursor_modifier", "editor.multiCursorModifier"),
     ("column_selection", "editor.columnSelection"),
     ("word_separators", "editor.wordSeparators"),

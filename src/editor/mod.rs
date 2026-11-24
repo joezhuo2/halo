@@ -1770,7 +1770,10 @@ impl Editors {
 
     #[allow(clippy::too_many_arguments)]
     fn group_ui(&mut self, ui: &mut Ui, g: usize, rect: Rect, theme: &Theme, settings: &Settings, git: &Git, pending: &mut Vec<Command>) {
-        let strip = self.tab_strip(ui, g, Rect::from_min_size(rect.min, vec2(rect.width(), TAB_H)), theme, pending);
+        let strip = match settings.show_tabs.as_str() {
+            "none" => Rect::from_min_size(rect.min, vec2(rect.width(), 0.0)),
+            _ => self.tab_strip(ui, g, Rect::from_min_size(rect.min, vec2(rect.width(), TAB_H)), theme, pending),
+        };
         let mut body = Rect::from_min_max(pos2(rect.left(), strip.bottom()), rect.max);
         let terminal = self.groups[g].tabs.get(self.groups[g].active).is_some_and(|tab| self.terminals.contains_key(&tab.doc));
         if settings.breadcrumbs && !self.groups[g].tabs.is_empty() && !terminal {

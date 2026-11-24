@@ -24,7 +24,18 @@ fn confirm(ctx: &egui::Context, id: &str, title: &str, text: &str, ok: RichText)
 }
 
 impl Explorer {
-    pub(super) fn open_editors(&mut self, ui: &mut Ui, theme: &Theme, root: &Path, tabs: &[Vec<OpenTab>], cmds: &mut Vec<Command>) {
+    pub(super) fn open_editors(&mut self, ui: &mut Ui, theme: &Theme, root: &Path, tabs: &[Vec<OpenTab>], tree: bool, cmds: &mut Vec<Command>) {
+        let dir_of = |tab: &OpenTab| {
+            let dir = tab.path.as_deref().and_then(Path::parent).map(|p| p.strip_prefix(root).unwrap_or(p));
+            dir.map(|d| d.to_string_lossy().replace('\\', "/")).unwrap_or_default()
+        };
+        let tabs: Vec<Vec<&OpenTab>> = tabs.iter().map(|group| {
+            let mut sorted: Vec<&OpenTab> = group.iter().collect();
+            if tree {
+                sorted.sort_by_cached_key(|tab| dir_of(tab));
+            }
+            sorted
+        }).collect();
         let count: usize = tabs.iter().map(Vec::len).sum();
         let header = ui::section(ui, theme, "OPEN EDITORS", &mut self.open_editors).rect;
         if ui.rect_contains_pointer(header) && count > 0 {
@@ -35,6 +46,10 @@ impl Explorer {
                 }
                 if ui::icon_button(ui, theme, icons::FLOPPY_DISK, 22.0, false, "Save All").clicked() {
                     cmds.push(Command::SaveAll);
+                }
+                let (icon, tip) = if tree { (icons::LIST, "Show as List") } else { (icons::TREE_VIEW, "Show as Tree") };
+                if ui::icon_button(ui, theme, icon, 22.0, false, tip).clicked() {
+                    cmds.push(Command::ToggleOpenEditorsTree);
                 }
             });
         }
@@ -79,7 +94,17 @@ impl Explorer {
                         let text = format!("GROUP {}", g + 1);
                         ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(10.5), theme.text_dim);
                     }
-                    for tab in group {
+                    let mut folder = String::new();
+                    for &tab in group {
+                        let dir = dir_of(tab);
+                        if tree && dir != folder && !dir.is_empty() {
+                            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
+                            let painter = ui.painter().with_clip_rect(r);
+                            painter.text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, icons::FOLDER_OPEN, FontId::proportional(14.0), theme.text_dim);
+                            painter.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, &dir, FontId::proportional(12.5), theme.text_dim);
+                        }
+                        folder.clone_from(&dir);
+                        let indent = if tree && !dir.is_empty() { 14.0 } else { 0.0 };
                         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
                         let focused = self.open_focus && flat_index == self.open_cursor;
                         flat_index += 1;
@@ -88,15 +113,13 @@ impl Explorer {
                         let close = Rect::from_center_size(pos2(r.right() - 14.0, r.center().y), vec2(18.0, 18.0));
                         let x = ui.interact(close, resp.id.with("close"), Sense::click());
                         let painter = ui.painter().with_clip_rect(r.with_max_x(close.left() - 2.0));
-                        painter.text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, file_icon(&tab.title), FontId::proportional(15.0), theme.text_dim);
+                        painter.text(pos2(r.left() + 12.0 + indent, r.center().y), Align2::LEFT_CENTER, file_icon(&tab.title), FontId::proportional(15.0), theme.text_dim);
                         let tint = name_color(theme, tab.severity, None);
                         let title = painter.layout_no_wrap(tab.title.clone(), FontId::proportional(13.0), tint);
-                        let after = r.left() + 34.0 + title.size().x + 8.0;
-                        painter.galley(pos2(r.left() + 34.0, r.center().y - title.size().y / 2.0), title, tint);
-                        let dir = tab.path.as_deref().and_then(Path::parent).map(|p| p.strip_prefix(root).unwrap_or(p));
-                        if let Some(dir) = dir.filter(|d| !d.as_os_str().is_empty()) {
-                            let text = dir.to_string_lossy().replace('\\', "/");
-                            painter.text(pos2(after, r.center().y), Align2::LEFT_CENTER, text, FontId::proportional(11.5), theme.text_dim);
+                        let after = r.left() + 34.0 + indent + title.size().x + 8.0;
+                        painter.galley(pos2(r.left() + 34.0 + indent, r.center().y - title.size().y / 2.0), title, tint);
+                        if !tree && !dir.is_empty() {
+                            painter.text(pos2(after, r.center().y), Align2::LEFT_CENTER, dir, FontId::proportional(11.5), theme.text_dim);
                         }
                         if resp.hovered() || x.hovered() {
                             let hover = ui::anim(ui, x.id.with("hover"), x.hovered());

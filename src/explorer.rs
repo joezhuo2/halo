@@ -1170,7 +1170,7 @@ impl Explorer {
         let open = ((lines as f32).min(OPEN_ROWS) * ROW).min(ui.available_height() * 0.5);
         let panes = [&[(self.open_editors, Some(open)), (!self.collapsed, None)][..], others].concat();
         ui::stack(ui, theme, stack, &panes, sizes, |ui, i| match i {
-            0 => self.open_editors(ui, theme, &root, tabs, cmds),
+            0 => self.open_editors(ui, theme, &root, tabs, settings.open_editors_tree, cmds),
             1 => {
                 self.header(ui, theme, &root, &mut action);
                 self.tree(ui, theme, git, active, &root, &mut action, cmds);

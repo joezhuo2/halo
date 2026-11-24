@@ -1597,6 +1597,9 @@ impl Debug {
                         env.cmds.push(Command::AddConfiguration);
                     }
                 });
+                if ui::icon_button(ui, theme, icons::PENCIL_SIMPLE, 24.0, false, "Edit Configuration in a Form").clicked() {
+                    env.cmds.push(Command::EditLaunchForm);
+                }
                 if ui::icon_button(ui, theme, icons::GEAR, 24.0, false, "Open launch.json").clicked()
                     && let Some(folder) = env.folder
                 {

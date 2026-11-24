@@ -192,6 +192,17 @@ language you want diagnostics and completion in. Each is optional.
   and splits under a name, Layouts: Switch... brings them back and
   Layouts: Delete... forgets one. They are saved per folder; files with
   unsaved changes stay open when you switch.
+- **Scratch files:** Scratch: New Scratch File... opens a new file in the
+  language you pick, kept per folder in Halo's settings folder so it never
+  shows up in git; Scratch: Open Scratch File... lists them, newest first.
+- **Vertical tabs:** the tree button on Open Editors (or View: Toggle Open
+  Editors Tree) groups the open files by folder, and Show Tabs: Hide in
+  Settings removes the tab strip so that list is your tabs.
+- **Run configurations in a form:** Debug: Edit Configuration in a Form...
+  (also the pencil in Run and Debug) and Tasks: Edit Task in a Form... add
+  or change a `launch.json` configuration or `tasks.json` task through
+  fields instead of JSON. Other properties are kept; comments in the file
+  are not.
 - **Markdown preview** (`Ctrl+Shift+V`, or `Ctrl+K V` to the side) follows
   the source as you type and scroll. Tables size their columns to the
   content and code blocks have a copy button.

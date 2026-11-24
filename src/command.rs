@@ -333,6 +333,13 @@ pub enum Command {
     RemoveAllBreakpoints,
     AddWatch,
     AddConfiguration,
+    EditLaunchForm,
+    EditTaskForm,
+    RunForm(bool, Option<usize>),
+    NewScratch,
+    NewScratchAs(String),
+    OpenScratch,
+    ToggleOpenEditorsTree,
     OpenDisassembly,
     OpenMemory,
     AttachProcess(u32),
@@ -760,6 +767,7 @@ pub fn all() -> Vec<Command> {
         NewFile, NewWindow, OpenFile, OpenFolder, OpenRecent, OpenFolderInNewWindow, DuplicateWorkspace, Save, SaveAs, SaveAll, CloseEditor, CloseFolder,
         AddFolderToWorkspace, RemoveFolderFromWorkspace, SaveWorkspaceAs, OpenWorkspaceFromFile, CloseWorkspace, OpenSettings, OpenSettingsJson,
         OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, CompareFolders, CompareFoldersAgain,
+        NewScratch, OpenScratch,
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
@@ -780,7 +788,7 @@ pub fn all() -> Vec<Command> {
         ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff, FilterExplorer, ToggleFileNesting, FocusOpenEditors,
         MarkdownPreview, MarkdownPreviewSide, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
         MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
-        AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations,
+        AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations, ToggleOpenEditorsTree,
         SetWindowColor, ZoomInEditor, ZoomOutEditor, ZoomResetEditor, SaveLayout, SwitchLayout, DeleteLayout,
         GoToFile, ShowCommands, FindInFiles, NewSearchEditor, OpenSearchEditor, RerunSearchEditorSearch, ToggleSearchEditorContextLines,
         ToggleSearchEditorCaseSensitive, ToggleSearchEditorWholeWord, ToggleSearchEditorRegex, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation,
@@ -791,9 +799,9 @@ pub fn all() -> Vec<Command> {
         TriggerInlineSuggestion, SuggestNextEdit,
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut, RunToCursor, JumpToCursor,
         ToggleBreakpoint, EditBreakpoint, AddFunctionBreakpoint, BreakOnValueChange, RemoveAllBreakpoints, AddWatch, AddConfiguration,
-        OpenDisassembly, OpenMemory,
+        EditLaunchForm, OpenDisassembly, OpenMemory,
         RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
-        OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
+        EditTaskForm, OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
         ShowTestOutput, RunAllTestsWithCoverage, ToggleCoverageDisplay, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
         CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, NewTerminalInEditor, MoveTerminalToEditor, MoveTerminalToPanel, ClearRestoredHistory,
         GitSync, ToggleInlineBlame, OpenLineChanges, OpenLineCommitOnRemote,
@@ -1004,7 +1012,7 @@ impl Command {
             | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter | AlignPanelJustify | AlignPanelLeft | AlignPanelRight
             | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations
             | SetWindowColor | SetWindowColorTo(_) | ZoomInEditor | ZoomOutEditor | ZoomResetEditor | SaveLayout | SwitchLayout | DeleteLayout
-            | OpenLayout(_) | RemoveLayout(_) => "View",
+            | OpenLayout(_) | RemoveLayout(_) | ToggleOpenEditorsTree => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | CursorWordPartLeft | CursorWordPartRight | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | GoToLastEditLocation | ToggleBookmark | LabelBookmark | NextBookmark | PrevBookmark | ListBookmarks | ClearBookmarks
             | GoToBookmark(..) | JumpToVisible | ShowTodos | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | AccessibleDiffViewerNext | AccessibleDiffViewerPrev | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
@@ -1019,12 +1027,12 @@ impl Command {
             | StepInto | StepOut | RunToCursor | JumpToCursor | ToggleBreakpoint | EditBreakpoint | AddFunctionBreakpoint | BreakOnValueChange | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
             | RunFailedTests | RunTestAtCursor | DebugTestAtCursor | RerunLastTestRun | CancelTestRun | RefreshTests | ShowTestOutput
             | RunAllTestsWithCoverage | ToggleCoverageDisplay => "Run",
-            OpenDisassembly | OpenMemory | AttachProcess(_) => "Run",
+            OpenDisassembly | OpenMemory | AttachProcess(_) | EditLaunchForm | EditTaskForm | RunForm(..) => "Run",
             NewTerminal | NewTerminalWith(_) | NewTerminalIn(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
             | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
             | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel | ClearRestoredHistory => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_)
-            | CompareFolders | CompareFoldersAgain => "File",
+            | CompareFolders | CompareFoldersAgain | NewScratch | NewScratchAs(_) | OpenScratch => "File",
             OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | OpenLineCommitOnRemote | RestoreSnapshot(..) | StageHunk | RevertHunk
             | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges | MergeOpen | OpenMerge(_)
             | MergeAcceptIncoming | MergeAcceptCurrent | MergeAcceptBoth | MergeAcceptAllIncoming | MergeAcceptAllCurrent
@@ -1357,6 +1365,13 @@ impl Command {
             RemoveAllBreakpoints => "Remove All Breakpoints",
             AddWatch => "Debug: Add Watch Expression",
             AddConfiguration => "Debug: Add Configuration...",
+            EditLaunchForm => "Debug: Edit Configuration in a Form...",
+            EditTaskForm => "Tasks: Edit Task in a Form...",
+            RunForm(..) => "Run: Edit in a Form",
+            NewScratch => "Scratch: New Scratch File...",
+            NewScratchAs(_) => "Scratch: New",
+            OpenScratch => "Scratch: Open Scratch File...",
+            ToggleOpenEditorsTree => "View: Toggle Open Editors Tree",
             OpenDisassembly => "Debug: Open Disassembly View",
             OpenMemory => "Debug: Open Memory View...",
             AttachProcess(_) => "Debug: Attach to Process",

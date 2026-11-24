@@ -58,6 +58,7 @@ pub struct Halo {
     focused: bool,
     pub chord: Option<egui::KeyboardShortcut>,
     pub macros: crate::macros::Macro,
+    run_form: Option<crate::run_form::Form>,
     auto_save_focus: (bool, bool),
     zoom_level: Option<f32>,
     theme_fade: Option<(f64, egui::Color32)>,
@@ -192,6 +193,7 @@ impl Halo {
             focused: true,
             chord: None,
             macros: Default::default(),
+            run_form: None,
             auto_save_focus: (false, true),
             zoom_level: None,
             theme_fade: None,
@@ -547,6 +549,42 @@ impl Halo {
             ListBookmarks => match self.editors.bookmarks.choices() {
                 items if items.is_empty() => ui::notify_info("There are no bookmarks yet."),
                 items => self.search.pick("Select a bookmark", items),
+            },
+            NewScratch => {
+                let kinds = crate::scratch::KINDS.iter().map(|(ext, name)| (name.to_string(), format!(".{ext}"), NewScratchAs(ext.to_string())));
+                self.search.pick("Select the language of the scratch file", kinds.collect());
+            }
+            NewScratchAs(ext) => match crate::scratch::create(&crate::scratch::dir(self.session.folder.as_deref()), &ext) {
+                Ok(path) => self.editors.open_kept(&path),
+                Err(e) => ui::notify(format!("Could not create the scratch file: {e}")),
+            },
+            OpenScratch => match crate::scratch::list(&crate::scratch::dir(self.session.folder.as_deref())) {
+                files if files.is_empty() => ui::notify_info("This folder has no scratch files yet. Use Scratch: New Scratch File..."),
+                files => {
+                    let item = |p: PathBuf| (crate::history::name(&p), p.to_string_lossy().into_owned(), OpenPath(p));
+                    self.search.pick("Select a scratch file", files.into_iter().map(item).collect());
+                }
+            },
+            ToggleOpenEditorsTree => {
+                self.settings.open_editors_tree ^= true;
+                self.settings.save();
+            }
+            EditLaunchForm | EditTaskForm => match self.active_root() {
+                None => ui::notify_info("Open a folder to edit its run configurations."),
+                Some(folder) => match crate::run_form::names(&folder, cmd == EditLaunchForm) {
+                    Err(error) => ui::notify(error),
+                    Ok(names) => {
+                        let launch = cmd == EditLaunchForm;
+                        let new = (if launch { "New Configuration..." } else { "New Task..." }.to_owned(), String::new(), RunForm(launch, None));
+                        let items = names.into_iter().enumerate().map(|(i, name)| (name, String::new(), RunForm(launch, Some(i))));
+                        self.search.pick(if launch { "Select a launch configuration to edit" } else { "Select a task to edit" }, std::iter::once(new).chain(items).collect());
+                    }
+                },
+            },
+            RunForm(launch, index) => match self.active_root().map(|folder| crate::run_form::Form::open(&folder, launch, index)) {
+                Some(Ok(form)) => self.run_form = Some(form),
+                Some(Err(error)) => ui::notify(error),
+                None => ui::notify_info("Open a folder to edit its run configurations."),
             },
             ShowTodos => {
                 self.reveal(View::Search);
@@ -1054,6 +1092,9 @@ impl Halo {
         }
 
         crate::notifications::show(&ctx, &self.theme, &mut self.cmds);
+        if self.run_form.as_mut().is_some_and(|form| form.ui(ui)) {
+            self.run_form = None;
+        }
         self.titlebar(ui);
         if self.session.layout.zen.is_none() {
             crate::a11y::region(&ctx, Some(crate::a11y::Region::Status));
