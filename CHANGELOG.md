@@ -6,6 +6,12 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-11-24
+
+### Fixed
+
+- Right-clicking inside a file no longer freezes and crashes the app.
+
 ## [0.1.18] - 2026-11-24
 
 Checked with unit tests and a start-up smoke test. Not yet looked at on
@@ -763,7 +769,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.19...HEAD
+[0.1.19]: https://github.com/joezhuo2/halo/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/joezhuo2/halo/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/joezhuo2/halo/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/joezhuo2/halo/compare/v0.1.15...v0.1.16
