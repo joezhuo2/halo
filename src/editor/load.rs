@@ -1,6 +1,7 @@
 use super::buffer::{Document, HUGE, Sel};
 use super::highlight::Highlighter;
 use super::image_view::{self, ImageView};
+use super::stream_view::StreamView;
 use super::intel::from_lsp;
 use super::{Doc, Editors, Tab};
 use crate::settings::Settings;
@@ -21,7 +22,7 @@ pub enum Content {
     Deferred,
     Loading { rx: Receiver<Loaded>, at: Option<Place> },
     Binary,
-    Huge(u64),
+    Stream(Box<StreamView>),
     Image(Box<ImageView>),
 }
 
@@ -66,6 +67,15 @@ fn pending(path: &Path) -> Content {
         true => Content::Image(Box::new(ImageView::open(path.to_path_buf()))),
         false => Content::Loading { rx: spawn(path.to_path_buf(), false), at: None },
     }
+}
+
+fn stream(doc: &mut Doc, ctx: &egui::Context) -> bool {
+    let Some(path) = doc.buf.path.clone().filter(|_| !doc.buf.is_dirty() && matches!(doc.content, Content::Text)) else { return false };
+    let mut buf = Document::from_text("", doc.buf.title.clone());
+    (buf.path, buf.read_only) = (Some(path.clone()), true);
+    (doc.buf, doc.content) = (buf, Content::Stream(Box::new(StreamView::open(path, ctx))));
+    doc.hl = Highlighter::new(None, &doc.buf.rope);
+    true
 }
 
 fn notice_page(ui: &mut Ui, theme: &Theme, rect: Rect, text: &str, button: &str) -> bool {
@@ -126,7 +136,7 @@ impl Editors {
             match loaded {
                 Loaded::Doc(buf) => self.arrive(id, *buf),
                 Loaded::Binary => self.docs.get_mut(&id).iter_mut().for_each(|d| d.content = Content::Binary),
-                Loaded::Huge(size) => self.docs.get_mut(&id).iter_mut().for_each(|d| d.content = Content::Huge(size)),
+                Loaded::Huge(_) => self.docs.get_mut(&id).iter_mut().for_each(|d| d.content = Content::Stream(Box::new(StreamView::open(d.buf.path.clone().unwrap_or_default(), ctx)))),
                 Loaded::Failed(error) => {
                     self.banner = Some((error, None));
                     let tabs: Vec<_> = (0..self.groups.len()).flat_map(|g| (0..self.groups[g].tabs.len()).rev().map(move |t| (g, t))).collect();
@@ -202,6 +212,7 @@ impl Editors {
                 doc.content = Content::Loading { rx: spawn(path, true), at: None };
             }
         };
+        let mut to_stream = false;
         match &mut doc.content {
             Content::Text => {
                 if doc.buf.large {
@@ -217,10 +228,13 @@ impl Editors {
                                 doc.buf.large = false;
                                 doc.hl = Highlighter::new(doc.buf.path.as_deref(), &doc.buf.rope);
                             }
+                            if !doc.buf.is_dirty() && ui.small_button("Log Viewer").on_hover_text("Stream the file from disk, with search and follow").clicked() {
+                                to_stream = true;
+                            }
                         });
                     });
                 }
-                false
+                to_stream && stream(doc, ui.ctx())
             }
             Content::Deferred | Content::Loading { .. } => {
                 if matches!(doc.content, Content::Deferred)
@@ -239,9 +253,8 @@ impl Editors {
                 }
                 true
             }
-            Content::Huge(size) => {
-                let text = format!("{} is {} MB. Opening a file this large can be slow and use a lot of memory.", doc.buf.title, *size >> 20);
-                if notice_page(ui, theme, *body, &text, "Open Anyway") {
+            Content::Stream(view) => {
+                if view.ui(ui, theme, *body, settings.font_size) {
                     force(doc);
                 }
                 true
@@ -251,6 +264,11 @@ impl Editors {
                 true
             }
         }
+    }
+
+    pub fn stream_active(&mut self, ctx: &egui::Context) -> bool {
+        let Some((g, t)) = self.active_tab() else { return false };
+        self.docs.get_mut(&self.groups[g].tabs[t].doc).is_some_and(|doc| stream(doc, ctx))
     }
 
     pub fn image_status(&self) -> Option<String> {

@@ -221,6 +221,13 @@ language you want diagnostics and completion in. Each is optional.
 - **Images** (png, jpg, gif, webp, bmp, ico, svg) open in a viewer with zoom
   and pan. Binary files show a notice instead of text, and files over 20 MB
   open in a light mode without highlighting or language servers.
+- **Log viewer:** files over 256 MB open in a viewer that streams them from
+  disk instead of loading them, so multi-GB logs open at once. It indexes
+  lines in the background, searches the whole file (smart case, Enter and
+  Shift+Enter step through the matches), and **Follow** keeps the end in
+  view as the file grows; a truncated or rotated file is read again. View:
+  Open Active File in Log Viewer (or Log Viewer on the light mode bar)
+  opens a smaller saved file the same way.
 - **Auto save** (off by default): after a delay, on focus change or on window
   change. Saving can trim trailing whitespace and add a final newline.
 - **Hot exit:** unsaved and untitled files come back the next time Halo

@@ -509,6 +509,11 @@ impl Halo {
                 self.settings.column_selection ^= true;
                 self.settings.save();
             }
+            OpenInLogViewer => {
+                if !self.editors.stream_active(ctx) {
+                    ui::notify("Save the file first: the log viewer reads the file from disk.".to_owned());
+                }
+            }
             ToggleVimMode => {
                 self.settings.vim ^= true;
                 self.editors.vim.reset();

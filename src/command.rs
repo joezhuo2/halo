@@ -240,6 +240,7 @@ pub enum Command {
     AccessibleDiffViewerPrev,
     ToggleInlineDiff,
     MarkdownPreview,
+    OpenInLogViewer,
     MarkdownPreviewSide,
     StageHunk,
     RevertHunk,
@@ -787,7 +788,7 @@ pub fn all() -> Vec<Command> {
         CopyEditorToNewWindow, MoveEditorToMainWindow,
         AgentChangesKeepAll, AgentChangesUndoAll, AgentChangesShow, AgentChangesResetBaseline,
         ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff, FilterExplorer, ToggleFileNesting, FocusOpenEditors,
-        MarkdownPreview, MarkdownPreviewSide, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
+        MarkdownPreview, MarkdownPreviewSide, OpenInLogViewer, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
         MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
         AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations, ToggleOpenEditorsTree,
         SetWindowColor, ZoomInEditor, ZoomOutEditor, ZoomResetEditor, SaveLayout, SwitchLayout, DeleteLayout,
@@ -1004,7 +1005,7 @@ impl Command {
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
             | AgentChangesKeepAll | AgentChangesUndoAll | AgentChangesShow | AgentChangesResetBaseline
             | ToggleWordWrap | ToggleVimMode | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | FilterExplorer | ToggleFileNesting
-            | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
+            | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | OpenInLogViewer | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
             | LayoutTwoColumns | LayoutThreeColumns | LayoutTwoRows | LayoutThreeRows | LayoutGrid | LayoutTwoRowsRight | LayoutTwoColumnsBottom
             | ToggleMaximizeGroup | ToggleEditorGroupLock | ResetGroupSizes | FocusGroupLeft | FocusGroupRight | FocusGroupUp | FocusGroupDown | MoveEditorLeft
             | MoveEditorRight | MoveEditorUp | MoveEditorDown | CloseGroup | MoveEditorToNewWindow | CopyEditorToNewWindow
@@ -1277,6 +1278,7 @@ impl Command {
             AccessibleDiffViewerPrev => "Accessible Diff Viewer: Go to Previous Difference",
             ToggleInlineDiff => "Toggle Inline Diff View",
             MarkdownPreview => "Markdown: Open Preview",
+            OpenInLogViewer => "View: Open Active File in Log Viewer",
             MarkdownPreviewSide => "Markdown: Open Preview to the Side",
             StageHunk => "Stage Hunk",
             RevertHunk => "Revert Hunk",

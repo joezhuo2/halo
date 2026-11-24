@@ -26,6 +26,7 @@ mod open_tabs;
 pub use open_tabs::OpenTab;
 mod review;
 mod search_editor;
+mod stream_view;
 mod snippet;
 mod linked;
 mod typography;
