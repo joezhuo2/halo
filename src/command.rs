@@ -46,6 +46,17 @@ pub enum Command {
     OpenSettingsJson,
     OpenKeybindings,
     OpenSnippets,
+    SwitchProfile,
+    SwitchProfileTo(String),
+    NewProfile,
+    CreateProfile(String, bool),
+    DeleteProfile,
+    DeleteProfileNamed(String),
+    RemoveProfile(String),
+    SyncUpload,
+    SyncDownload,
+    ManageWorkspaceTrust,
+    SetFolderTrust(PathBuf, bool),
     ImportTheme,
     BrowseThemes,
     SelectTheme,
@@ -771,7 +782,7 @@ pub fn all() -> Vec<Command> {
     let mut commands = vec![
         NewFile, NewWindow, OpenFile, OpenFolder, OpenRecent, OpenFolderInNewWindow, DuplicateWorkspace, Save, SaveAs, SaveAll, CloseEditor, CloseFolder,
         AddFolderToWorkspace, RemoveFolderFromWorkspace, SaveWorkspaceAs, OpenWorkspaceFromFile, CloseWorkspace, OpenSettings, OpenSettingsJson,
-        OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, CompareFolders, CompareFoldersAgain,
+        OpenKeybindings, OpenSnippets, SwitchProfile, NewProfile, DeleteProfile, SyncUpload, SyncDownload, ManageWorkspaceTrust, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, CompareFolders, CompareFoldersAgain,
         NewScratch, OpenScratch,
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
@@ -990,6 +1001,8 @@ impl Command {
             NewFile | OpenFile | OpenFolder | OpenFolderIn(_) | OpenRecent | OpenPath(_) | Save | SaveAs | SaveAll | CloseEditor
             | CloseFolder | AddFolderToWorkspace | RemoveFolderFromWorkspace | RemoveWorkspaceFolder(_) | AddWorkspaceFolder(_) | MoveWorkspaceFolder(..)
             | SaveWorkspaceAs | OpenWorkspaceFromFile | OpenWorkspace(_) | CloseWorkspace | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit | ImportTheme
+            | SwitchProfile | SwitchProfileTo(_) | NewProfile | CreateProfile(..) | DeleteProfile | DeleteProfileNamed(_) | RemoveProfile(_)
+            | SyncUpload | SyncDownload | ManageWorkspaceTrust | SetFolderTrust(..)
             | BrowseThemes | SelectTheme | ImportThemeFile(_) | SetTheme(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
             | ImportIconThemeFile(_) | SetIconTheme(_) | CutFiles | CopyFiles | PasteFiles | CloseAllEditors | ShowTab(..) | CloseTab(..)
             | NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => "File",
@@ -1110,6 +1123,16 @@ impl Command {
             ToggleBlockComment => "Toggle Block Comment",
             EmmetExpand => "Emmet: Expand Abbreviation",
             OpenSnippets => "Snippets (snippets.json)",
+            SwitchProfile => "Profiles: Switch Profile...",
+            SwitchProfileTo(_) => "Switch Profile",
+            NewProfile => "Profiles: New Profile...",
+            CreateProfile(..) => "Create Profile",
+            DeleteProfile => "Profiles: Delete Profile...",
+            DeleteProfileNamed(_) | RemoveProfile(_) => "Delete Profile",
+            SyncUpload => "Settings Sync: Upload Settings",
+            SyncDownload => "Settings Sync: Download Settings",
+            ManageWorkspaceTrust => "Workspaces: Manage Workspace Trust",
+            SetFolderTrust(..) => "Trust Folder",
             MoveLineUp => "Move Line Up",
             MoveLineDown => "Move Line Down",
             CopyLineUp => "Copy Line Up",

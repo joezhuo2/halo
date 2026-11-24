@@ -568,6 +568,9 @@ fn detect(root: &Path) -> Vec<Value> {
 }
 
 fn load(root: &Path, settings: &Settings, os: &str) -> (Vec<Def>, Vec<String>) {
+    if !crate::trust::trusted(root) {
+        return (vec![], vec![]);
+    }
     let (mut defs, mut errors) = match std::fs::read_to_string(tasks_path(root)) {
         Ok(text) => defs_from(&text, Origin::Config, os),
         Err(_) => (vec![], vec![]),
@@ -596,7 +599,7 @@ fn load_all(workspace: &Workspace, settings: &Settings, os: &str) -> (Vec<Def>, 
             }
         }
     }
-    if let (Some(tasks), Some(first)) = (workspace.section("tasks"), workspace.first()) {
+    if let (Some(tasks), Some(first)) = (workspace.section("tasks"), workspace.first().filter(|f| crate::trust::trusted(f))) {
         let (defs, found) = defs_from(&tasks.to_string(), Origin::Config, os);
         errors.extend(found);
         tagged.extend(defs.into_iter().map(|d| (Def { folder: first.clone(), ..d }, "workspace".to_owned())));

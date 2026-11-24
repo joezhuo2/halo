@@ -384,18 +384,20 @@ pub fn load() -> Settings {
     let mut errors = vec![];
     let (multi, file, untitled, roots, target) = with(|l| (l.multi, l.file.clone(), l.untitled.clone(), l.roots.clone(), l.target));
     let user = read_file(&path, &mut errors);
+    let trusted = with(|l| l.folder.clone()).is_none_or(|f| crate::trust::trusted(&f)) && roots.iter().all(|r| crate::trust::trusted(r));
     let workspace = match (multi, &file) {
         (false, _) => workspace_path().and_then(|p| read_file(&p, &mut errors)),
         (true, Some(file)) => read_file(file, &mut errors).map(|m| m.get("settings").and_then(Value::as_object).cloned().unwrap_or_default()),
         (true, None) => Some(untitled),
-    };
+    }
+    .filter(|_| trusted);
     let empty = Map::new();
     let origin = if multi { "workspace settings" } else { ".vscode/settings.json" };
     let base = [(user.as_ref().unwrap_or(&empty), "settings.json"), (workspace.as_ref().unwrap_or(&empty), origin)];
     let (mut settings, plain, langs) = resolve(&base, &mut errors);
     let (mut folder_raw, mut folder_plain, mut folder_langs) = (None, Map::new(), Langs::new());
     let shared = settings.clone();
-    for (index, root) in roots.iter().enumerate() {
+    for (index, root) in roots.iter().enumerate().filter(|_| trusted) {
         let raw = read_file(&settings_file(root), &mut errors);
         let (scoped, p, l) = match raw.as_ref().filter(|m| !m.is_empty()) {
             None => (shared.clone(), Map::new(), Langs::new()),

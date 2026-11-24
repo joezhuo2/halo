@@ -35,6 +35,17 @@ impl Halo {
                         self.cmds.push(Command::ToggleMacroRecording);
                     }
 
+                    if let Some(folder) = self.session.workspace.first().filter(|f| !crate::trust::trusted(f))
+                        && item(ui, &theme, &format!("{} Restricted Mode", icons::SHIELD_WARNING), true, &format!("{} is not trusted: workspace settings, tasks and launch configurations are off. Click to manage trust.", folder.display())).clicked()
+                    {
+                        self.cmds.push(Command::ManageWorkspaceTrust);
+                    }
+
+                    let profile = self.profiles.current().to_owned();
+                    if profile != crate::profiles::DEFAULT && item(ui, &theme, &format!("{} {profile}", icons::USER_CIRCLE), false, "Profile (click to switch)").clicked() {
+                        self.cmds.push(Command::SwitchProfile);
+                    }
+
                     if self.settings.vim && item(ui, &theme, &self.editors.vim.status(), self.editors.vim.line.is_some(), "Vim mode (click to turn off)").clicked() {
                         self.cmds.push(Command::ToggleVimMode);
                     }

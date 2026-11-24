@@ -519,6 +519,31 @@ To change a key, click it in **Keyboard Shortcuts** and press the new one or
 a two-step chord; the page lists the commands already on those keys. Each
 binding can have a `when` clause, as in VS Code's `keybindings.json`.
 
+**Profiles** are named sets of settings, keyboard shortcuts, snippets and
+theme. Profiles: New Profile... starts one empty or from the current
+settings, Profiles: Switch Profile... (or the profile name in the status bar)
+switches, and Profiles: Delete Profile... moves one to the trash. Each
+profile is a folder under `profiles` in the settings folder; the files of
+the active one are the usual `settings.json`, `keybindings.json` and
+`snippets.json`.
+
+**Settings Sync** keeps those files, with every profile, in one secret
+GitHub gist through the `gh` CLI (sign in with `gh auth login` or the
+Accounts menu). Settings Sync: Upload Settings writes them; Settings Sync:
+Download Settings on another machine finds the gist and replaces the local
+files, keeping the old ones in `sync-backup`. A secret gist is unlisted, not
+private: anyone with its link can read it, so keep tokens out of your
+settings.
+
+**Workspace Trust:** a folder you have not trusted opens in **Restricted
+Mode** (shown in the status bar). Halo then ignores its
+`.vscode/settings.json`, does not list or run its tasks (detected build
+tasks included) and does not start its `launch.json` configurations, since
+all of them can run code from the folder. A prompt asks once when the
+folder opens; Workspaces: Manage Workspace Trust changes it later. Trusting
+a folder trusts its subfolders, and folders already in your recent list
+when you upgrade to 0.1.18 start out trusted.
+
 The defaults follow VS Code:
 
 | Key | Action |

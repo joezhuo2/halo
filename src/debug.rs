@@ -845,16 +845,16 @@ impl Debug {
         };
         let file = workspace.file.clone().filter(|_| multi);
         let files = roots.iter().map(|(r, _)| launch_path(r)).chain(file.clone());
-        let modified = files.filter_map(|p| std::fs::metadata(p).ok()?.modified().ok()).max();
+        let modified = files.filter_map(|p| std::fs::metadata(p).ok()?.modified().ok()).max().map(|t| t + std::time::Duration::from_nanos(crate::trust::generation()));
         let unchanged = self.stamp.0.as_deref() == folder && self.stamp.1 == modified && self.stamp.2 > f64::NEG_INFINITY;
         self.stamp = (folder.map(Path::to_path_buf), modified, now);
         if unchanged {
             return;
         }
         let mut texts: Vec<(PathBuf, String, String)> =
-            roots.into_iter().filter_map(|(root, tag)| Some((root.clone(), tag, std::fs::read_to_string(launch_path(&root)).ok()?))).collect();
+            roots.into_iter().filter(|(root, _)| crate::trust::trusted(root)).filter_map(|(root, tag)| Some((root.clone(), tag, std::fs::read_to_string(launch_path(&root)).ok()?))).collect();
         let shared = file.and_then(|f| Workspace::open(&f).ok()).unwrap_or_else(|| workspace.clone());
-        if let (true, Some(launch), Some(first)) = (multi, shared.section("launch"), workspace.first()) {
+        if let (true, Some(launch), Some(first)) = (multi, shared.section("launch"), workspace.first().filter(|f| crate::trust::trusted(f))) {
             texts.push((first, "workspace".into(), launch.to_string()));
         }
         self.present = !texts.is_empty();

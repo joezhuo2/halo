@@ -54,6 +54,9 @@ pub struct Halo {
     pub cmds: Vec<Command>,
     about: bool,
     confirm_exit: bool,
+    pub(crate) profiles: crate::profiles::Dialog,
+    sync: crate::sync::Sync,
+    pub(crate) trust: crate::trust::Prompt,
     exiting: bool,
     focused: bool,
     pub chord: Option<egui::KeyboardShortcut>,
@@ -91,7 +94,9 @@ pub(crate) struct Startup {
 impl Halo {
     pub fn new(cc: &eframe::CreationContext<'_>, mut args: crate::cli::Args, server: Option<crate::ipc::Server>) -> Self {
         let ctx = &cc.egui_ctx;
-        let mut app = Self::build(ctx, Settings::load(), Session::load());
+        let session = Session::load();
+        crate::trust::seed(session.recent.iter().cloned().chain(session.folder.clone()));
+        let mut app = Self::build(ctx, Settings::load(), session);
         app.reveal_at = Some(ctx.cumulative_frame_nr() + 3);
         if app.session.layout.zen.is_some() && !app.settings.zen_restore {
             app.toggle_zen();
@@ -189,6 +194,9 @@ impl Halo {
             cmds: vec![],
             about: false,
             confirm_exit: false,
+            profiles: Default::default(),
+            sync: Default::default(),
+            trust: Default::default(),
             exiting: false,
             focused: true,
             chord: None,
@@ -333,6 +341,13 @@ impl Halo {
         self.editors.layouts.store(&mut self.session.layouts);
         self.session.save();
         crate::terminal_restore::save(&self.bottom, &self.editors, &self.settings, self.session.folder.as_deref());
+    }
+
+    fn profile_changed(&mut self, ctx: &egui::Context) {
+        self.profiles.changed();
+        self.reload_settings(ctx);
+        command::reload();
+        crate::editor::reload_snippets();
     }
 
     fn reload_settings(&mut self, ctx: &egui::Context) {
@@ -508,6 +523,49 @@ impl Halo {
             ToggleColumnSelection => {
                 self.settings.column_selection ^= true;
                 self.settings.save();
+            }
+            SwitchProfile => self.search.pick("Select a profile", crate::profiles::picks(&crate::settings::dir())),
+            NewProfile => self.profiles.name(),
+            CreateProfile(name, copy) => match crate::profiles::create(&crate::settings::dir(), &name, copy) {
+                Ok(()) => {
+                    self.profile_changed(ctx);
+                    ui::notify_info(format!("Profile {name} created and active."));
+                }
+                Err(e) => ui::notify(e),
+            },
+            SwitchProfileTo(name) => match crate::profiles::switch(&crate::settings::dir(), &name) {
+                Ok(()) => {
+                    self.profile_changed(ctx);
+                    ui::notify_info(format!("Switched to the {name} profile."));
+                }
+                Err(e) => ui::notify(format!("Could not switch profiles: {e}")),
+            },
+            DeleteProfile => {
+                let base = crate::settings::dir();
+                let active = crate::profiles::active(&base);
+                let items: Vec<_> = crate::profiles::list(&base).into_iter().filter(|n| *n != active && n != crate::profiles::DEFAULT).map(|n| (n.clone(), String::new(), DeleteProfileNamed(n))).collect();
+                match items.is_empty() {
+                    true => ui::notify_info("There is no other profile to delete. The active and Default profiles are kept."),
+                    false => self.search.pick("Select a profile to delete", items),
+                }
+            }
+            DeleteProfileNamed(name) => self.profiles.delete(name),
+            RemoveProfile(name) => match crate::profiles::delete(&crate::settings::dir(), &name) {
+                Ok(()) => ui::notify_info(format!("Moved the {name} profile to the trash.")),
+                Err(e) => ui::notify(format!("Could not delete the profile: {e}")),
+            },
+            SyncUpload | SyncDownload => self.sync.start(cmd == SyncDownload, ctx),
+            ManageWorkspaceTrust => match self.session.workspace.first() {
+                Some(folder) if crate::trust::trusted(&folder) => self.search.pick(
+                    "This folder is trusted",
+                    vec![("Remove Trust".into(), "restricted mode: no workspace settings, tasks or launch configurations".into(), SetFolderTrust(folder, false))],
+                ),
+                Some(folder) => self.trust.folder = Some(folder),
+                None => ui::notify_info("Open a folder to manage its trust."),
+            },
+            SetFolderTrust(folder, trust) => {
+                crate::trust::set(&folder, trust);
+                self.reload_settings(ctx);
             }
             ReopenInHexEditor => {
                 if !self.editors.hex_active() {
@@ -934,6 +992,16 @@ impl Halo {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(cmd) = self.profiles.ui(ctx, &self.theme) {
+            self.cmds.push(cmd);
+        }
+        self.trust.check(self.session.workspace.first().as_deref());
+        if let Some(cmd) = self.trust.ui(ctx, &self.theme) {
+            self.cmds.push(cmd);
+        }
+        if self.sync.poll() == Some(true) {
+            self.profile_changed(ctx);
+        }
         if self.page.open {
             self.settings_dialog(ctx);
         }
