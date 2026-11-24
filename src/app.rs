@@ -415,7 +415,7 @@ impl Halo {
             OpenProcessExplorer => self.editors.open_process_explorer(ctx),
             OpenRemoteRepository => self.editors.open_remote_repository(),
             OpenText(title, text, path) => self.editors.open_text(&title, &text, Some(&path)),
-            OpenAllChanges => match self.git.top().map(std::path::Path::to_path_buf) {
+            OpenAllChanges => match self.git.top().map(std::path::Path::to_path_buf).or_else(|| self.active_root()) {
                 Some(top) => self.editors.open_multi_diff("All Changes", &["diff".into(), "HEAD".into()], &top, ctx),
                 None => ui::notify_warning("Open a Git repository to see its changes."),
             },
