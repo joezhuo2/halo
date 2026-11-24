@@ -406,10 +406,19 @@ impl Halo {
             | OpenWorkspaceFromFile | OpenWorkspace(_) | CloseWorkspace => self.workspace_command(cmd, ctx),
             OpenDiff(title, args) => {
                 let inline = !self.settings.diff_side_by_side;
-                if !self.git.top().is_some_and(|top| self.editors.compare(&title, &args, top, inline, ctx)) {
-                    self.git.diff(title, args);
+                match self.git.top().map(std::path::Path::to_path_buf) {
+                    Some(top) if self.editors.compare(&title, &args, &top, inline, ctx) => {}
+                    Some(top) => self.editors.open_multi_diff(&title, &args, &top, ctx),
+                    None => self.git.diff(title, args),
                 }
             }
+            OpenProcessExplorer => self.editors.open_process_explorer(ctx),
+            OpenRemoteRepository => self.editors.open_remote_repository(),
+            OpenText(title, text, path) => self.editors.open_text(&title, &text, Some(&path)),
+            OpenAllChanges => match self.git.top().map(std::path::Path::to_path_buf) {
+                Some(top) => self.editors.open_multi_diff("All Changes", &["diff".into(), "HEAD".into()], &top, ctx),
+                None => ui::notify_warning("Open a Git repository to see its changes."),
+            },
             OpenMerge(path) => self.editors.open_merge(&path, ctx),
             ReviewPullRequest(number) => match self.git.top() {
                 Some(top) => self.editors.review_pr(top.to_path_buf(), number, !self.settings.diff_side_by_side, ctx),

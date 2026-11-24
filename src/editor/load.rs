@@ -26,6 +26,9 @@ pub enum Content {
     Stream(Box<StreamView>),
     Hex(Box<HexView>),
     Image(Box<ImageView>),
+    Multi(Box<super::multi_diff::MultiDiff>),
+    Procs(Box<super::process_view::ProcessView>),
+    Remote(Box<super::remote_view::RemoteView>),
 }
 
 impl Content {
@@ -282,6 +285,11 @@ impl Editors {
             }
             Content::Image(view) => {
                 view.ui(ui, theme, *body, &format!("{}:{}", doc.buf.title, tab.doc));
+                true
+            }
+            Content::Multi(_) | Content::Remote(_) => true,
+            Content::Procs(view) => {
+                view.ui(ui, theme, *body, settings.font_size);
                 true
             }
         }

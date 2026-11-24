@@ -26,6 +26,10 @@ pub enum Command {
     ShowLineHistory,
     OpenLineChanges,
     OpenLineCommitOnRemote,
+    OpenAllChanges,
+    OpenProcessExplorer,
+    OpenRemoteRepository,
+    OpenText(String, String, PathBuf),
     RestoreSnapshot(PathBuf, PathBuf),
     Save,
     SaveAs,
@@ -821,7 +825,7 @@ pub fn all() -> Vec<Command> {
         EditTaskForm, OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
         ShowTestOutput, RunAllTestsWithCoverage, ToggleCoverageDisplay, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
         CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, NewTerminalInEditor, MoveTerminalToEditor, MoveTerminalToPanel, ClearRestoredHistory,
-        GitSync, ToggleInlineBlame, ShowLineHistory, OpenLineChanges, OpenLineCommitOnRemote,
+        GitSync, ToggleInlineBlame, ShowLineHistory, OpenLineChanges, OpenLineCommitOnRemote, OpenAllChanges, OpenRemoteRepository,
         StageHunk, RevertHunk, UnstageHunk, StageSelectedRanges, RevertSelectedRanges, UnstageSelectedRanges,
         MergeOpen, MergeAcceptIncoming, MergeAcceptCurrent, MergeAcceptBoth, MergeAcceptAllIncoming, MergeAcceptAllCurrent,
         MergeNextConflict, MergePrevConflict, MergeToggleBase, MergeComplete, PickPullRequestReview, AddReviewComment,
@@ -829,7 +833,7 @@ pub fn all() -> Vec<Command> {
     commands.extend(GitCommand::ALL.iter().copied().map(Git));
     commands.extend([ShowOutput, ShowOutputChannels, ClearOutput, OpenOutputInEditor, ShowNotifications, ClearNotifications, ToggleDoNotDisturb, FocusNotification]);
     commands.extend([FocusNextRegion, FocusPrevRegion, ToggleTabFocus, ShowAccessibilityHelp, AnnounceCursorPosition, ToggleScreenReaderMode]);
-    commands.extend([About, InstallInPath]);
+    commands.extend([About, InstallInPath, OpenProcessExplorer]);
     commands
 }
 
@@ -1052,7 +1056,7 @@ impl Command {
             | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel | ClearRestoredHistory => "Terminal",
             CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_)
             | CompareFolders | CompareFoldersAgain | NewScratch | NewScratchAs(_) | OpenScratch => "File",
-            OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | ShowLineHistory | OpenLineChanges | OpenLineCommitOnRemote | RestoreSnapshot(..) | StageHunk | RevertHunk
+            OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | ShowLineHistory | OpenLineChanges | OpenLineCommitOnRemote | OpenAllChanges | OpenRemoteRepository | OpenText(..) | RestoreSnapshot(..) | StageHunk | RevertHunk
             | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges | MergeOpen | OpenMerge(_)
             | MergeAcceptIncoming | MergeAcceptCurrent | MergeAcceptBoth | MergeAcceptAllIncoming | MergeAcceptAllCurrent
             | MergeNextConflict | MergePrevConflict | MergeToggleBase | MergeComplete | ReviewPullRequest(_) | PickPullRequestReview
@@ -1060,7 +1064,7 @@ impl Command {
             ShowOutput | ShowOutputChannels | ClearOutput | OpenOutputInEditor | SelectOutputChannel(_) => "Output",
             ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => "Notifications",
             FocusNextRegion | FocusPrevRegion | ToggleTabFocus | ShowAccessibilityHelp | AnnounceCursorPosition | ToggleScreenReaderMode => "Help",
-            About | InstallInPath | ConfirmInstallInPath => "Help",
+            About | InstallInPath | ConfirmInstallInPath | OpenProcessExplorer => "Help",
         }
     }
 
@@ -1083,6 +1087,10 @@ impl Command {
             ToggleInlineBlame => "Git: Toggle Inline Blame",
             ShowLineHistory => "Git: Show History of Selected Lines",
             OpenLineChanges => "Git: Open Changes of Current Line's Commit",
+            OpenAllChanges => "Git: Open All Changes",
+            OpenProcessExplorer => "Developer: Open Process Explorer",
+            OpenRemoteRepository => "GitHub: Open Repository Without Cloning...",
+            OpenText(..) => "Open Text",
             OpenLineCommitOnRemote => "Git: Open Current Line's Commit on Remote",
             RestoreSnapshot(..) => "Restore Contents",
             Save => "Save",

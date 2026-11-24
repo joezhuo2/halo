@@ -23,6 +23,9 @@ mod md_insert;
 mod md_links;
 mod merge;
 mod merge_view;
+mod multi_diff;
+mod process_view;
+mod remote_view;
 mod open_tabs;
 pub use open_tabs::OpenTab;
 mod review;
@@ -918,6 +921,28 @@ impl Editors {
             doc.buf = buf;
         }
         self.show_doc(id);
+    }
+
+    pub fn open_multi_diff(&mut self, title: &str, args: &[String], top: &Path, ctx: &egui::Context) {
+        self.open_text(title, " ", None);
+        let view = multi_diff::MultiDiff::load(title, top.to_path_buf(), args.to_vec(), ctx);
+        if let Some(doc) = self.text_doc(title).and_then(|id| self.docs.get_mut(&id)) {
+            doc.content = Content::Multi(Box::new(view));
+        }
+    }
+
+    pub fn open_remote_repository(&mut self) {
+        self.open_text("GitHub Repository", " ", None);
+        if let Some(doc) = self.text_doc("GitHub Repository").and_then(|id| self.docs.get_mut(&id)) {
+            doc.content = Content::Remote(Box::new(remote_view::RemoteView::new()));
+        }
+    }
+
+    pub fn open_process_explorer(&mut self, ctx: &egui::Context) {
+        self.open_text("Process Explorer", " ", None);
+        if let Some(doc) = self.text_doc("Process Explorer").and_then(|id| self.docs.get_mut(&id)) {
+            doc.content = Content::Procs(Box::new(process_view::ProcessView::open(ctx)));
+        }
     }
 
     fn text_doc(&self, title: &str) -> Option<u64> {
@@ -1839,7 +1864,11 @@ impl Editors {
             }
             if let Some(mut doc) = self.docs.remove(&doc_id) {
                 let mut body = body;
-                if !self.special(ui, g, &mut body, theme, settings, &mut doc, &mut tab) {
+                if let Content::Multi(view) = &mut doc.content {
+                    view.ui(ui, theme, body, settings.font_size, pending);
+                } else if let Content::Remote(view) = &mut doc.content {
+                    view.ui(ui, theme, body, settings.font_size, pending);
+                } else if !self.special(ui, g, &mut body, theme, settings, &mut doc, &mut tab) {
                     let area = self.diff_frame(ui, body, theme, &doc, &mut tab, pending);
                     let area = self.merge_frame(ui, area, theme, &doc, &mut tab, pending);
                     self.view(ui, g, area, theme, settings, git, pending, &mut doc, &mut tab);

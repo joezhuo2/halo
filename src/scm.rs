@@ -605,6 +605,11 @@ fn graph(
         }
         resp.context_menu(|ui| {
             ui::menu_pad(ui);
+            if ui.button("Open All Changes").clicked() {
+                let args = ["show", "--format=", "--diff-merges=first-parent", &commit.hash].map(str::to_owned).to_vec();
+                cmds.push(Command::OpenDiff(format!("{} ({})", commit.subject, &commit.hash[..commit.hash.len().min(8)]), args));
+                ui.close();
+            }
             for (op, label) in [(GitCommand::CherryPick, "Cherry Pick..."), (GitCommand::CreateTag, "Create Tag Here..."),
                 (GitCommand::BranchAt, "Create Branch Here..."), (GitCommand::InteractiveRebase, "Interactive Rebase from Here..."),
                 (GitCommand::Compare, "Compare with...")] {
