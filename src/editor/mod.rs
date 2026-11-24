@@ -1,4 +1,5 @@
 mod ai_inline;
+pub mod bookmarks;
 mod buffer;
 mod chat;
 mod clipboard;
@@ -11,6 +12,7 @@ mod grid;
 mod highlight;
 mod image_view;
 mod intel;
+mod jump;
 mod layout;
 mod prefs;
 mod load;
@@ -295,6 +297,8 @@ pub struct Editors {
     pub ai_open: bool,
     pub lsp: Lsp,
     pub marks: crate::debug::Marks,
+    pub bookmarks: bookmarks::Bookmarks,
+    jump: Option<(u64, String, Vec<usize>)>,
     pub tests: crate::testing::Marks,
     root: Option<PathBuf>,
     intel: Intel,
@@ -315,6 +319,10 @@ pub struct Editors {
     links: md_links::Links,
     ai: ai_inline::Ai,
     chat: chat::Chat,
+}
+
+pub fn clip_history() -> Vec<String> {
+    clipboard::history()
 }
 
 fn comment_tokens(path: Option<&Path>) -> (&'static str, Option<&'static str>) {
@@ -656,6 +664,8 @@ impl Editors {
             ai_open: false,
             lsp: Lsp::default(),
             marks: Default::default(),
+            bookmarks: Default::default(),
+            jump: None,
             tests: Default::default(),
             root: None,
             intel: Intel::default(),
@@ -1077,6 +1087,22 @@ impl Editors {
                 self.intel.pick_caret = true;
                 return true;
             }
+            NextBookmark | PrevBookmark => {
+                let (path, line) = self.with_active(|buf, tab| (buf.path.clone(), buf.line_of(tab.sels[0].head))).unwrap_or((None, 0));
+                match self.bookmarks.next(path.as_deref(), line, *cmd == NextBookmark) {
+                    Some((path, line)) => return self.exec(&GoToBookmark(path, line), settings, ctx),
+                    None => ui::notify_info("There are no bookmarks yet."),
+                }
+                return true;
+            }
+            GoToBookmark(path, line) => {
+                self.open(path);
+                return self.exec(&GoTo(line + 1, 1), settings, ctx);
+            }
+            ClearBookmarks => {
+                self.bookmarks.files.clear();
+                return true;
+            }
             _ if self.grid_exec(cmd) || self.search_exec(cmd, settings, ctx) => return true,
             _ if self.ai_exec(cmd, ctx) => return true,
             _ => {}
@@ -1156,6 +1182,24 @@ impl Editors {
                     self.marks.toggle(&path, line);
                 }
             }
+            ToggleBookmark | LabelBookmark => match self.with_active(|buf, tab| (buf.path.clone(), buf.line_of(tab.sels[0].head))) {
+                Some((Some(path), line)) if *cmd == ToggleBookmark => self.bookmarks.toggle(&path, line),
+                Some((Some(path), line)) => {
+                    let label = self.bookmarks.label_of(&path, line);
+                    self.bookmarks.asking = Some((path, line, label));
+                    refocus = false;
+                }
+                _ => ui::notify_info("Save the file to bookmark a line in it."),
+            },
+            PasteText(text) => {
+                self.with_active(|buf, tab| {
+                    if !buf.read_only {
+                        buf.insert_text(&mut tab.sels, text);
+                        tab.reveal = tab.sels.last().map(|s| s.head);
+                    }
+                });
+            }
+            JumpToVisible => self.jump = Some((doc_id, String::new(), vec![])),
             EditBreakpoint => {
                 if let Some((Some(path), line)) = self.with_active(|buf, tab| (buf.path.clone(), buf.line_of(tab.sels[0].head))) {
                     self.marks.apply(&path, crate::debug::Gutter::Ask(line, crate::debug::Ask::Condition));
@@ -1628,6 +1672,7 @@ impl Editors {
 
     pub fn path_changed(&mut self, old: &Path, new: Option<&Path>) {
         self.links.stale();
+        self.bookmarks.path_changed(old, new);
         let affected: Vec<u64> = self
             .docs
             .iter()
@@ -1700,7 +1745,22 @@ impl Editors {
             }
         }
         self.merge_dialog(ui.ctx());
+        self.bookmark_dialog(ui);
         self.close_empty_groups();
+    }
+
+    fn bookmark_dialog(&mut self, ui: &Ui) {
+        let Some((path, line, mut label)) = self.bookmarks.asking.take() else { return };
+        let note = format!("Line {} of {}", line + 1, crate::history::name(&path));
+        match crate::scm::prompt(ui, "Label bookmark", &note, &mut [("Label", &mut label, 1)], "Save") {
+            Some(done) => {
+                if done {
+                    self.bookmarks.label(&path, line, label.trim().to_owned());
+                }
+                self.want_focus = true;
+            }
+            None => self.bookmarks.asking = Some((path, line, label)),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2131,6 +2191,7 @@ impl Editors {
         }
         if let (Some((line, delta)), Some(path)) = (settle(buf, hl, lang, &mut self.lsp, folds, ranges), &buf.path) {
             self.marks.shift(path, line, delta);
+            self.bookmarks.shift(path, line, delta);
             self.tests.edited(path, line, delta);
         }
         buf.clamp(&mut tab.sels);
@@ -2170,6 +2231,19 @@ impl Editors {
             let page = ((text_rect.height() / line_h) as usize).saturating_sub(2).max(1);
             let mut events = ui.input(|i| i.events.clone());
             events.retain(|e| !crate::a11y::tab_moves_focus() || !matches!(e, Event::Key { key: Key::Tab, .. }));
+            if let Some(jump) = self.jump.as_mut().filter(|j| j.0 == doc_id) {
+                let cancel = events.iter().any(|e| matches!(e, Event::Key { key: Key::Escape, pressed: true, .. }));
+                jump.1.extend(events.iter().filter_map(|e| if let Event::Text(t) = e { Some(t.to_lowercase()) } else { None }));
+                match jump::pick(&jump.1, &jump.2) {
+                    jump::Pick::Wait if !cancel => {}
+                    jump::Pick::Go(pos) => {
+                        tab.sels = vec![Sel::caret(pos)];
+                        self.jump = None;
+                    }
+                    _ => self.jump = None,
+                }
+                events.retain(|e| !matches!(e, Event::Key { .. } | Event::Text(_) | Event::Paste(_)));
+            }
             let unit = indent_unit(buf, settings).2;
             self.intel.unit = unit.clone();
             self.popup_keys(&mut events, doc_id, buf, tab);
@@ -2222,6 +2296,7 @@ impl Editors {
             }
             if let (Some((line, delta)), Some(path)) = (settle(buf, hl, lang, &mut self.lsp, folds, ranges), &buf.path) {
                 self.marks.shift(path, line, delta);
+                self.bookmarks.shift(path, line, delta);
             self.tests.edited(path, line, delta);
             }
             intel::sync(&mut self.lsp, buf, lang, &ctx);
@@ -2354,6 +2429,7 @@ impl Editors {
         };
         let hover_word = self.intel.hover.as_ref().filter(|h| h.doc == doc_id && h.group == g).map(|h| h.word);
         let marks = path.as_deref().map(|p| (self.marks.of(p).to_vec(), self.marks.stopped_lines(p), self.marks.live));
+        let bookmarked = path.as_deref().map(|p| self.bookmarks.lines(p)).unwrap_or_default();
         let stopped = path.as_deref().and_then(|p| self.marks.stopped_line(p));
         let band = self.marks.band.as_ref().filter(|b| path.is_none() && buf.read_only && b.0 == buf.title).map(|b| b.1);
         let (mut bp_action, bp_w) = (None, glyph_w * 2.2 + 2.0);
@@ -2390,6 +2466,8 @@ impl Editors {
         let changes = path.as_deref().and_then(|p| git.line_changes(p)).filter(|_| !diffed && !buf.large);
         let mut change_click = None;
         let mut visible = (0, 0);
+        let jumping = self.jump.as_ref().filter(|j| j.0 == doc_id && is_active).map(|j| j.1.clone());
+        let mut jump_targets = vec![];
         let mut area = ScrollArea::both().id_salt(id.with("scroll")).auto_shrink(false);
         let (version, anchor, row, offset) = tab.anchor;
         if let Some(pos) = buf.mapped(version, anchor).filter(|_| version != buf.version && offset > 0.0 && tab.set_scroll.is_none())
@@ -2428,6 +2506,11 @@ impl Editors {
                     let first = row_at(origin.y + viewport.min.y).0;
                     let last = (row_at(origin.y + viewport.max.y + line_h).0 + 1).min(total);
                     visible = (first, last);
+                    if jumping.is_some() {
+                        let shown = (first..last).filter(|line| starts[line + 1] > starts[*line]);
+                        let words = shown.flat_map(|line| jump::words(&buf_ref.line_text(line)).into_iter().map(move |c| (line, c)));
+                        jump_targets = words.map(|(line, c)| buf_ref.line_start(line) + c).take(jump::MAX).collect();
+                    }
                     if !hl.ensure(&buf_ref.rope, first..last, theme, Duration::from_millis(8)) {
                         ui.ctx().request_repaint();
                     }
@@ -2863,6 +2946,12 @@ impl Editors {
                             let top = y + index as f32 * line_h + (line_h - piece.galley.size().y) / 2.0;
                             painter.galley(pos2(text_x, top), piece.galley.clone(), theme.text);
                         }
+                        if let Some(typed) = &jumping {
+                            let from = jump_targets.partition_point(|p| *p < start);
+                            for (index, pos) in jump_targets.iter().enumerate().skip(from).take_while(|(_, p)| **p <= start + len) {
+                                jump::paint(&painter, theme, at(pos - start), &jump::label(index), typed, &font, line_h);
+                            }
+                        }
                         let over = |r: Rect| resp.hovered() && pointer.is_some_and(|p| r.expand(2.0).contains(p));
                         for s in &row.swatches {
                             let piece = row.piece(s.0);
@@ -2998,6 +3087,10 @@ impl Editors {
                         }
                         let test = test_at(line);
                         let bulb = bulb_line.filter(|b| b.0 == line && test.is_none() && !marks.as_ref().is_some_and(|m| m.0.iter().any(|bp| bp.line == line)));
+                        if bookmarked.contains(&line) {
+                            let at = pos2(clip.left() + bp_w / 2.0 + 1.0, y);
+                            painter.text(at, Align2::CENTER_CENTER, icons::BOOKMARK_SIMPLE, FontId::proportional(settings.font_size - 1.0), theme.accent);
+                        }
                         if let Some((list, stopped, live)) = &marks {
                             let center = pos2(clip.left() + bp_w / 2.0 + 1.0, y);
                             crate::debug::paint_gutter(&painter, theme, list, *live, stopped.contains(&line), line, center, (line_h * 0.26).min(glyph_w * 0.8), bp_hover == Some(line) && test.is_none() && bulb.is_none());
@@ -3076,6 +3169,9 @@ impl Editors {
             })
             .inner;
         tab.zone = zone.map(|z| z.2);
+        if let Some(jump) = self.jump.as_mut().filter(|j| j.0 == doc_id && jumping.is_some()) {
+            jump.2 = jump_targets;
+        }
         let scroll_y = out.state.offset.y;
         doc.top = visible.0;
         tab.anchor = (buf.version, buf.line_start(visible.0), starts[visible.0], scroll_y);
@@ -4412,6 +4508,35 @@ fn xb() {}
         frame(&ctx, &mut editors, vec![key(Key::Enter, Default::default())]);
         frame(&ctx, &mut editors, vec![]);
         assert_eq!(lines(&editors), [2, 3]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn bookmarks_follow_edits_and_jump_labels_move_the_caret() {
+        let path = std::env::temp_dir().join(format!("halo-bookmark-test-{}.txt", std::process::id()));
+        std::fs::write(&path, "one two\nthree four\n").unwrap();
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.open(&path);
+        editors.finish_loads();
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        editors.exec(&Command::GoTo(2, 1), &settings, &ctx);
+        editors.exec(&Command::ToggleBookmark, &settings, &ctx);
+        editors.exec(&Command::GoTo(1, 1), &settings, &ctx);
+        frame(&ctx, &mut editors, vec![key(Key::Enter, Default::default())]);
+        frame(&ctx, &mut editors, vec![]);
+        assert_eq!(editors.bookmarks.lines(&path), [2]);
+        editors.exec(&Command::NextBookmark, &settings, &ctx);
+        let head = |e: &Editors| e.groups[0].tabs[0].sels[0].head;
+        assert_eq!(head(&editors), 9);
+        editors.exec(&Command::JumpToVisible, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Text("a".into())]);
+        frame(&ctx, &mut editors, vec![Event::Text("f".into())]);
+        assert_eq!((head(&editors), editors.jump.is_none()), (15, true));
+        assert_eq!(editors.docs.values().next().unwrap().buf.rope.to_string(), "\none two\nthree four\n");
         let _ = std::fs::remove_file(&path);
     }
 

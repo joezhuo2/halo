@@ -218,9 +218,45 @@ impl Side {
     }
 }
 
+fn files(root: &Path, dir: &Path, out: &mut std::collections::BTreeMap<PathBuf, u64>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() && entry.file_name() != ".git" {
+            files(root, &entry.path(), out)?;
+        } else if kind.is_file() {
+            out.insert(entry.path().strip_prefix(root).unwrap_or(&entry.path()).to_path_buf(), entry.metadata()?.len());
+        }
+    }
+    Ok(())
+}
+
+// shortcut: walks every folder but .git, so node_modules or target make it slow; upgrade to the explorer's excludes if that bites
+fn folder_changes(left: &Path, right: &Path) -> Result<Vec<crate::search::Choice>, String> {
+    let scan = |root: &Path| {
+        let mut out = std::collections::BTreeMap::new();
+        files(root, root, &mut out).map(|_| out).map_err(|e| format!("Cannot read {}: {e}", root.display()))
+    };
+    let (a, b) = (scan(left)?, scan(right)?);
+    let all: std::collections::BTreeSet<&PathBuf> = a.keys().chain(b.keys()).collect();
+    let mut items = vec![];
+    for rel in all {
+        let (l, r) = (left.join(rel), right.join(rel));
+        let shown = rel.to_string_lossy().replace('\\', "/");
+        items.push(match (a.get(rel), b.get(rel)) {
+            (Some(x), Some(y)) if x == y && fs::read(&l).ok() == fs::read(&r).ok() => continue,
+            (Some(_), Some(_)) => (shown.clone(), "Changed".into(), Command::OpenDiff(format!("{shown} ({} ↔ {})", name(left), name(right)), diff_args(&l, &r))),
+            (Some(_), None) => (shown, format!("Only in {}", name(left)), Command::OpenPath(l)),
+            _ => (shown, format!("Only in {}", name(right)), Command::OpenPath(r)),
+        });
+    }
+    Ok(items)
+}
+
 enum Event {
     Open(String, Vec<String>, Vec<Temp>),
     Restore(PathBuf, u64, String),
+    Folders(String, Vec<crate::search::Choice>),
 }
 
 pub struct Compare {
@@ -228,12 +264,13 @@ pub struct Compare {
     rx: Receiver<Event>,
     temps: Vec<Temp>,
     paste: Option<(String, Rope, Instant)>,
+    folders: Option<(PathBuf, PathBuf)>,
 }
 
 impl Default for Compare {
     fn default() -> Self {
         let (tx, rx) = channel();
-        Self { tx, rx, temps: vec![], paste: None }
+        Self { tx, rx, temps: vec![], paste: None, folders: None }
     }
 }
 
@@ -297,6 +334,32 @@ impl Halo {
                     }
                 }
             }
+            CompareFolders => {
+                let start = self.active_root();
+                let pick = |title: &str| {
+                    let dialog = rfd::FileDialog::new().set_title(title);
+                    match &start {
+                        Some(dir) => dialog.set_directory(dir),
+                        None => dialog,
+                    }
+                    .pick_folder()
+                };
+                if let Some(left) = pick("Select the first folder")
+                    && let Some(right) = pick("Select the folder to compare it with")
+                {
+                    self.compare.folders = Some((left, right));
+                    self.exec_compare(&CompareFoldersAgain, ctx);
+                }
+                Ok(())
+            }
+            CompareFoldersAgain => match self.compare.folders.clone() {
+                None => Err("Compare two folders first."),
+                Some((left, right)) => {
+                    let hint = format!("{} ↔ {}: select a file", name(&left), name(&right));
+                    self.compare.job(ctx, move || Ok(Event::Folders(hint, folder_changes(&left, &right)?)));
+                    Ok(())
+                }
+            },
             ToggleInlineBlame => {
                 self.settings.inline_blame ^= true;
                 self.settings.save();
@@ -354,6 +417,8 @@ impl Halo {
                     self.cmds.push(Command::OpenDiff(title, args));
                 }
                 Event::Restore(file, version, text) => self.editors.restore_snapshot(&file, version, text),
+                Event::Folders(_, items) if items.is_empty() => ui::notify_info("The folders have the same files with the same contents."),
+                Event::Folders(hint, items) => self.search.pick(&hint, items),
             }
         }
     }
@@ -362,6 +427,26 @@ impl Halo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_compare_lists_changed_and_one_sided_files() {
+        let root = std::env::temp_dir().join(format!("halo-folders-test-{}", now()));
+        let (left, right) = (root.join("left"), root.join("right"));
+        for (dir, files) in [(&left, [("same.txt", "x"), ("sub/changed.txt", "a"), ("gone.txt", "g")]), (&right, [("same.txt", "x"), ("sub/changed.txt", "b"), ("new.txt", "n")])] {
+            for (file, text) in files {
+                fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+                fs::write(dir.join(file), text).unwrap();
+            }
+        }
+        fs::create_dir_all(left.join(".git")).unwrap();
+        fs::write(left.join(".git/HEAD"), "ref").unwrap();
+        let items = folder_changes(&left, &right).unwrap();
+        let shown: Vec<(&str, &str)> = items.iter().map(|i| (i.0.as_str(), i.1.as_str())).collect();
+        assert_eq!(shown, [("gone.txt", "Only in left"), ("new.txt", "Only in right"), ("sub/changed.txt", "Changed")]);
+        assert!(matches!(&items[2].2, Command::OpenDiff(title, args) if title == "sub/changed.txt (left ↔ right)" && args.contains(&"--no-index".to_owned())));
+        assert_eq!(items[0].2, Command::OpenPath(left.join("gone.txt")));
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn names_sorts_deduplicates_and_prunes_saves() {

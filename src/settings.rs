@@ -516,6 +516,7 @@ pub struct Session {
     pub explorer_sizes: [Option<f32>; 4],
     pub breakpoints: BTreeMap<PathBuf, BTreeMap<PathBuf, Vec<crate::debug::Breakpoint>>>,
     pub function_breakpoints: BTreeMap<PathBuf, Vec<crate::debug::FunctionBreakpoint>>,
+    pub bookmarks: BTreeMap<PathBuf, crate::editor::bookmarks::Files>,
     pub layout: crate::workbench::Workbench,
 }
 
@@ -539,6 +540,7 @@ impl Default for Session {
             explorer_sizes: [None; 4],
             breakpoints: BTreeMap::new(),
             function_breakpoints: BTreeMap::new(),
+            bookmarks: BTreeMap::new(),
             layout: Default::default(),
         }
     }

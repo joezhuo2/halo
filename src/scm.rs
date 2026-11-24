@@ -319,7 +319,7 @@ impl Scm {
     }
 }
 
-fn prompt(ui: &Ui, heading: &str, note: &str, fields: &mut [(&str, &mut String, usize)], ok: &str) -> Option<bool> {
+pub(crate) fn prompt(ui: &Ui, heading: &str, note: &str, fields: &mut [(&str, &mut String, usize)], ok: &str) -> Option<bool> {
     let mut choice = None;
     let field_id = |i: usize| Id::new(("scm_field", heading, i));
     let multiline = fields.iter().enumerate().any(|(i, (_, _, rows))| *rows > 1 && ui.memory(|m| m.has_focus(field_id(i))));

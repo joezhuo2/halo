@@ -57,6 +57,7 @@ pub struct Halo {
     exiting: bool,
     focused: bool,
     pub chord: Option<egui::KeyboardShortcut>,
+    pub macros: crate::macros::Macro,
     auto_save_focus: (bool, bool),
     zoom_level: Option<f32>,
     theme_fade: Option<(f64, egui::Color32)>,
@@ -190,6 +191,7 @@ impl Halo {
             exiting: false,
             focused: true,
             chord: None,
+            macros: Default::default(),
             auto_save_focus: (false, true),
             zoom_level: None,
             theme_fade: None,
@@ -222,6 +224,7 @@ impl Halo {
             crate::terminal_restore::save(&self.bottom, &self.editors, &self.settings, self.session.folder.as_deref());
         }
         crate::debug::store(&mut self.session, &self.editors.marks);
+        self.editors.bookmarks.store(&mut self.session.bookmarks);
         if let Some(remembered) = workspace.file.clone().or_else(|| folder.clone().filter(|_| !workspace.is_multi())) {
             self.session.remember(&remembered);
         }
@@ -240,6 +243,7 @@ impl Halo {
         self.session.folder = folder;
         self.session.workspace = workspace;
         crate::debug::restore(&self.session, &mut self.editors.marks);
+        self.editors.bookmarks.restore(&self.session.bookmarks, self.session.folder.clone());
         self.session.save();
     }
 
@@ -321,6 +325,7 @@ impl Halo {
             let _ = std::fs::remove_dir_all(backups);
         }
         crate::debug::store(&mut self.session, &self.editors.marks);
+        self.editors.bookmarks.store(&mut self.session.bookmarks);
         self.session.save();
         crate::terminal_restore::save(&self.bottom, &self.editors, &self.settings, self.session.folder.as_deref());
     }
@@ -536,6 +541,23 @@ impl Halo {
                 self.reveal(View::Output);
             }
             ShowOutputChannels => self.search.pick("Select an Output Channel", crate::output::picks()),
+            ListBookmarks => match self.editors.bookmarks.choices() {
+                items if items.is_empty() => ui::notify_info("There are no bookmarks yet."),
+                items => self.search.pick("Select a bookmark", items),
+            },
+            PasteFromHistory => {
+                let item = |text: String| {
+                    let first: String = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().chars().take(80).collect();
+                    let lines = text.lines().count();
+                    (first, if lines > 1 { format!("{lines} lines") } else { String::new() }, PasteText(text))
+                };
+                match crate::editor::clip_history() {
+                    clips if clips.is_empty() => ui::notify_info("Nothing has been copied in an editor yet."),
+                    clips => self.search.pick("Select text to paste", clips.into_iter().map(item).collect()),
+                }
+            }
+            ToggleMacroRecording => self.macros.toggle(),
+            PlayMacro => self.macros.play(),
             ClearOutput => crate::output::clear_current(),
             OpenOutputInEditor => self.editors.open_untitled(&crate::output::current_text()),
             ShowNotifications | ClearNotifications | ToggleDoNotDisturb | FocusNotification => crate::notifications::exec(&cmd),
@@ -991,6 +1013,7 @@ impl Halo {
         if !self.page.keys.recording() {
             self.global_shortcuts(&ctx);
         }
+        self.macros.frame(&ctx, &mut self.cmds);
         let delay = self.settings.auto_save_delay as f64 / 1000.0;
         let focus = (self.editors.has_focus() && self.focused, self.focused);
         let now = ctx.input(|i| i.time);
@@ -1052,9 +1075,11 @@ impl Halo {
             self.zone = Zone::Editor;
         }
 
+        self.macros.commands(&self.cmds);
         for cmd in std::mem::take(&mut self.cmds) {
             self.dispatch(cmd, &ctx);
         }
+        self.macros.derived(self.cmds.len());
         if self.fullscreen != Some(self.session.layout.fullscreen) {
             self.fullscreen = Some(self.session.layout.fullscreen);
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(self.session.layout.fullscreen));

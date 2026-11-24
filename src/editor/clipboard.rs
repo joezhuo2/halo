@@ -2,10 +2,28 @@ use super::buffer::{Document, Sel};
 use super::highlight::Highlighter;
 use crate::{settings::Settings, theme::Theme};
 use eframe::egui::Context;
+use std::sync::Mutex;
+
+static HISTORY: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub(super) fn history() -> Vec<String> {
+    HISTORY.lock().map(|h| h.clone()).unwrap_or_default()
+}
+
+fn remember(text: &str) {
+    if let Ok(mut history) = HISTORY.lock()
+        && !text.is_empty()
+    {
+        history.retain(|t| t != text);
+        history.insert(0, text.to_owned());
+        history.truncate(20);
+    }
+}
 
 pub(super) fn copy(ctx: &Context, buf: &Document, sels: &[Sel], hl: &mut Highlighter, lang: &super::Lang, theme: &Theme, settings: &Settings) {
     let ranges = buf.copy_ranges(sels);
     let text = ranges.iter().map(|r| buf.text_of(r.start, r.end)).collect::<Vec<_>>().join("\n");
+    remember(&text);
     #[cfg(windows)]
     {
         let rich = settings.copy_with_syntax_highlighting && text.len() <= 64 * 1024;

@@ -20,6 +20,7 @@ mod glob;
 mod history;
 mod ipc;
 mod jumplist;
+mod macros;
 mod jsonc;
 mod layers;
 mod icon_theme;

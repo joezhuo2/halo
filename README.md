@@ -167,7 +167,18 @@ language you want diagnostics and completion in. Each is optional.
   `Shift+F7` open the **accessible diff viewer**, which lists one change at
   a time, line by line, for screen readers.
 - **Compare** the active file with another file, the clipboard or its saved
-  version.
+  version. **Compare Folders...** diffs two directories and lists the
+  changed and one-sided files; pick one to open its diff.
+- **Bookmarks:** `Ctrl+Alt+K` toggles a bookmark on the line (shown in the
+  gutter), `Ctrl+Alt+L` and `Ctrl+Alt+J` jump to the next and previous one
+  across files, Bookmarks: Label names one and Bookmarks: List picks one.
+  They follow edits and come back with the folder.
+- **Jump to a visible word** (`Alt+J`): every word on screen gets a
+  two-letter label; type it to move the cursor there, `Esc` cancels.
+- **Clipboard history** (`Ctrl+K Ctrl+V`): pick one of the last 20 things
+  copied or cut in an editor to paste it.
+- **Macros:** `Ctrl+K Ctrl+R` starts and stops recording keystrokes and
+  commands (the status bar shows it), `Ctrl+K Ctrl+P` plays them back.
 - **Markdown preview** (`Ctrl+Shift+V`, or `Ctrl+K V` to the side) follows
   the source as you type and scroll. Tables size their columns to the
   content and code blocks have a copy button.

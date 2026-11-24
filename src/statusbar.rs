@@ -31,6 +31,10 @@ impl Halo {
                         item(ui, &theme, &format!("{} WSL: {distro}", icons::LINUX_LOGO), true, "This folder is open in WSL");
                     }
 
+                    if self.macros.recording() && item(ui, &theme, &format!("{} Recording macro", icons::RECORD), true, "Stop recording the macro").clicked() {
+                        self.cmds.push(Command::ToggleMacroRecording);
+                    }
+
                     if let Some(name) = self.session.workspace.name().filter(|_| self.session.workspace.is_multi())
                         && item(ui, &theme, &format!("{} {name}", icons::FOLDERS), false, "Workspace folders: show the Explorer").clicked()
                     {

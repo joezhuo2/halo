@@ -20,6 +20,8 @@ pub enum Command {
     CompareWithSelected,
     SelectComparePath(PathBuf),
     ComparePath(PathBuf),
+    CompareFolders,
+    CompareFoldersAgain,
     ToggleInlineBlame,
     OpenLineChanges,
     OpenLineCommitOnRemote,
@@ -91,6 +93,10 @@ pub enum Command {
     FoldRecursively,
     UnfoldRecursively,
     FoldAllBlockComments,
+    PasteFromHistory,
+    PasteText(String),
+    ToggleMacroRecording,
+    PlayMacro,
 
     SelectAll,
     AddCursorAbove,
@@ -204,6 +210,14 @@ pub enum Command {
     GoBack,
     GoForward,
     GoToLastEditLocation,
+    ToggleBookmark,
+    LabelBookmark,
+    NextBookmark,
+    PrevBookmark,
+    ListBookmarks,
+    ClearBookmarks,
+    GoToBookmark(PathBuf, usize),
+    JumpToVisible,
     ReopenClosed,
     KeepEditor,
     NextChange,
@@ -657,6 +671,13 @@ fn defaults() -> Vec<Binding> {
         e(C, Key::G, GoToLine),
         e(C, Key::D, SelectNextOccurrence),
         e(C, Key::Slash, ToggleComment),
+        e(ca, Key::K, ToggleBookmark),
+        e(ca, Key::L, NextBookmark),
+        e(ca, Key::J, PrevBookmark),
+        e(Modifiers::ALT, Key::J, JumpToVisible),
+        k(C, Key::V, PasteFromHistory),
+        k(C, Key::R, ToggleMacroRecording),
+        k(C, Key::P, PlayMacro),
         g(Modifiers::ALT, Key::Enter, OpenSearchEditor),
         e(cs, Key::R, RerunSearchEditorSearch),
         e(Modifiers::ALT, Key::L, ToggleSearchEditorContextLines),
@@ -725,12 +746,12 @@ pub fn all() -> Vec<Command> {
     let mut commands = vec![
         NewFile, NewWindow, OpenFile, OpenFolder, OpenRecent, OpenFolderInNewWindow, DuplicateWorkspace, Save, SaveAs, SaveAll, CloseEditor, CloseFolder,
         AddFolderToWorkspace, RemoveFolderFromWorkspace, SaveWorkspaceAs, OpenWorkspaceFromFile, CloseWorkspace, OpenSettings, OpenSettingsJson,
-        OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected,
+        OpenKeybindings, OpenSnippets, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, CompareFolders, CompareFoldersAgain,
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
         FoldRecursively, UnfoldRecursively, FoldAllBlockComments, FoldLevel(1), FoldLevel(2), FoldLevel(3), FoldLevel(4), FoldLevel(5),
-        FoldLevel(6), FoldLevel(7),
+        FoldLevel(6), FoldLevel(7), PasteFromHistory, ToggleMacroRecording, PlayMacro,
         SortLinesAscending, SortLinesDescending, RemoveDuplicateLines, ReverseLines, TransformToUppercase, TransformToLowercase,
         TransformToTitlecase, TransformToSnakecase, TransformToCamelcase, TransformToKebabcase,
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection, InlineChat, DeleteWordPartLeft, DeleteWordPartRight,
@@ -748,7 +769,8 @@ pub fn all() -> Vec<Command> {
         MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
         AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations,
         GoToFile, ShowCommands, FindInFiles, NewSearchEditor, OpenSearchEditor, RerunSearchEditorSearch, ToggleSearchEditorContextLines,
-        ToggleSearchEditorCaseSensitive, ToggleSearchEditorWholeWord, ToggleSearchEditorRegex, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation, ReopenClosed,
+        ToggleSearchEditorCaseSensitive, ToggleSearchEditorWholeWord, ToggleSearchEditorRegex, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation,
+        ToggleBookmark, LabelBookmark, NextBookmark, PrevBookmark, ListBookmarks, ClearBookmarks, JumpToVisible, ReopenClosed,
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, AccessibleDiffViewerNext, AccessibleDiffViewerPrev, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy, CursorWordPartLeft, CursorWordPartRight,
         ShowHover, ShowColorPicker, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
@@ -947,6 +969,7 @@ impl Command {
             Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
             | Unfold | FoldAll | UnfoldAll | FoldLevel(_) | FoldRecursively | UnfoldRecursively | FoldAllBlockComments
+            | PasteFromHistory | PasteText(_) | ToggleMacroRecording | PlayMacro
             | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection
             | InlineChat
             | SortLinesAscending | SortLinesDescending | RemoveDuplicateLines | ReverseLines | TransformToUppercase | TransformToLowercase
@@ -967,7 +990,8 @@ impl Command {
             | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter | AlignPanelJustify | AlignPanelLeft | AlignPanelRight
             | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | CursorWordPartLeft | CursorWordPartRight | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
-            | GoForward | GoToLastEditLocation | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | AccessibleDiffViewerNext | AccessibleDiffViewerPrev | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
+            | GoForward | GoToLastEditLocation | ToggleBookmark | LabelBookmark | NextBookmark | PrevBookmark | ListBookmarks | ClearBookmarks
+            | GoToBookmark(..) | JumpToVisible | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | AccessibleDiffViewerNext | AccessibleDiffViewerPrev | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
             NewSearchEditor | OpenSearchEditor | RerunSearchEditorSearch | ToggleSearchEditorContextLines | ToggleSearchEditorCaseSensitive
             | ToggleSearchEditorWholeWord | ToggleSearchEditorRegex => "Go",
@@ -983,7 +1007,8 @@ impl Command {
             NewTerminal | NewTerminalWith(_) | NewTerminalIn(_) | SplitTerminal | KillTerminal | ScrollToPrevMark | ScrollToNextMark | RunRecentLine
             | RunCommandLine(_) | CopyLastCommandOutput | RenameTerminal | ChangeTerminalColor | SetTerminalColor(_)
             | NewTerminalInEditor | MoveTerminalToEditor | MoveTerminalToPanel | ClearRestoredHistory => "Terminal",
-            CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_) => "File",
+            CompareFile | CompareClipboard | CompareSaved | SelectForCompare | CompareWithSelected | SelectComparePath(_) | ComparePath(_)
+            | CompareFolders | CompareFoldersAgain => "File",
             OpenDiff(..) | GitSync | Git(_) | GitAt(..) | ToggleInlineBlame | OpenLineChanges | OpenLineCommitOnRemote | RestoreSnapshot(..) | StageHunk | RevertHunk
             | UnstageHunk | StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges | MergeOpen | OpenMerge(_)
             | MergeAcceptIncoming | MergeAcceptCurrent | MergeAcceptBoth | MergeAcceptAllIncoming | MergeAcceptAllCurrent
@@ -1010,6 +1035,8 @@ impl Command {
             CompareSaved => "Compare Active File with Saved",
             SelectForCompare | SelectComparePath(_) => "Select for Compare",
             CompareWithSelected | ComparePath(_) => "Compare with Selected",
+            CompareFolders => "Compare Folders...",
+            CompareFoldersAgain => "Compare Folders: Show Last Comparison",
             ToggleInlineBlame => "Git: Toggle Inline Blame",
             OpenLineChanges => "Git: Open Changes of Current Line's Commit",
             OpenLineCommitOnRemote => "Git: Open Current Line's Commit on Remote",
@@ -1081,6 +1108,10 @@ impl Command {
             FoldRecursively => "Fold Recursively",
             UnfoldRecursively => "Unfold Recursively",
             FoldAllBlockComments => "Fold All Block Comments",
+            PasteFromHistory => "Paste from Clipboard History...",
+            PasteText(_) => "Paste",
+            ToggleMacroRecording => "Macro: Start/Stop Recording",
+            PlayMacro => "Macro: Play",
             SelectAll => "Select All",
             AddCursorAbove => "Add Cursor Above",
             AddCursorBelow => "Add Cursor Below",
@@ -1191,6 +1222,14 @@ impl Command {
             GoBack => "Go Back",
             GoForward => "Go Forward",
             GoToLastEditLocation => "Go to Last Edit Location",
+            ToggleBookmark => "Bookmarks: Toggle",
+            LabelBookmark => "Bookmarks: Label...",
+            NextBookmark => "Bookmarks: Jump to Next",
+            PrevBookmark => "Bookmarks: Jump to Previous",
+            ListBookmarks => "Bookmarks: List...",
+            ClearBookmarks => "Bookmarks: Clear All",
+            GoToBookmark(..) => "Bookmarks: Jump",
+            JumpToVisible => "Jump to Visible Word",
             ReopenClosed => "Reopen Closed Editor",
             KeepEditor => "Keep Editor Open",
             NextChange => "Go to Next Change",
