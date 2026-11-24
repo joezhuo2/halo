@@ -6,6 +6,27 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-11-23
+
+Checked with unit tests. Not yet looked at on screen: the title bar tint and
+the zoomed editor group.
+
+### Added
+
+- **TODO list:** Search: Find TODO and FIXME Comments runs a workspace
+  search for TODO, FIXME, HACK, XXX and BUG and shows the hits in the Search
+  view, grouped by file.
+- **Window color:** Window: Set Color... picks a title bar tint for the open
+  folder and writes it to the folder settings as `peacock.color`; the
+  Window Color setting does the same from the settings page.
+- **Editor group zoom:** `Ctrl+K Ctrl+=` and `Ctrl+K Ctrl+-` change the font
+  size of the active editor group only; View: Reset Editor Group Zoom resets
+  it.
+- **Named layouts:** Layouts: Save Open Editors As..., Layouts: Switch...
+  and Layouts: Delete... save and restore the open tabs and splits under a
+  name, per folder. Tabs with unsaved changes and terminal tabs stay open
+  when switching.
+
 ## [0.1.15] - 2026-11-23
 
 Checked with unit tests and headless UI tests. Not yet looked at on screen:
@@ -681,7 +702,9 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.14...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/joezhuo2/halo/compare/v0.1.15...v0.1.16
+[0.1.15]: https://github.com/joezhuo2/halo/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/joezhuo2/halo/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/joezhuo2/halo/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/joezhuo2/halo/compare/v0.1.11...v0.1.12
