@@ -6,6 +6,29 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-11-23
+
+Checked with unit tests and headless UI tests. Not yet looked at on screen:
+the gutter bookmark icon, the jump labels and the macro status bar item.
+
+### Added
+
+- **Bookmarks:** `Ctrl+Alt+K` toggles a bookmark on the cursor line, shown
+  in the gutter. `Ctrl+Alt+L` and `Ctrl+Alt+J` jump to the next and previous
+  bookmark across files; Bookmarks: Label names one, Bookmarks: List picks
+  one from all files, and Bookmarks: Clear All removes them. Bookmarks move
+  with edits and are saved per folder.
+- **Jump to a visible word** (`Alt+J`): each word on screen gets a
+  two-letter label; typing it moves the cursor there and `Esc` cancels.
+- **Clipboard history** (`Ctrl+K Ctrl+V`): pick one of the last 20 texts
+  copied or cut in an editor and paste it.
+- **Macros:** `Ctrl+K Ctrl+R` starts and stops recording keystrokes and
+  commands, with a Recording macro item in the status bar, and
+  `Ctrl+K Ctrl+P` plays the recording back.
+- **Compare Folders...:** picks two folders and lists the files that differ
+  or exist on one side only; picking a changed file opens its diff. Compare
+  Folders: Show Last Comparison scans the same pair again.
+
 ## [0.1.14] - 2026-11-23
 
 Checked with unit tests and headless UI tests, with fake programs standing in

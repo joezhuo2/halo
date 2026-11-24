@@ -23,7 +23,7 @@ body:
     attributes:
       label: Halo version
       description: From Help > About Halo.
-      placeholder: 0.1.14
+      placeholder: 0.1.15
     validations:
       required: true
   - type: dropdown
