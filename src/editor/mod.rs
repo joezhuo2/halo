@@ -2763,11 +2763,11 @@ impl Editors {
                         }
                         if resp.secondary_clicked() && !on_lens {
                             let line = (marks.is_some() && pos.x < clip.left() + bp_w).then(|| row_at(pos.y).0);
+                            let p = hit(&painter, pos);
                             ui.data_mut(|d| {
                                 d.insert_temp(id.with("bp_menu"), line);
-                                d.insert_temp(id.with("cursor_menu"), hit(&painter, pos));
+                                d.insert_temp(id.with("cursor_menu"), p);
                             });
-                            let p = hit(&painter, pos);
                             if !tab.sels.iter().any(|s| s.start() <= p && p <= s.end()) {
                                 tab.sels = vec![Sel::caret(p)];
                             }
@@ -4001,6 +4001,22 @@ end", "word ".repeat(100)))], &settings);
         let Event::PointerButton { pos, button, modifiers, .. } = click else { unreachable!() };
         frame_with(&ctx, &mut editors, vec![Event::PointerButton { pos, button, pressed: false, modifiers }], &settings);
         assert_eq!(editors.status().unwrap().line, 1);
+    }
+
+    #[test]
+    fn right_click_in_text_opens_the_menu() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &Settings::default(), &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Paste("hello world\nsecond".into())]);
+        for pos in [pos2(200.0, TAB_H + 30.0), pos2(400.0, 400.0)] {
+            let button = |pressed| Event::PointerButton { pos, button: PointerButton::Secondary, pressed, modifiers: Default::default() };
+            frame(&ctx, &mut editors, vec![Event::PointerMoved(pos)]);
+            frame(&ctx, &mut editors, vec![button(true)]);
+            frame(&ctx, &mut editors, vec![button(false)]);
+            frame(&ctx, &mut editors, vec![]);
+        }
     }
 
     #[test]
