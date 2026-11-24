@@ -6,6 +6,34 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-11-24
+
+Checked with unit tests, clippy and the GitHub API calls against a public
+repository. Not yet looked at on screen: the multi-file diff, the Process
+Explorer and the GitHub repository view.
+
+### Added
+
+- **Update imports on file rename:** renaming or moving a file in the
+  Explorer sends `workspace/willRenameFiles` and `workspace/didRenameFiles`
+  to the language servers that ask for them and applies the edits they
+  return. Only servers already running (a file of that language is open)
+  take part.
+- **Collapse unchanged regions** in the diff editor: runs of more than four
+  unchanged lines fold away, keeping three lines of context around each
+  change. Click the gutter caret to show one; the toolbar button toggles
+  them all.
+- **Multi-file diff:** Git: Open All Changes (working tree against `HEAD`),
+  Open All Changes on a commit in the graph, and Show Stash Changes list
+  every changed file in one scrolling view, with per-file headers, added and
+  removed counts, collapse, Open Changes and Open File.
+- **Process Explorer** (Developer: Open Process Explorer): Halo and its child
+  processes as a tree with CPU and memory, refreshed every 1.5 seconds, and
+  a button that stops a process and its children.
+- **Open a GitHub repository without cloning** (GitHub: Open Repository
+  Without Cloning...): browse a repository's files read-only through `gh`,
+  with a filter; files are fetched when opened.
+
 ## [0.1.19] - 2026-11-24
 
 ### Fixed
@@ -769,7 +797,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.19...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.20...HEAD
+[0.1.20]: https://github.com/joezhuo2/halo/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/joezhuo2/halo/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/joezhuo2/halo/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/joezhuo2/halo/compare/v0.1.16...v0.1.17
