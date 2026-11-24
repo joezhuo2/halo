@@ -13,15 +13,17 @@ pub struct Sel {
     pub anchor: usize,
     pub head: usize,
     pub goal: Option<usize>,
+    #[serde(default)]
+    pub virt: usize,
 }
 
 impl Sel {
     pub fn caret(pos: usize) -> Self {
-        Self { anchor: pos, head: pos, goal: None }
+        Self { anchor: pos, head: pos, goal: None, virt: 0 }
     }
 
     pub fn new(anchor: usize, head: usize) -> Self {
-        Self { anchor, head, goal: None }
+        Self { anchor, head, goal: None, virt: 0 }
     }
 
     pub fn start(&self) -> usize {
@@ -38,7 +40,7 @@ impl Sel {
 }
 
 pub fn same(a: &[Sel], b: &[Sel]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.anchor == y.anchor && x.head == y.head)
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.anchor == y.anchor && x.head == y.head && x.virt == y.virt)
 }
 
 pub fn merge_sels(sels: &mut Vec<Sel>) {
@@ -192,6 +194,7 @@ pub struct Document {
     pub read_only: bool,
     pub large: bool,
     pub editorconfig: crate::editorconfig::Props,
+    pub virtual_space: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -486,6 +489,7 @@ impl Document {
             read_only: false,
             large: false,
             editorconfig: Default::default(),
+            virtual_space: false,
         }
     }
 
@@ -1450,6 +1454,18 @@ impl Document {
         let last_line = self.lines().saturating_sub(1);
         for s in sels.iter_mut() {
             let line = self.line_of(s.head);
+            let at_end = self.virtual_space && s.head == self.line_end(line) && (extend || s.is_empty());
+            let virt = s.virt;
+            match motion {
+                Motion::Right if at_end => s.virt += 1,
+                Motion::Left if at_end && s.virt > 0 => s.virt -= 1,
+                _ => s.virt = usize::MAX,
+            }
+            if s.virt != usize::MAX {
+                s.goal = None;
+                continue;
+            }
+            s.virt = 0;
             let (head, goal) = match motion {
                 Motion::Left if !extend && !s.is_empty() => (s.start(), None),
                 Motion::Right if !extend && !s.is_empty() => (s.end(), None),
@@ -1467,7 +1483,7 @@ impl Document {
                 Motion::DocStart => (0, None),
                 Motion::DocEnd => (len, None),
                 Motion::Up | Motion::Down | Motion::PageUp(_) | Motion::PageDown(_) => {
-                    let column = s.goal.unwrap_or(s.head - self.line_start(line));
+                    let column = s.goal.unwrap_or(s.head - self.line_start(line) + virt);
                     let target = match motion {
                         Motion::Up => line as isize - 1,
                         Motion::Down => line as isize + 1,
@@ -1481,6 +1497,9 @@ impl Document {
                         (len, Some(column))
                     } else {
                         let target = target as usize;
+                        if self.virtual_space {
+                            s.virt = column.saturating_sub(self.line_len(target));
+                        }
                         (self.line_start(target) + column.min(self.line_len(target)), Some(column))
                     }
                 }
@@ -1532,6 +1551,7 @@ impl Document {
             }
             let last = cuts.get(piece + 1).map_or(self.line_len(line), |next| next - 1);
             s.head = edge.unwrap_or(self.line_start(line) + (cuts[piece] + goal).min(last));
+            s.virt = 0;
             s.goal = Some(goal);
             if !extend {
                 s.anchor = s.head;
@@ -1549,7 +1569,7 @@ impl Document {
             return None;
         }
         let pos = self.line_start(target) + column.min(self.line_len(target));
-        sels.push(Sel { anchor: pos, head: pos, goal: Some(column) });
+        sels.push(Sel { goal: Some(column), ..Sel::caret(pos) });
         merge_sels(sels);
         Some(pos)
     }
@@ -1634,14 +1654,48 @@ impl Document {
     }
 
     // shortcut: box columns count characters, upgrade to visual columns if tabs or wide glyphs skew the box
-    pub fn box_sels(&self, anchor: usize, head: usize) -> Vec<Sel> {
+    pub fn box_sels(&self, (anchor, extra): (usize, usize), (head, virt): (usize, usize)) -> Vec<Sel> {
         let (first, last) = (self.line_of(anchor), self.line_of(head));
-        self.box_cols([first, anchor - self.line_start(first), last, head - self.line_start(last)])
+        self.box_cols([first, anchor - self.line_start(first) + extra, last, head - self.line_start(last) + virt])
     }
 
     fn box_cols(&self, [first, from, last, to]: [usize; 4]) -> Vec<Sel> {
-        let on = |line: usize| Sel::new(self.line_start(line) + from.min(self.line_len(line)), self.line_start(line) + to.min(self.line_len(line)));
+        let on = |line: usize| {
+            let (start, len) = (self.line_start(line), self.line_len(line));
+            let virt = if self.virtual_space { to.saturating_sub(len) } else { 0 };
+            Sel { virt, ..Sel::new(start + from.min(len), start + to.min(len)) }
+        };
         (first.min(last)..=first.max(last)).map(on).collect()
+    }
+
+    pub fn fill_virtual(&mut self, sels: &mut Vec<Sel>, tabs: Option<usize>) -> bool {
+        if sels.iter().all(|s| s.virt == 0) {
+            return false;
+        }
+        let mut targets = vec![];
+        let mut edits: EditList = vec![];
+        for s in sels.iter().filter(|s| s.virt > 0 && s.is_empty()) {
+            let (line, column) = (self.line_of(s.head), s.head - self.line_start(self.line_of(s.head)));
+            let goal = column + s.virt;
+            let mut pad = String::new();
+            let mut at = column;
+            while let Some(size) = tabs.filter(|size| *size > 0 && (at / size + 1) * size <= goal) {
+                pad.push('\t');
+                at = (at / size + 1) * size;
+            }
+            pad.push_str(&" ".repeat(goal - at));
+            targets.push((line, column + pad.chars().count()));
+            edits.push((s.head, s.head, pad));
+        }
+        sels.iter_mut().for_each(|s| s.virt = 0);
+        if !self.apply(sels, edits, Kind::Type, After::Map) {
+            return false;
+        }
+        for (s, (line, column)) in sels.iter_mut().zip(targets) {
+            *s = Sel::caret(self.line_start(line) + column);
+        }
+        self.fix_after(sels);
+        true
     }
 
     pub fn column_select(&self, sels: &mut Vec<Sel>, held: &mut Option<[usize; 4]>, motion: Motion) {
@@ -1651,12 +1705,12 @@ impl Document {
             Some(b) if same(sels, &self.box_cols(b)) => b,
             _ => {
                 let ((l0, c0), (l1, c1)) = (at(first.anchor), at(last.head));
-                [l0, c0, l1, c1]
+                [l0, c0, l1, c1 + last.virt]
             }
         };
         match motion {
             Motion::Left => c1 = c1.saturating_sub(1),
-            Motion::Right if (l0.min(l1)..=l0.max(l1)).any(|line| self.line_len(line) > c1) => c1 += 1,
+            Motion::Right if self.virtual_space || (l0.min(l1)..=l0.max(l1)).any(|line| self.line_len(line) > c1) => c1 += 1,
             Motion::Up => l1 = l1.saturating_sub(1),
             Motion::Down => l1 = (l1 + 1).min(self.lines() - 1),
             _ => {}
@@ -1842,6 +1896,42 @@ mod tests {
         assert_eq!(d.rope.to_string(), "xyab\nxycd\nxyef");
         d.backspace(&mut sels, false, true);
         assert_eq!(d.rope.to_string(), "xab\nxcd\nxef");
+    }
+
+    #[test]
+    fn virtual_space_moves_past_line_ends_and_pads_when_typing() {
+        let mut d = doc("abcdef
+ab
+");
+        d.virtual_space = true;
+        let mut sels = vec![Sel::caret(6)];
+        d.move_sels(&mut sels, Motion::Right, false);
+        d.move_sels(&mut sels, Motion::Right, false);
+        assert_eq!((sels[0].head, sels[0].virt), (6, 2));
+        d.move_sels(&mut sels, Motion::Down, false);
+        assert_eq!((sels[0].head, sels[0].virt), (9, 6));
+        d.move_sels(&mut sels, Motion::Left, false);
+        d.insert_text(&mut sels, "x");
+        assert_eq!(d.rope.to_string(), "abcdef
+abx
+");
+        d.undo(&mut sels);
+        sels = vec![Sel { virt: 5, ..Sel::caret(9) }];
+        assert!(d.fill_virtual(&mut sels, Some(4)));
+        d.insert_text(&mut sels, "x");
+        assert_eq!(d.rope.to_string(), "abcdef
+ab	   x
+");
+        d.undo(&mut sels);
+        assert_eq!(d.rope.to_string(), "abcdef
+ab
+");
+        let col = d.box_sels((3, 0), (9, 3));
+        assert_eq!(col.iter().map(|s| (s.anchor, s.head, s.virt)).collect::<Vec<_>>(), [(3, 5, 0), (9, 9, 3)]);
+        d.virtual_space = false;
+        sels = vec![Sel::caret(6)];
+        d.move_sels(&mut sels, Motion::Right, false);
+        assert_eq!((sels[0].head, sels[0].virt), (7, 0));
     }
 
     #[test]
@@ -2167,7 +2257,7 @@ mod tests {
     fn selects_boxes_occurrences_and_growing_ranges() {
         let d = doc("let a = f(x, [yy, z]);\nlet yy = 1;\nyyy");
         let spans = |sels: &[Sel]| sels.iter().map(|s| (s.start(), s.end())).collect::<Vec<_>>();
-        assert_eq!(spans(&d.box_sels(4, 37)), vec![(2, 4), (25, 27), (37, 38)]);
+        assert_eq!(spans(&d.box_sels((4, 0), (37, 0))), vec![(2, 4), (25, 27), (37, 38)]);
         let mut sels = vec![Sel::caret(15)];
         d.select_all_occurrences(&mut sels);
         assert_eq!(spans(&sels), vec![(14, 16), (27, 29)]);

@@ -48,7 +48,9 @@ pub fn lookup(path: &Path) -> Props {
     props(&keys)
 }
 
-fn parse(text: &str) -> (bool, Vec<(String, Vec<(String, String)>)>) {
+type Section = (String, Vec<(String, String)>);
+
+fn parse(text: &str) -> (bool, Vec<Section>) {
     let (mut root, mut sections) = (false, vec![]);
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with(['#', ';'])) {
         if let Some(glob) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {

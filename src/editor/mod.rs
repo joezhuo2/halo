@@ -126,7 +126,7 @@ struct Tab {
     preview: bool,
     pair: ((u64, usize), Option<(usize, usize)>),
     stuck: usize,
-    box_anchor: Option<usize>,
+    box_anchor: Option<(usize, usize)>,
     col_box: Option<[usize; 4]>,
     carets: Vec<Option<typography::Caret>>,
     snippet: Option<snippet::Session>,
@@ -604,6 +604,16 @@ fn handle_event(
 ) -> bool {
     let (spaces, size, unit) = indent_unit(buf, settings);
     let sels = &mut tab.sels;
+    let typing = matches!(event, Event::Text(_) | Event::Paste(_) | Event::Key { key: Key::Tab | Key::Delete, pressed: true, .. });
+    if typing {
+        buf.fill_virtual(sels, (!spaces).then_some(size));
+    }
+    if let Event::Key { key: Key::Backspace, pressed: true, .. } = event
+        && sels.iter().any(|s| s.virt > 0)
+    {
+        sels.iter_mut().for_each(|s| s.virt = s.virt.saturating_sub(1));
+        return true;
+    }
     match event {
         Event::Text(text) => {
             let mut chars = text.chars();
@@ -2314,6 +2324,7 @@ impl Editors {
         let gutter_of = |lines: usize| (lines.to_string().len().max(3) as f32 + 5.0) * glyph_w + 6.0;
         let fits = (((text_rect.width() - gutter_of(buf.lines()) - 16.0) / char_w) as usize).max(20);
         let wrap_cols = prefs::wrap_columns(if crate::a11y::optimized() { "off" } else { &settings.word_wrap }, settings.word_wrap_column, fits).filter(|_| !diffed && !buf.large);
+        buf.virtual_space = settings.virtual_space && wrap_cols.is_none() && !diffed;
 
         if self.want_focus && is_active && self.goto.is_none() {
             ui.memory_mut(|m| m.request_focus(id));
@@ -2704,6 +2715,15 @@ impl Editors {
                         }
                         buf_ref.line_start(line) + layout(painter, line).hit(piece, pos.x - text_x)
                     };
+                    let vhit = |painter: &egui::Painter, pos: Pos2| -> (usize, usize) {
+                        let p = hit(painter, pos);
+                        let (line, lens, _) = row_at(pos.y);
+                        if !buf_ref.virtual_space || lens.is_some() || p != buf_ref.line_end(line) {
+                            return (p, 0);
+                        }
+                        let end = text_x + layout(painter, line).x(0, buf_ref.line_len(line));
+                        (p, ((pos.x - end) / char_w).round().max(0.0) as usize)
+                    };
                     let swatch_box = |x: f32, y: f32| Rect::from_min_size(pos2(x + 2.0, y + ((line_h - swatch_s) / 2.0).round()), vec2(swatch_s, swatch_s));
                     let swatch_at = |painter: &egui::Painter, pos: Pos2| {
                         let (line, lens, piece) = row_at(pos.y);
@@ -2733,11 +2753,11 @@ impl Editors {
                             activated = true;
                             touched = true;
                             pressed_text = true;
-                            let p = hit(&painter, pos);
-                            let boxed = (mods.alt && mods.shift && !on_lens).then(|| tab.sels.last().map_or(p, |s| s.anchor));
+                            let (p, v) = vhit(&painter, pos);
+                            let boxed = (mods.alt && mods.shift && !on_lens).then(|| tab.sels.last().map_or((p, v), |s| (s.anchor, 0)));
                             tab.box_anchor = boxed;
                             if let Some(anchor) = boxed {
-                                tab.sels = buf_ref.box_sels(anchor, p);
+                                tab.sels = buf_ref.box_sels(anchor, (p, v));
                                 tab.drag_anchor = None;
                             } else if on_lens {
                                 lens_press = true;
@@ -2764,16 +2784,17 @@ impl Editors {
                                 merge_sels(&mut tab.sels);
                                 tab.drag_anchor = Some(p);
                             } else if settings.column_selection && !follows_link {
-                                let anchor = if mods.shift { tab.sels.last().map_or(p, |s| s.anchor) } else { p };
+                                let anchor = if mods.shift { tab.sels.last().map_or((p, v), |s| (s.anchor, 0)) } else { (p, v) };
                                 tab.box_anchor = Some(anchor);
-                                tab.sels = buf_ref.box_sels(anchor, p);
+                                tab.sels = buf_ref.box_sels(anchor, (p, v));
                                 tab.drag_anchor = None;
                             } else if mods.shift && let Some(s) = tab.sels.last_mut() {
                                 s.head = p;
                                 s.goal = None;
+                                s.virt = v;
                                 tab.drag_anchor = Some(s.anchor);
                             } else {
-                                tab.sels = vec![Sel::caret(p)];
+                                tab.sels = vec![Sel { virt: v, ..Sel::caret(p) }];
                                 tab.drag_anchor = Some(p);
                                 if follows_link {
                                     let line = buf_ref.line_of(p);
@@ -2789,14 +2810,15 @@ impl Editors {
                                 }
                             }
                         } else if resp.dragged_by(PointerButton::Primary) {
-                            let p = hit(&painter, pos);
+                            let (p, v) = vhit(&painter, pos);
                             if let Some(anchor) = tab.box_anchor {
-                                tab.sels = buf_ref.box_sels(anchor, p);
+                                tab.sels = buf_ref.box_sels(anchor, (p, v));
                             } else if let Some(anchor) = tab.drag_anchor
                                 && let Some(s) = tab.sels.iter_mut().find(|s| s.anchor == anchor)
                             {
                                 s.head = p;
                                 s.goal = None;
+                                s.virt = v;
                             }
                             touched = true;
                             if !clip.contains(pos) {
@@ -3023,6 +3045,8 @@ impl Editors {
                             }
                             if s.end() > start + len {
                                 painter.rect_filled(Rect::from_min_size(at(len), vec2(char_w * 0.6, line_h)), CornerRadius::same(2), theme.selection);
+                            } else if s.virt > 0 && s.head == start + len {
+                                painter.rect_filled(Rect::from_min_size(at(len), vec2(char_w * s.virt as f32, line_h)), CornerRadius::same(2), theme.selection);
                             }
                         }
                         if let Some((at_sel, needle)) = &same {
@@ -3165,7 +3189,7 @@ impl Editors {
                             }
                         }
                         for (i, s) in tab.sels.iter().enumerate().filter(|(_, s)| s.head >= start && s.head <= start + len) {
-                            targets[i] = Some(at(s.head - start));
+                            targets[i] = Some(at(s.head - start) + vec2(s.virt as f32 * char_w, 0.0));
                         }
                         let within = |pos: usize| pos >= start && pos <= start + len;
                         if let Some(head) = tab.sels.first().map(|s| s.head).filter(|head| within(*head)) {
