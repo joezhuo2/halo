@@ -48,11 +48,16 @@ pub struct Timeline {
     rx: Option<Receiver<(Loaded, bool)>>,
     more: bool,
     delete: Option<PathBuf>,
+    range: Option<(PathBuf, usize, usize)>,
 }
 
-fn fetch(dir: &Path, name: &str, skip: usize, count: usize) -> Result<Vec<Entry>, String> {
+fn fetch(dir: &Path, name: &str, lines: Option<(usize, usize)>, skip: usize, count: usize) -> Result<Vec<Entry>, String> {
     let (skip, n) = (format!("--skip={skip}"), count.to_string());
-    crate::git::exec(dir, &["log", "--follow", "--name-only", &skip, "-n", &n, FORMAT, "--", name]).map(|text| parse(&text))
+    match lines {
+        Some((a, b)) => crate::git::exec(dir, &["log", &format!("-L{a},{b}:{name}"), &skip, "-n", &n, FORMAT]),
+        None => crate::git::exec(dir, &["log", "--follow", "--name-only", &skip, "-n", &n, FORMAT, "--", name]),
+    }
+    .map(|text| parse(&text))
 }
 
 pub fn parse(text: &str) -> Vec<Entry> {
@@ -67,7 +72,10 @@ pub fn parse(text: &str) -> Vec<Entry> {
                 date: field.next()?,
                 time: field.next()?.parse().ok()?,
                 subject: field.next()?,
-                name: rest.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().to_owned(),
+                name: match rest.lines().find_map(|line| line.trim_end().strip_prefix("+++ b/")) {
+                    Some(name) => name.to_owned(),
+                    None => rest.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().to_owned(),
+                },
             })
         })
         .collect()
@@ -85,18 +93,26 @@ impl Timeline {
         self.loaded = false;
     }
 
+    pub fn show_lines(&mut self, path: PathBuf, first: usize, last: usize) {
+        (self.range, self.loaded) = (Some((path, first, last)), false);
+    }
+
+    fn lines(&self) -> Option<(usize, usize)> {
+        self.range.as_ref().map(|r| (r.1, r.2))
+    }
+
     fn load(&mut self, path: Option<&Path>, ctx: &egui::Context, delete: Option<PathBuf>) {
         (self.loaded, self.path, self.entries, self.rx, self.more) = (true, path.map(Path::to_path_buf), Some((None, vec![])), None, false);
         let Some((file, dir, name)) = path.and_then(|p| Some((p.to_path_buf(), p.parent()?.to_path_buf(), p.file_name()?.to_string_lossy().into_owned()))) else { return };
         let (tx, rx) = channel();
         (self.entries, self.rx) = (None, Some(rx));
-        let ctx = ctx.clone();
+        let (ctx, lines) = (ctx.clone(), self.lines());
         std::thread::spawn(move || {
             if let Some(Err(e)) = delete.map(std::fs::remove_file) {
                 ui::notify(format!("Could not delete the saved version: {e}"));
             }
-            let log = fetch(&dir, &name, 0, FIRST);
-            let saves = history::snapshots(&file).unwrap_or_default();
+            let log = fetch(&dir, &name, lines, 0, FIRST);
+            let saves = if lines.is_some() { vec![] } else { history::snapshots(&file).unwrap_or_default() };
             let more = log.as_ref().is_ok_and(|log| log.len() >= FIRST);
             let repo = log.is_ok().then_some(dir);
             let _ = tx.send(((repo, merge(log.unwrap_or_default(), saves)), more));
@@ -110,9 +126,9 @@ impl Timeline {
         let (dir, skip) = (dir.clone(), items.iter().filter(|item| matches!(item, Item::Commit(_))).count());
         let (tx, rx) = channel();
         self.rx = Some(rx);
-        let ctx = ctx.clone();
+        let (ctx, lines) = (ctx.clone(), self.lines());
         std::thread::spawn(move || {
-            let log = fetch(&dir, &name, skip, PAGE).unwrap_or_default();
+            let log = fetch(&dir, &name, lines, skip, PAGE).unwrap_or_default();
             let more = log.len() >= PAGE;
             let _ = tx.send(((Some(dir), log.into_iter().map(Item::Commit).collect()), more));
             ctx.request_repaint();
@@ -139,8 +155,20 @@ impl Timeline {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         let rect = ui::section(ui, theme, "TIMELINE", open).on_hover_text("Commits and saved versions of the active file").rect;
         self.confirm(ui, theme, active);
+        if self.range.as_ref().is_some_and(|r| Some(r.0.as_path()) != active) {
+            (self.range, self.loaded) = (None, false);
+        }
         if ui.available_height() < 1.0 {
             return;
+        }
+        if let Some((_, first, last)) = self.range.clone().filter(|_| *open) {
+            let label = if first == last { format!("Line {first}") } else { format!("Lines {first}-{last}") };
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
+            ui.painter().text(pos2(r.left() + 20.0, r.center().y), egui::Align2::LEFT_CENTER, format!("{label} of the file"), FontId::proportional(11.5), theme.text_dim);
+            let mut child = ui.new_child(UiBuilder::new().max_rect(Rect::from_center_size(pos2(r.right() - 14.0, r.center().y), Vec2::splat(20.0))));
+            if ui::icon_button(&mut child, theme, icons::X, 18.0, false, "Show the whole file").clicked() {
+                (self.range, self.loaded) = (None, false);
+            }
         }
         if *open {
             let mut child = ui.new_child(UiBuilder::new().max_rect(Rect::from_center_size(pos2(rect.right() - 14.0, rect.center().y), Vec2::splat(20.0))));
@@ -156,7 +184,8 @@ impl Timeline {
         let Some((repo, _)) = &self.entries else { return ui::skeleton(ui, theme, 4) };
         let items = self.shown();
         if items.is_empty() {
-            return note(ui, theme, if repo.is_some() { "No commits changed this file yet." } else { "This file is not in a Git repository." });
+            let empty = if self.range.is_some() { "No commits changed these lines." } else { "No commits changed this file yet." };
+            return note(ui, theme, if repo.is_some() { empty } else { "This file is not in a Git repository." });
         }
         let name = history::name(file);
         let mut delete = None;
@@ -318,11 +347,31 @@ mod tests {
             git(&["commit", "-q", "-m", &format!("c{n}")]);
         }
         let subjects = |log: Vec<Entry>| log.into_iter().map(|e| e.subject).collect::<Vec<_>>();
-        let first = subjects(fetch(&dir, "a.txt", 0, FIRST).unwrap());
+        let first = subjects(fetch(&dir, "a.txt", None, 0, FIRST).unwrap());
         assert_eq!(first, (15..25).rev().map(|n| format!("c{n}")).collect::<Vec<_>>());
-        let next = subjects(fetch(&dir, "a.txt", FIRST, PAGE).unwrap());
+        let next = subjects(fetch(&dir, "a.txt", None, FIRST, PAGE).unwrap());
         assert_eq!(next, (0..15).rev().map(|n| format!("c{n}")).collect::<Vec<_>>());
         assert!(next.len() < PAGE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn line_history_lists_only_commits_that_touched_the_range() {
+        let dir = std::env::temp_dir().join(format!("halo-timeline-lines-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| crate::git::exec(&dir, args).unwrap();
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        for (text, message) in [("a\nb\nc\n", "add"), ("A\nb\nc\n", "first line"), ("A\nb\nC\n", "last line")] {
+            std::fs::write(dir.join("a.txt"), text).unwrap();
+            git(&["add", "a.txt"]);
+            git(&["commit", "-q", "-m", message]);
+        }
+        let log = fetch(&dir, "a.txt", Some((3, 3)), 0, FIRST).unwrap();
+        assert_eq!(log.iter().map(|e| e.subject.as_str()).collect::<Vec<_>>(), ["last line", "add"]);
+        assert_eq!(log[0].name, "a.txt");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

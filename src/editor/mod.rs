@@ -1412,6 +1412,15 @@ impl Editors {
         self.active = 0;
     }
 
+    pub fn selected_lines(&self) -> Option<(PathBuf, usize, usize)> {
+        let (g, t) = self.active_tab()?;
+        let tab = &self.groups[g].tabs[t];
+        let doc = self.docs.get(&tab.doc).filter(|d| d.content.is_text())?;
+        let sel = tab.sels.first()?;
+        let last = if sel.end() > sel.start() && doc.buf.line_start(doc.buf.line_of(sel.end())) == sel.end() { sel.end() - 1 } else { sel.end() };
+        Some((doc.buf.path.clone()?, doc.buf.line_of(sel.start()) + 1, doc.buf.line_of(last) + 1))
+    }
+
     pub fn active_path(&self) -> Option<PathBuf> {
         let (g, t) = self.active_tab()?;
         self.docs.get(&self.groups[g].tabs[t].doc)?.buf.path.clone()

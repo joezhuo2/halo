@@ -283,6 +283,9 @@ file extension.
 - **Timeline:** the section under the outline lists the commits that changed
   the active file and the versions kept each time you saved it (**local
   history**). Click one to open its diff; a saved version can be restored.
+  The file history follows renames. **Git: Show History of Selected Lines**
+  narrows it to the commits that changed the selected lines (`git log -L`),
+  so you can see who changed a block and when, even after it moved.
 - **Semantic highlighting**, **inlay hints** for inferred types and parameter
   names, and **call** (`Shift+Alt+H`) and **type hierarchy** in the peek list.
 - Server messages go to the **Output** panel, and the status bar shows what

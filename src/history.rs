@@ -365,6 +365,15 @@ impl Halo {
                 self.settings.save();
                 Ok(())
             }
+            ShowLineHistory => match self.editors.selected_lines() {
+                Some((path, first, last)) => {
+                    self.timeline.show_lines(path, first, last);
+                    self.session.timeline = true;
+                    self.reveal(crate::workbench::View::Timeline);
+                    Ok(())
+                }
+                None => Err("Open a saved file to see the history of its lines."),
+            },
             OpenLineChanges => match self.editors.blame_item(ctx) {
                 Some((_, _, Some(diff))) => {
                     self.cmds.push(diff);
