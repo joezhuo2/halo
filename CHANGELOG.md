@@ -6,6 +6,28 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-11-23
+
+Checked with unit tests. Not yet looked at on screen: the Open Editors tree,
+the hidden tab strip and the run configuration form.
+
+### Added
+
+- **Scratch files:** Scratch: New Scratch File... creates `scratch-N.<ext>`
+  for the chosen language in a per-folder directory under Halo's settings
+  folder, outside the project and git; Scratch: Open Scratch File... lists
+  them newest first.
+- **Vertical tabs:** Open Editors can group open files by folder (header
+  button, View: Toggle Open Editors Tree or the Open Editors Tree setting),
+  and the Show Tabs setting (`workbench.editor.showTabs`) hides the tab
+  strip above editor groups.
+- **Run configurations in a form:** Debug: Edit Configuration in a Form...
+  and Tasks: Edit Task in a Form... edit name, type, request, program,
+  arguments and folder of a launch configuration, or label, type, command,
+  arguments and group of a task, and write them back to `launch.json` or
+  `tasks.json`. Properties the form does not show are kept; comments are
+  dropped when the file is rewritten.
+
 ## [0.1.16] - 2026-11-23
 
 Checked with unit tests. Not yet looked at on screen: the title bar tint and
@@ -702,7 +724,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/joezhuo2/halo/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/joezhuo2/halo/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/joezhuo2/halo/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/joezhuo2/halo/compare/v0.1.13...v0.1.14
