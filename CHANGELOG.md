@@ -6,6 +6,45 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-11-24
+
+Checked with unit tests and a start-up smoke test. Not yet looked at on
+screen: the log viewer, hex editor, table view, the profile and trust
+dialogs. Settings Sync was not run against a real gist.
+
+### Added
+
+- **Vim mode** (Toggle Vim Mode or Settings > Text Editor > Vim Mode, off by
+  default): normal, insert, visual and visual line modes, counts, motions
+  (`w b e W B E 0 ^ $ gg G f t F T ; , { } % n N * #`), operators
+  `d c y > <`, `x X D C s S Y p P r J ~ u .`, `/` and `?` search and `:w`,
+  `:q`, `:wq`, `:wa` and `:<line>`. The status bar shows the mode and a
+  block cursor marks normal mode.
+- **Log viewer for huge files:** files over 256 MB open in a viewer that
+  streams them from disk with a background line index, whole-file search
+  and Follow for growing logs. View: Open Active File in Log Viewer opens
+  smaller saved files the same way.
+- **Hex editor:** Open in Hex Editor on the binary file notice, or View:
+  Reopen Active File in Hex Editor, edits bytes in place (hex or text
+  column), with undo and `Ctrl+S`.
+- **CSV table view:** CSV: Toggle Table View shows delimited files as a
+  table with a fixed header; click a header to sort.
+- **Line history:** Git: Show History of Selected Lines narrows the
+  Timeline to the commits that changed the selection (`git log -L`).
+- **Profiles:** named sets of settings, keyboard shortcuts, snippets and
+  theme, with New, Switch and Delete commands and the active profile in the
+  status bar.
+- **Settings Sync:** upload settings and every profile to one secret GitHub
+  gist through `gh`, and download them on another machine with a backup of
+  the local files.
+- **Workspace Trust:** untrusted folders open in Restricted Mode, without
+  their workspace settings, tasks or launch configurations, until you trust
+  them. Folders in the recent list are trusted on upgrade.
+
+### Changed
+
+- Files over 256 MB open in the log viewer instead of a notice page.
+
 ## [0.1.17] - 2026-11-23
 
 Checked with unit tests. Not yet looked at on screen: the Open Editors tree,
@@ -724,7 +763,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.17...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.18...HEAD
+[0.1.18]: https://github.com/joezhuo2/halo/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/joezhuo2/halo/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/joezhuo2/halo/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/joezhuo2/halo/compare/v0.1.14...v0.1.15
