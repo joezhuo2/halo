@@ -228,6 +228,15 @@ language you want diagnostics and completion in. Each is optional.
   view as the file grows; a truncated or rotated file is read again. View:
   Open Active File in Log Viewer (or Log Viewer on the light mode bar)
   opens a smaller saved file the same way.
+- **Hex editor:** binary files offer Open in Hex Editor, and View: Reopen
+  Active File in Hex Editor opens any saved file as bytes (up to 256 MB).
+  Type hex digits to overwrite bytes, or click the text column (or press
+  `Tab`) to type characters; edited bytes are colored, `Ctrl+Z` undoes and
+  `Ctrl+S` writes the file.
+- **CSV table view:** CSV: Toggle Table View shows a `.csv`, `.tsv` or other
+  delimited file as a table with a fixed header row (the delimiter is
+  detected from the first line, and quoted fields may hold delimiters and
+  line breaks). Click a column header to sort, numbers by value.
 - **Auto save** (off by default): after a delay, on focus change or on window
   change. Saving can trim trailing whitespace and add a final newline.
 - **Hot exit:** unsaved and untitled files come back the next time Halo

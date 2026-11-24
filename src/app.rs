@@ -509,6 +509,14 @@ impl Halo {
                 self.settings.column_selection ^= true;
                 self.settings.save();
             }
+            ReopenInHexEditor => {
+                if !self.editors.hex_active() {
+                    ui::notify("Save the file first: the hex editor reads the file from disk.".to_owned());
+                }
+            }
+            ToggleTableView => {
+                self.editors.toggle_table();
+            }
             OpenInLogViewer => {
                 if !self.editors.stream_active(ctx) {
                     ui::notify("Save the file first: the log viewer reads the file from disk.".to_owned());
@@ -856,7 +864,7 @@ impl Halo {
             let v = i.viewport();
             (v.close_requested(), v.focused.unwrap_or(true))
         });
-        if close_requested && self.settings.hot_exit && !crate::windows::secondary() {
+        if close_requested && self.settings.hot_exit && !crate::windows::secondary() && !self.editors.hex_dirty() {
             self.save_session();
         } else if close_requested && !self.exiting && self.editors.any_dirty() {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);

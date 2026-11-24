@@ -2,6 +2,7 @@ use super::buffer::{Document, HUGE, Sel};
 use super::highlight::Highlighter;
 use super::image_view::{self, ImageView};
 use super::stream_view::StreamView;
+use super::hex_view::HexView;
 use super::intel::from_lsp;
 use super::{Doc, Editors, Tab};
 use crate::settings::Settings;
@@ -23,6 +24,7 @@ pub enum Content {
     Loading { rx: Receiver<Loaded>, at: Option<Place> },
     Binary,
     Stream(Box<StreamView>),
+    Hex(Box<HexView>),
     Image(Box<ImageView>),
 }
 
@@ -78,15 +80,22 @@ fn stream(doc: &mut Doc, ctx: &egui::Context) -> bool {
     true
 }
 
-fn notice_page(ui: &mut Ui, theme: &Theme, rect: Rect, text: &str, button: &str) -> bool {
+fn notice_page(ui: &mut Ui, theme: &Theme, rect: Rect, text: &str, buttons: &[&str]) -> Option<usize> {
     ui.painter().rect_filled(rect, CornerRadius::ZERO, theme.bg);
-    let mut clicked = false;
+    let mut clicked = None;
     let area = Rect::from_center_size(rect.center(), vec2(rect.width().min(520.0), 140.0));
     ui.scope_builder(UiBuilder::new().max_rect(area), |ui| {
         ui.vertical_centered(|ui| {
             ui.label(RichText::new(text).color(theme.text_dim));
             ui.add_space(12.0);
-            clicked = ui.button(button).clicked();
+            ui.horizontal(|ui| {
+                ui.add_space((ui.available_width() - buttons.iter().map(|b| b.len() as f32 * 7.5 + 24.0).sum::<f32>()).max(0.0) / 2.0);
+                for (i, button) in buttons.iter().enumerate() {
+                    if ui.button(*button).clicked() {
+                        clicked = Some(i);
+                    }
+                }
+            });
         });
     });
     clicked
@@ -207,6 +216,10 @@ impl Editors {
             self.previews.extend(out.into_iter().map(|out| (g, tab.doc, out)));
             return true;
         }
+        if let (Some(table), Content::Text) = (tab.table.as_mut(), &doc.content) {
+            table.ui(ui, theme, *body, &doc.buf, settings.font_size);
+            return true;
+        }
         let force = |doc: &mut Doc| {
             if let Some(path) = doc.buf.path.clone() {
                 doc.content = Content::Loading { rx: spawn(path, true), at: None };
@@ -248,7 +261,15 @@ impl Editors {
             }
             Content::Binary => {
                 let text = "The file is not displayed in the text editor because it is either binary or uses an unsupported text encoding.";
-                if notice_page(ui, theme, *body, text, "Open Anyway") {
+                match notice_page(ui, theme, *body, text, &["Open Anyway", "Open in Hex Editor"]) {
+                    Some(0) => force(doc),
+                    Some(_) => doc.content = Content::Hex(Box::new(HexView::open(doc.buf.path.clone().unwrap_or_default()))),
+                    None => {}
+                }
+                true
+            }
+            Content::Hex(view) => {
+                if view.ui(ui, theme, *body, settings.font_size) {
                     force(doc);
                 }
                 true
@@ -269,6 +290,29 @@ impl Editors {
     pub fn stream_active(&mut self, ctx: &egui::Context) -> bool {
         let Some((g, t)) = self.active_tab() else { return false };
         self.docs.get_mut(&self.groups[g].tabs[t].doc).is_some_and(|doc| stream(doc, ctx))
+    }
+
+    pub fn hex_active(&mut self) -> bool {
+        let Some((g, t)) = self.active_tab() else { return false };
+        let Some(doc) = self.docs.get_mut(&self.groups[g].tabs[t].doc) else { return false };
+        let Some(path) = doc.buf.path.clone().filter(|_| !doc.buf.is_dirty()) else { return false };
+        let mut buf = Document::from_text("", doc.buf.title.clone());
+        (buf.path, buf.read_only) = (Some(path.clone()), true);
+        (doc.buf, doc.content) = (buf, Content::Hex(Box::new(HexView::open(path))));
+        doc.hl = Highlighter::new(None, &doc.buf.rope);
+        self.groups[g].tabs[t].table = None;
+        true
+    }
+
+    pub fn toggle_table(&mut self) -> bool {
+        let Some((g, t)) = self.active_tab() else { return false };
+        let tab = &mut self.groups[g].tabs[t];
+        tab.table = match tab.table.take() {
+            Some(_) => None,
+            None => Some(Box::default()),
+        };
+        self.want_focus = tab.table.is_none();
+        true
     }
 
     pub fn image_status(&self) -> Option<String> {

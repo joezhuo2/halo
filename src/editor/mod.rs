@@ -11,6 +11,7 @@ mod emmet;
 mod folding;
 mod grid;
 mod highlight;
+mod hex_view;
 mod image_view;
 mod intel;
 mod jump;
@@ -27,6 +28,7 @@ pub use open_tabs::OpenTab;
 mod review;
 mod search_editor;
 mod stream_view;
+mod table_view;
 mod snippet;
 mod linked;
 mod typography;
@@ -102,6 +104,12 @@ struct Doc {
     top: usize,
 }
 
+impl Doc {
+    fn dirty(&self) -> bool {
+        self.buf.is_dirty() || matches!(&self.content, load::Content::Hex(hex) if hex.dirty)
+    }
+}
+
 #[derive(Default)]
 struct Tab {
     doc: u64,
@@ -126,6 +134,7 @@ struct Tab {
     diff: Option<Box<diff_view::DiffTab>>,
     merge: Option<Box<merge_view::MergeTab>>,
     md: Option<Box<markdown::MdTab>>,
+    table: Option<Box<table_view::TableView>>,
     zone: Option<usize>,
 }
 
@@ -814,7 +823,7 @@ impl Editors {
         let preview = preview && self.config.enable_preview;
         self.avoid_locked();
         let group = &mut self.groups[self.active];
-        let clean = |tab: &Tab| tab.preview && !self.docs.get(&tab.doc).is_some_and(|d| d.buf.is_dirty());
+        let clean = |tab: &Tab| tab.preview && !self.docs.get(&tab.doc).is_some_and(Doc::dirty);
         let Some(at) = group.tabs.iter().position(clean).filter(|_| preview) else {
             self.add_tab(id, vec![Sel::caret(0)]);
             self.groups[self.active].tabs.last_mut().into_iter().for_each(|tab| tab.preview = preview);
@@ -994,7 +1003,7 @@ impl Editors {
 
     fn request_close(&mut self, g: usize, t: usize) {
         let Some(doc) = self.groups.get(g).and_then(|group| group.tabs.get(t)).map(|tab| tab.doc) else { return };
-        let dirty = self.docs.get(&doc).is_some_and(|d| d.buf.is_dirty());
+        let dirty = self.docs.get(&doc).is_some_and(Doc::dirty);
         if dirty && self.references(doc) == 1 {
             self.closing = Some((g, t));
         } else {
@@ -1003,6 +1012,15 @@ impl Editors {
     }
 
     fn save_doc(&mut self, id: u64, ask: bool) -> bool {
+        if let Some(load::Content::Hex(hex)) = self.docs.get_mut(&id).map(|d| &mut d.content) {
+            return match hex.save() {
+                Ok(()) => true,
+                Err(error) => {
+                    self.banner = Some((error, None));
+                    false
+                }
+            };
+        }
         let Some(doc) = self.docs.get_mut(&id).filter(|d| d.content.is_text()) else { return false };
         if doc.buf.path.is_none() || ask {
             let mut dialog = rfd::FileDialog::new().set_file_name(search_editor::file_name(&doc.buf).unwrap_or_else(|| doc.buf.title.clone()));
@@ -1085,7 +1103,7 @@ impl Editors {
                 return true;
             }
             SaveAll => {
-                let ids: Vec<u64> = self.docs.iter().filter(|(_, d)| d.buf.is_dirty() && d.buf.path.is_some()).map(|(id, _)| *id).collect();
+                let ids: Vec<u64> = self.docs.iter().filter(|(_, d)| d.dirty() && d.buf.path.is_some()).map(|(id, _)| *id).collect();
                 for id in ids {
                     self.save_doc(id, false);
                 }
@@ -1649,12 +1667,19 @@ impl Editors {
     }
 
     pub fn any_dirty(&self) -> bool {
-        self.docs.values().any(|d| d.buf.is_dirty())
+        self.docs.values().any(Doc::dirty)
+    }
+
+    pub fn hex_dirty(&self) -> bool {
+        self.docs.values().any(|d| d.dirty() && !d.buf.is_dirty())
     }
 
     pub fn discard_all(&mut self) {
         for doc in self.docs.values_mut() {
             doc.buf.mark_clean();
+            if let load::Content::Hex(hex) = &mut doc.content {
+                hex.dirty = false;
+            }
         }
     }
 
@@ -1852,7 +1877,7 @@ impl Editors {
                         _ if tab.md.is_some() => format!("Preview {}", doc.buf.title),
                         _ => doc.buf.title.clone(),
                     };
-                    (title, doc.buf.is_dirty() && tab.md.is_none())
+                    (title, doc.dirty() && tab.md.is_none())
                 }
                 _ => (String::new(), false),
             };
@@ -2096,7 +2121,7 @@ impl Editors {
                         continue;
                     }
                     let doc = self.groups[g].tabs[t].doc;
-                    if !self.docs.get(&doc).is_some_and(|d| d.buf.is_dirty()) || self.references(doc) > 1 {
+                    if !self.docs.get(&doc).is_some_and(Doc::dirty) || self.references(doc) > 1 {
                         self.close_tab(g, t);
                     }
                 }
@@ -2107,7 +2132,7 @@ impl Editors {
                         continue;
                     }
                     let doc = self.groups[g].tabs[t].doc;
-                    if !self.docs.get(&doc).is_some_and(|d| d.buf.is_dirty()) || self.references(doc) > 1 {
+                    if !self.docs.get(&doc).is_some_and(Doc::dirty) || self.references(doc) > 1 {
                         self.close_tab(g, t);
                     }
                 }
