@@ -732,6 +732,7 @@ fn initialize(id: u64, root: &Path, folders: &[(PathBuf, String)]) -> Value {
         "configuration": true,
         "workspaceFolders": true,
         "workspaceEdit": {"documentChanges": false},
+        "fileOperations": {"willRename": true, "didRename": true},
         "symbol": {},
         "executeCommand": {},
     });
@@ -1068,6 +1069,24 @@ impl Lsp {
             ids.push(self.next_id);
         }
         ids
+    }
+
+    pub fn will_rename(&mut self, old: &Path, new: &Path) -> Vec<u64> {
+        let files = json!({"files": [{"oldUri": uri(old), "newUri": uri(new)}]});
+        let mut ids = vec![];
+        for server in self.servers.iter_mut().filter(|s| s.ready && !s.caps["workspace"]["fileOperations"]["willRename"].is_null()) {
+            self.next_id += 1;
+            server.send(json!({"jsonrpc": "2.0", "id": self.next_id, "method": "workspace/willRenameFiles", "params": files}));
+            ids.push(self.next_id);
+        }
+        ids
+    }
+
+    pub fn did_rename(&mut self, old: &Path, new: &Path) {
+        let files = json!({"files": [{"oldUri": uri(old), "newUri": uri(new)}]});
+        for server in self.servers.iter_mut().filter(|s| s.ready && !s.caps["workspace"]["fileOperations"]["didRename"].is_null()) {
+            server.notify("workspace/didRenameFiles", files.clone());
+        }
     }
 
     pub fn take(&mut self, id: u64) -> Option<Option<Value>> {

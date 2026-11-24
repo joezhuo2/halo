@@ -1715,6 +1715,12 @@ impl Editors {
     pub fn path_changed(&mut self, old: &Path, new: Option<&Path>) {
         self.links.stale();
         self.bookmarks.path_changed(old, new);
+        if let Some(new) = new {
+            for id in self.lsp.will_rename(old, new) {
+                self.intel.wants.push((id, intel::Want::FileRename { old: old.to_path_buf(), new: new.to_path_buf() }));
+            }
+            self.lsp.did_rename(old, new);
+        }
         let affected: Vec<u64> = self
             .docs
             .iter()

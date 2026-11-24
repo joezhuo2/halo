@@ -379,6 +379,7 @@ pub(super) enum Want {
     Locations { doc: u64, pos: usize, title: &'static str, peek: bool },
     Lens { doc: u64, generation: u64, symbol: usize, impls: bool },
     Rename,
+    FileRename { old: PathBuf, new: PathBuf },
     Actions { doc: u64, apply: bool },
     Format { doc: u64, version: u64, save: bool },
     Symbols { doc: u64, version: u64 },
@@ -811,6 +812,18 @@ impl Editors {
                         self.jump(&path, start, true);
                     }
                     _ => self.open_peek(doc, pos, title, found, None),
+                }
+            }
+            Want::FileRename { old, new } => {
+                let moved = |path: PathBuf| match path.strip_prefix(&old) {
+                    Ok(rest) if rest.as_os_str().is_empty() => new.clone(),
+                    Ok(rest) => new.join(rest),
+                    Err(_) => path,
+                };
+                let changes: Vec<_> = lsp::workspace_edit(&value).into_iter().map(|(path, edits)| (moved(path), edits)).collect();
+                if !changes.is_empty() {
+                    ui::notify_info(format!("Updated imports in {} files after the rename. Review and save them.", changes.len()));
+                    self.apply_workspace_edit(changes);
                 }
             }
             Want::Rename => match lsp::workspace_edit(&value) {
