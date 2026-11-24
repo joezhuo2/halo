@@ -165,7 +165,13 @@ language you want diagnostics and completion in. Each is optional.
   through changes. Stage, unstage or revert a single hunk or the selected
   lines. Click a change mark in the gutter to peek at the change. `F7` and
   `Shift+F7` open the **accessible diff viewer**, which lists one change at
-  a time, line by line, for screen readers.
+  a time, line by line, for screen readers. Unchanged runs longer than a few
+  lines are collapsed; click the caret in the gutter to show one, or use
+  the toolbar button (Diff: Toggle Collapse Unchanged Regions) for all.
+- **Multi-file diff:** Git: Open All Changes, Open All Changes on a commit in
+  the graph, and Show Stash Changes list every changed file in one scrolling
+  view. Collapse a file by its header, open its full diff or the file, or
+  double-click a line to jump to it.
 - **Compare** the active file with another file, the clipboard or its saved
   version. **Compare Folders...** diffs two directories and lists the
   changed and one-sided files; pick one to open its diff.
@@ -242,6 +248,9 @@ language you want diagnostics and completion in. Each is optional.
 - **Hot exit:** unsaved and untitled files come back the next time Halo
   opens. When a file you changed also changes on disk, a bar offers Compare,
   Use Disk Version and Overwrite.
+- **Process Explorer** (Developer: Open Process Explorer): CPU and memory of
+  Halo and every process it started (language servers, terminals, debug
+  adapters, AI CLIs) as a tree, with a button to stop each one.
 - **Auto update** (on by default): when Halo opens it looks for a newer
   release, checks its SHA-256, installs it in the background and uses it the
   next time Halo opens. It needs `curl` on `PATH`.
@@ -273,7 +282,10 @@ file extension.
   terminal, or Debug to debug a single test.
 - **Rename Symbol** (`F2`) across files, **Quick Fix** and refactorings
   (`Ctrl+.`, or the lightbulb in the gutter when the line has some), and
-  **Organize Imports** (`Shift+Alt+O`).
+  **Organize Imports** (`Shift+Alt+O`). Renaming or moving a file in the
+  Explorer asks the language server for the import updates
+  (`workspace/willRenameFiles`) and applies them to the files that need it,
+  unsaved, for you to review.
 - **Format Document** (`Shift+Alt+F`) and **Format Selection**
   (`Ctrl+K Ctrl+F`), with optional format on save, on paste and on type.
 - **Symbols:** `Ctrl+T` searches the workspace, the **Outline** section under
@@ -345,6 +357,10 @@ Each of these can be switched off under **Settings > Text Editor**.
   request changes and comment. Review in Diff shows review threads on their
   lines, where you can comment, reply and resolve.
 - **Accounts:** list and switch the GitHub accounts `gh` is signed in to.
+- **Open a GitHub repository without cloning** (GitHub: Open Repository
+  Without Cloning...): type `owner/name`, `owner/name@branch` or a GitHub
+  URL to browse its files read-only. Files load through `gh` when you open
+  them.
 - Repositories nested inside the open folder are listed and can be selected.
 
 ### Terminal
