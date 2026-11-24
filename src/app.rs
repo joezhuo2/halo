@@ -225,6 +225,7 @@ impl Halo {
         }
         crate::debug::store(&mut self.session, &self.editors.marks);
         self.editors.bookmarks.store(&mut self.session.bookmarks);
+        self.editors.layouts.store(&mut self.session.layouts);
         if let Some(remembered) = workspace.file.clone().or_else(|| folder.clone().filter(|_| !workspace.is_multi())) {
             self.session.remember(&remembered);
         }
@@ -244,6 +245,7 @@ impl Halo {
         self.session.workspace = workspace;
         crate::debug::restore(&self.session, &mut self.editors.marks);
         self.editors.bookmarks.restore(&self.session.bookmarks, self.session.folder.clone());
+        self.editors.layouts.restore(&self.session.layouts, self.session.folder.clone());
         self.session.save();
     }
 
@@ -326,6 +328,7 @@ impl Halo {
         }
         crate::debug::store(&mut self.session, &self.editors.marks);
         self.editors.bookmarks.store(&mut self.session.bookmarks);
+        self.editors.layouts.store(&mut self.session.layouts);
         self.session.save();
         crate::terminal_restore::save(&self.bottom, &self.editors, &self.settings, self.session.folder.as_deref());
     }
@@ -544,6 +547,30 @@ impl Halo {
             ListBookmarks => match self.editors.bookmarks.choices() {
                 items if items.is_empty() => ui::notify_info("There are no bookmarks yet."),
                 items => self.search.pick("Select a bookmark", items),
+            },
+            ShowTodos => {
+                self.reveal(View::Search);
+                self.find.search_for(crate::find::Query { text: r"(?:TODO|FIXME|HACK|XXX|BUG)".into(), case: true, regex: true, ..Default::default() });
+            }
+            SetWindowColor => {
+                let colors = crate::titlebar::WINDOW_COLORS.iter().map(|(hex, name)| (name.to_string(), hex.to_string(), SetWindowColorTo(hex.to_string())));
+                self.search.pick("Select a title bar color for this folder", colors.collect());
+            }
+            SetWindowColorTo(hex) => {
+                let value = (!hex.is_empty()).then(|| serde_json::json!(hex));
+                crate::layers::write(crate::layers::Layer::Workspace, None, &[("window_color".to_owned(), value)]);
+                self.settings = Settings::load();
+                self.apply_settings(ctx);
+            }
+            SwitchLayout | DeleteLayout => match self.editors.layouts.names() {
+                names if names.is_empty() => ui::notify_info("No layouts are saved for this folder yet. Use Layouts: Save Open Editors As... first."),
+                names => {
+                    let (hint, pick): (&str, fn(String) -> Command) = match cmd {
+                        SwitchLayout => ("Select a layout to switch to", OpenLayout),
+                        _ => ("Select a layout to delete", RemoveLayout),
+                    };
+                    self.search.pick(hint, names.into_iter().map(|name| (name.clone(), String::new(), pick(name))).collect());
+                }
             },
             PasteFromHistory => {
                 let item = |text: String| {

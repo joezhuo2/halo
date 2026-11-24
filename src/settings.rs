@@ -92,6 +92,7 @@ pub struct Settings {
     pub cursor_surrounding_lines: usize,
     pub peek_context_lines: usize,
     pub mouse_wheel_zoom: bool,
+    pub window_color: String,
     pub multi_cursor_modifier: String,
     pub column_selection: bool,
     pub word_separators: String,
@@ -281,6 +282,7 @@ impl Default for Settings {
             cursor_surrounding_lines: 0,
             peek_context_lines: 7,
             mouse_wheel_zoom: false,
+            window_color: String::new(),
             multi_cursor_modifier: "alt".into(),
             column_selection: false,
             word_separators: WORD_SEPARATORS.into(),
@@ -517,6 +519,7 @@ pub struct Session {
     pub breakpoints: BTreeMap<PathBuf, BTreeMap<PathBuf, Vec<crate::debug::Breakpoint>>>,
     pub function_breakpoints: BTreeMap<PathBuf, Vec<crate::debug::FunctionBreakpoint>>,
     pub bookmarks: BTreeMap<PathBuf, crate::editor::bookmarks::Files>,
+    pub layouts: crate::editor::layouts::Saved,
     pub layout: crate::workbench::Workbench,
 }
 
@@ -541,6 +544,7 @@ impl Default for Session {
             breakpoints: BTreeMap::new(),
             function_breakpoints: BTreeMap::new(),
             bookmarks: BTreeMap::new(),
+            layouts: BTreeMap::new(),
             layout: Default::default(),
         }
     }

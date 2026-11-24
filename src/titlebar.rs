@@ -9,14 +9,27 @@ use eframe::egui::{
 
 const HEIGHT: f32 = 36.0;
 const NATIVE_BUTTONS: bool = cfg!(target_os = "macos");
+pub const WINDOW_COLORS: &[(&str, &str)] = &[
+    ("", "None"),
+    ("#dd0531", "Red"),
+    ("#ff3d00", "Orange"),
+    ("#f9e64f", "Yellow"),
+    ("#215732", "Green"),
+    ("#42b883", "Teal"),
+    ("#61dafb", "Cyan"),
+    ("#007fff", "Blue"),
+    ("#1857a4", "Navy"),
+    ("#832561", "Purple"),
+];
 
 impl Halo {
     pub(crate) fn titlebar(&mut self, ui: &mut Ui) {
         let theme = self.theme.clone();
+        let fill = crate::theme_import::color(&self.settings.window_color).map_or(theme.bar, |tint| ui::mix(theme.bar, tint, 0.45));
         Panel::top("titlebar")
             .exact_size(HEIGHT)
             .resizable(false)
-            .frame(Frame::new().fill(theme.bar))
+            .frame(Frame::new().fill(fill))
             .show(ui, |ui| {
                 let bar = ui.max_rect();
                 let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));

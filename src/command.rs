@@ -218,6 +218,17 @@ pub enum Command {
     ClearBookmarks,
     GoToBookmark(PathBuf, usize),
     JumpToVisible,
+    ShowTodos,
+    SetWindowColor,
+    SetWindowColorTo(String),
+    ZoomInEditor,
+    ZoomOutEditor,
+    ZoomResetEditor,
+    SaveLayout,
+    SwitchLayout,
+    DeleteLayout,
+    OpenLayout(String),
+    RemoveLayout(String),
     ReopenClosed,
     KeepEditor,
     NextChange,
@@ -678,6 +689,8 @@ fn defaults() -> Vec<Binding> {
         k(C, Key::V, PasteFromHistory),
         k(C, Key::R, ToggleMacroRecording),
         k(C, Key::P, PlayMacro),
+        k(C, Key::Equals, ZoomInEditor),
+        k(C, Key::Minus, ZoomOutEditor),
         g(Modifiers::ALT, Key::Enter, OpenSearchEditor),
         e(cs, Key::R, RerunSearchEditorSearch),
         e(Modifiers::ALT, Key::L, ToggleSearchEditorContextLines),
@@ -768,9 +781,10 @@ pub fn all() -> Vec<Command> {
         MarkdownPreview, MarkdownPreviewSide, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
         MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
         AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations,
+        SetWindowColor, ZoomInEditor, ZoomOutEditor, ZoomResetEditor, SaveLayout, SwitchLayout, DeleteLayout,
         GoToFile, ShowCommands, FindInFiles, NewSearchEditor, OpenSearchEditor, RerunSearchEditorSearch, ToggleSearchEditorContextLines,
         ToggleSearchEditorCaseSensitive, ToggleSearchEditorWholeWord, ToggleSearchEditorRegex, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation,
-        ToggleBookmark, LabelBookmark, NextBookmark, PrevBookmark, ListBookmarks, ClearBookmarks, JumpToVisible, ReopenClosed,
+        ToggleBookmark, LabelBookmark, NextBookmark, PrevBookmark, ListBookmarks, ClearBookmarks, JumpToVisible, ShowTodos, ReopenClosed,
         KeepEditor, NextChange, PrevChange, ShowNextChange, ShowPrevChange, AccessibleDiffViewerNext, AccessibleDiffViewerPrev, GoToDefinition, PeekDefinition, GoToDeclaration, GoToTypeDefinition, GoToImplementation, FindReferences,
         GoToWorkspaceSymbol, ShowCallHierarchy, ShowTypeHierarchy, CursorWordPartLeft, CursorWordPartRight,
         ShowHover, ShowColorPicker, TriggerSuggest, TriggerParameterHints, RestartLanguageServers,
@@ -988,10 +1002,12 @@ impl Command {
             | MoveEditorToMainWindow | ToggleFullScreen | ToggleZenMode | ToggleCenteredLayout
             | ToggleSidebarPosition | ToggleSecondarySidebar | MovePanelLeft | MovePanelRight | MovePanelBottom | MovePanelTop
             | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter | AlignPanelJustify | AlignPanelLeft | AlignPanelRight
-            | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations => "View",
+            | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations
+            | SetWindowColor | SetWindowColorTo(_) | ZoomInEditor | ZoomOutEditor | ZoomResetEditor | SaveLayout | SwitchLayout | DeleteLayout
+            | OpenLayout(_) | RemoveLayout(_) => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | CursorWordPartLeft | CursorWordPartRight | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
             | GoForward | GoToLastEditLocation | ToggleBookmark | LabelBookmark | NextBookmark | PrevBookmark | ListBookmarks | ClearBookmarks
-            | GoToBookmark(..) | JumpToVisible | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | AccessibleDiffViewerNext | AccessibleDiffViewerPrev | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
+            | GoToBookmark(..) | JumpToVisible | ShowTodos | ReopenClosed | KeepEditor | NextChange | PrevChange | ShowNextChange | ShowPrevChange | AccessibleDiffViewerNext | AccessibleDiffViewerPrev | GoToDefinition | PeekDefinition | GoToDeclaration | GoToTypeDefinition
             | GoToImplementation | FindReferences | GoToWorkspaceSymbol | ShowCallHierarchy | ShowTypeHierarchy => "Go",
             NewSearchEditor | OpenSearchEditor | RerunSearchEditorSearch | ToggleSearchEditorContextLines | ToggleSearchEditorCaseSensitive
             | ToggleSearchEditorWholeWord | ToggleSearchEditorRegex => "Go",
@@ -1230,6 +1246,17 @@ impl Command {
             ClearBookmarks => "Bookmarks: Clear All",
             GoToBookmark(..) => "Bookmarks: Jump",
             JumpToVisible => "Jump to Visible Word",
+            ShowTodos => "Search: Find TODO and FIXME Comments",
+            SetWindowColor => "Window: Set Color...",
+            SetWindowColorTo(_) => "Window: Set Color",
+            ZoomInEditor => "View: Zoom In Editor Group",
+            ZoomOutEditor => "View: Zoom Out Editor Group",
+            ZoomResetEditor => "View: Reset Editor Group Zoom",
+            SaveLayout => "Layouts: Save Open Editors As...",
+            SwitchLayout => "Layouts: Switch...",
+            DeleteLayout => "Layouts: Delete...",
+            OpenLayout(_) => "Layouts: Switch",
+            RemoveLayout(_) => "Layouts: Delete",
             ReopenClosed => "Reopen Closed Editor",
             KeepEditor => "Keep Editor Open",
             NextChange => "Go to Next Change",

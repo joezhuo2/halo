@@ -179,6 +179,19 @@ language you want diagnostics and completion in. Each is optional.
   copied or cut in an editor to paste it.
 - **Macros:** `Ctrl+K Ctrl+R` starts and stops recording keystrokes and
   commands (the status bar shows it), `Ctrl+K Ctrl+P` plays them back.
+- **TODO list:** Search: Find TODO and FIXME Comments lists every TODO,
+  FIXME, HACK, XXX and BUG in the workspace in the Search view, grouped by
+  file.
+- **Window color:** Window: Set Color... tints the title bar for the open
+  folder (saved in its `.vscode/settings.json` as `peacock.color`, so
+  colors set with the Peacock extension carry over).
+- **Editor group zoom:** `Ctrl+K Ctrl+=` and `Ctrl+K Ctrl+-` make the text of
+  the active editor group larger or smaller without zooming the window;
+  View: Reset Editor Group Zoom goes back.
+- **Named layouts:** Layouts: Save Open Editors As... keeps the open tabs
+  and splits under a name, Layouts: Switch... brings them back and
+  Layouts: Delete... forgets one. They are saved per folder; files with
+  unsaved changes stay open when you switch.
 - **Markdown preview** (`Ctrl+Shift+V`, or `Ctrl+K V` to the side) follows
   the source as you type and scroll. Tables size their columns to the
   content and code blocks have a copy button.

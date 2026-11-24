@@ -49,6 +49,7 @@ pub struct FindPanel {
     rx: Option<Receiver<Vec<FileHits>>>,
     confirm: Option<Option<usize>>,
     focused: Option<u64>,
+    go: bool,
 }
 
 fn glob(text: &str) -> Option<Regex> {
@@ -140,6 +141,11 @@ impl FindPanel {
         self.focus = true;
     }
 
+    pub fn search_for(&mut self, query: Query) {
+        self.query = query;
+        self.go = true;
+    }
+
     fn start(&mut self, roots: &[(PathBuf, String)], ctx: &egui::Context) {
         self.searched = self.query.clone();
         self.results.clear();
@@ -203,7 +209,7 @@ impl FindPanel {
             ui.label(RichText::new("   Open a folder to search in files.").color(theme.text_dim));
             return;
         }
-        let mut go = false;
+        let mut go = std::mem::take(&mut self.go);
         let body = ui.available_rect_before_wrap().shrink2(vec2(8.0, 6.0));
         ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
             ui.spacing_mut().item_spacing = vec2(2.0, 5.0);

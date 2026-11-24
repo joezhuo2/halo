@@ -1,5 +1,6 @@
 mod ai_inline;
 pub mod bookmarks;
+pub mod layouts;
 mod buffer;
 mod chat;
 mod clipboard;
@@ -133,6 +134,7 @@ struct Group {
     recent: Vec<u64>,
     used: bool,
     locked: bool,
+    zoom: i32,
 }
 
 #[derive(Default)]
@@ -298,6 +300,7 @@ pub struct Editors {
     pub lsp: Lsp,
     pub marks: crate::debug::Marks,
     pub bookmarks: bookmarks::Bookmarks,
+    pub layouts: layouts::Layouts,
     jump: Option<(u64, String, Vec<usize>)>,
     pub tests: crate::testing::Marks,
     root: Option<PathBuf>,
@@ -665,6 +668,7 @@ impl Editors {
             lsp: Lsp::default(),
             marks: Default::default(),
             bookmarks: Default::default(),
+            layouts: Default::default(),
             jump: None,
             tests: Default::default(),
             root: None,
@@ -1103,7 +1107,7 @@ impl Editors {
                 self.bookmarks.files.clear();
                 return true;
             }
-            _ if self.grid_exec(cmd) || self.search_exec(cmd, settings, ctx) => return true,
+            _ if self.grid_exec(cmd) || self.layout_exec(cmd) || self.search_exec(cmd, settings, ctx) => return true,
             _ if self.ai_exec(cmd, ctx) => return true,
             _ => {}
         }
@@ -1746,6 +1750,7 @@ impl Editors {
         }
         self.merge_dialog(ui.ctx());
         self.bookmark_dialog(ui);
+        self.layout_dialog(ui);
         self.close_empty_groups();
     }
 
@@ -2168,7 +2173,13 @@ impl Editors {
         doc: &mut Doc,
         tab: &mut Tab,
     ) {
-        let settings = settings.of(doc.buf.path.as_deref());
+        let zoomed;
+        let mut settings = settings.of(doc.buf.path.as_deref());
+        let zoom = self.groups[g].zoom;
+        if zoom != 0 {
+            zoomed = Settings { font_size: settings.font_size * 1.1f32.powi(zoom), ..settings.clone() };
+            settings = &zoomed;
+        }
         let ctx = ui.ctx().clone();
         let now = ui.input(|i| i.time);
         let doc_id = tab.doc;

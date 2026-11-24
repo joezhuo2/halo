@@ -76,6 +76,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("smooth_scrolling", "editor.smoothScrolling"),
     ("cursor_surrounding_lines", "editor.cursorSurroundingLines"),
     ("mouse_wheel_zoom", "editor.mouseWheelZoom"),
+    ("window_color", "peacock.color"),
     ("multi_cursor_modifier", "editor.multiCursorModifier"),
     ("column_selection", "editor.columnSelection"),
     ("word_separators", "editor.wordSeparators"),
