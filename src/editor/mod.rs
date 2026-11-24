@@ -761,6 +761,16 @@ impl Editors {
         (!group.tabs.is_empty()).then(|| (g, group.active.min(group.tabs.len() - 1)))
     }
 
+    pub fn undo_choices(&mut self) -> Vec<crate::search::Choice> {
+        let states = self.with_active(|buf, _| buf.undo_states()).unwrap_or_default();
+        let item = |s: buffer::UndoState| {
+            let mark = if s.current { "● " } else { "" };
+            let when = if s.id == 0 { String::new() } else { crate::history::age(s.time) };
+            (format!("{}{mark}{}", "    ".repeat(s.depth), s.label), when, Command::UndoGoto(s.id))
+        };
+        if states.len() < 2 { vec![] } else { states.into_iter().map(item).collect() }
+    }
+
     fn with_active<R>(&mut self, f: impl FnOnce(&mut Document, &mut Tab) -> R) -> Option<R> {
         let (g, t) = self.active_tab()?;
         let tab = &mut self.groups[g].tabs[t];
@@ -844,7 +854,7 @@ impl Editors {
             self.terminals.remove(&doc);
         }
         if self.references(doc) == 0
-            && let Some(path) = self.docs.remove(&doc).and_then(|d| d.buf.path)
+            && let Some(path) = self.docs.remove(&doc).inspect(|d| if self.config.persistent_undo { d.buf.write_undo() }).and_then(|d| d.buf.path)
         {
             self.lsp.close(&path);
             self.closed.retain(|p| *p != path);
@@ -1066,13 +1076,17 @@ impl Editors {
         }
         doc.stale = false;
         let tidy = self.config.of(doc.buf.path.as_deref());
-        let (trim, newline, final_newlines) = (tidy.trim_trailing_whitespace, tidy.insert_final_newline, tidy.trim_final_newlines);
+        let ec = &doc.buf.editorconfig;
+        let (trim, newline, final_newlines) = (ec.trim.unwrap_or(tidy.trim_trailing_whitespace), ec.final_newline.unwrap_or(tidy.insert_final_newline), tidy.trim_final_newlines);
         let mut none = vec![];
         let sels = self.groups.iter_mut().flat_map(|group| &mut group.tabs).find(|tab| tab.doc == id).map_or(&mut none, |tab| &mut tab.sels);
         doc.buf.tidy(sels, trim, newline, final_newlines);
         match doc.buf.save() {
             Ok(bytes) => {
                 doc.blame.refresh();
+                if self.config.persistent_undo {
+                    doc.buf.write_undo();
+                }
                 if !doc.buf.large {
                     self.history.save(doc.buf.path.as_deref().unwrap(), bytes, doc.buf.encoding);
                 }
@@ -1263,6 +1277,10 @@ impl Editors {
                     self.show_doc(id);
                     self.with_active(|_, tab| tab.sels = vec![Sel::caret(pos)]);
                 }
+            }
+            UndoGoto(id) => {
+                let id = *id;
+                self.with_active(|buf, tab| buf.undo_goto(id, &mut tab.sels));
             }
             GoTo(line, column) => {
                 if self.groups[g].tabs[t].sels.first().is_some_and(|s| s.head > 0) {

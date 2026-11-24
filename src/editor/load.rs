@@ -163,8 +163,11 @@ impl Editors {
 
     fn arrive(&mut self, id: u64, mut buf: Document) {
         buf.large = buf.rope.len_bytes() as u64 > self.large_bytes;
+        if self.config.persistent_undo && !buf.large {
+            buf.read_undo();
+        }
         if !self.config.of(buf.path.as_deref()).detect_indentation {
-            buf.indent = None;
+            buf.indent = buf.editorconfig.indent(None);
         }
         let note = buf.note.clone();
         let Some(doc) = self.docs.get_mut(&id) else { return };

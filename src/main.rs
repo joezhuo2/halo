@@ -12,6 +12,7 @@ mod commit_ai;
 mod dap;
 mod debug;
 mod editor;
+mod editorconfig;
 mod explorer;
 mod explorer_ops;
 mod find;

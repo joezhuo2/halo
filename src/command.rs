@@ -75,6 +75,8 @@ pub enum Command {
 
     Undo,
     Redo,
+    UndoTree,
+    UndoGoto(usize),
     Cut,
     Copy,
     Paste,
@@ -790,7 +792,7 @@ pub fn all() -> Vec<Command> {
         OpenKeybindings, OpenSnippets, SwitchProfile, NewProfile, DeleteProfile, SyncUpload, SyncDownload, ManageWorkspaceTrust, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, CompareFolders, CompareFoldersAgain,
         NewScratch, OpenScratch,
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
-        Undo, Redo, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
+        Undo, Redo, UndoTree, Cut, Copy, Paste, Find, Replace, ToggleComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
         FoldRecursively, UnfoldRecursively, FoldAllBlockComments, FoldLevel(1), FoldLevel(2), FoldLevel(3), FoldLevel(4), FoldLevel(5),
         FoldLevel(6), FoldLevel(7), PasteFromHistory, ToggleMacroRecording, PlayMacro,
@@ -1011,7 +1013,7 @@ impl Command {
             | BrowseThemes | SelectTheme | ImportThemeFile(_) | SetTheme(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
             | ImportIconThemeFile(_) | SetIconTheme(_) | CutFiles | CopyFiles | PasteFiles | CloseAllEditors | ShowTab(..) | CloseTab(..)
             | NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => "File",
-            Undo | Redo | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
+            Undo | Redo | UndoTree | UndoGoto(_) | Cut | Copy | Paste | Find | Replace | ToggleComment | ToggleBlockComment | EmmetExpand | MoveLineUp
             | MoveLineDown | CopyLineUp | CopyLineDown | DeleteLine | JoinLines | InsertLineAbove | InsertLineBelow | Fold
             | Unfold | FoldAll | UnfoldAll | FoldLevel(_) | FoldRecursively | UnfoldRecursively | FoldAllBlockComments
             | PasteFromHistory | PasteText(_) | ToggleMacroRecording | PlayMacro
@@ -1123,6 +1125,8 @@ impl Command {
             Exit => "Exit",
             Undo => "Undo",
             Redo => "Redo",
+            UndoTree => "Edit: Show Undo Tree...",
+            UndoGoto(_) => "Edit: Restore Undo State",
             Cut => "Cut",
             Copy => "Copy",
             Paste => "Paste",

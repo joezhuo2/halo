@@ -631,6 +631,10 @@ impl Halo {
                 self.reveal(View::Output);
             }
             ShowOutputChannels => self.search.pick("Select an Output Channel", crate::output::picks()),
+            UndoTree => match self.editors.undo_choices() {
+                items if items.is_empty() => ui::notify_info("This file has no undo history yet."),
+                items => self.search.pick("Select an undo state to restore", items),
+            },
             ListBookmarks => match self.editors.bookmarks.choices() {
                 items if items.is_empty() => ui::notify_info("There are no bookmarks yet."),
                 items => self.search.pick("Select a bookmark", items),

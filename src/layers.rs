@@ -86,6 +86,8 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("minimap_side", "editor.minimap.side"),
     ("detect_indentation", "editor.detectIndentation"),
     ("hot_exit", "files.hotExit"),
+    ("persistent_undo", "files.persistentUndo"),
+    ("virtual_space", "editor.virtualSpace"),
     ("tab_close_button", "workbench.editor.tabCloseButton"),
     ("enable_preview", "workbench.editor.enablePreview"),
     ("wrap_tabs", "workbench.editor.wrapTabs"),

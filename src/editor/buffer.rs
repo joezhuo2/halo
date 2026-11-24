@@ -8,7 +8,7 @@ fn next_version() -> u64 {
     NEXT_VERSION.fetch_add(1, Ordering::Relaxed)
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Sel {
     pub anchor: usize,
     pub head: usize,
@@ -57,7 +57,7 @@ pub fn merge_sels(sels: &mut Vec<Sel>) {
     *sels = out;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Kind {
     Type,
     Delete,
@@ -94,12 +94,14 @@ pub enum Motion {
     PageDown(usize),
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Change {
     pos: usize,
     removed: String,
     inserted: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Transaction {
     changes: Vec<Change>,
     before: Vec<Sel>,
@@ -107,6 +109,66 @@ struct Transaction {
     kind: Kind,
     from: u64,
     to: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Node {
+    t: Transaction,
+    parent: usize,
+    next: Option<usize>,
+    time: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Undofile {
+    hash: u64,
+    version: u64,
+    cur: usize,
+    nodes: Vec<Node>,
+}
+
+pub struct UndoState {
+    pub id: usize,
+    pub depth: usize,
+    pub current: bool,
+    pub time: u64,
+    pub label: String,
+}
+
+fn root_node() -> Node {
+    Node { t: Transaction { changes: vec![], before: vec![], after: vec![], kind: Kind::Other, from: 0, to: 0 }, parent: 0, next: None, time: 0 }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    bytes.into_iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
+}
+
+fn replay(rope: &mut Rope, changes: &[Change], forward: bool) -> usize {
+    let mut line = usize::MAX;
+    let mut step = |c: &Change| {
+        let (gone, put) = if forward { (&c.removed, &c.inserted) } else { (&c.inserted, &c.removed) };
+        let count = gone.chars().count();
+        if count > 0 {
+            rope.remove(c.pos..c.pos + count);
+        }
+        if !put.is_empty() {
+            rope.insert(c.pos, put);
+        }
+        line = line.min(rope.char_to_line(c.pos.min(rope.len_chars())));
+    };
+    match forward {
+        true => changes.iter().for_each(&mut step),
+        false => changes.iter().rev().for_each(&mut step),
+    }
+    line
+}
+
+pub fn undo_dir() -> PathBuf {
+    crate::settings::dir().join("undo")
 }
 
 type EditList = Vec<(usize, usize, String)>;
@@ -121,14 +183,15 @@ pub struct Document {
     pub disk: Option<std::time::SystemTime>,
     pub version: u64,
     saved: u64,
-    undo: Vec<Transaction>,
-    redo: Vec<Transaction>,
+    nodes: Vec<Node>,
+    cur: usize,
     moves: Vec<(u64, u64, EditList)>,
     pub edited: Option<(u64, usize)>,
     pub dirty_from: Option<usize>,
     pub note: Option<String>,
     pub read_only: bool,
     pub large: bool,
+    pub editorconfig: crate::editorconfig::Props,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -414,14 +477,15 @@ impl Document {
             disk: None,
             version,
             saved: version,
-            undo: vec![],
-            redo: vec![],
+            nodes: vec![root_node()],
+            cur: 0,
             moves: vec![],
             edited: None,
             dirty_from: None,
             note: None,
             read_only: false,
             large: false,
+            editorconfig: Default::default(),
         }
     }
 
@@ -441,7 +505,9 @@ impl Document {
 
     pub fn from_bytes(path: &Path, bytes: &[u8], encoding: Option<Encoding>, force: bool) -> Option<Self> {
         let name = title_of(path);
-        let encoding = encoding.unwrap_or_else(|| Encoding::detect(bytes));
+        let editorconfig = crate::editorconfig::lookup(path);
+        let detected = Encoding::detect(bytes);
+        let encoding = encoding.or(editorconfig.charset.filter(|_| detected == Encoding::Utf8)).unwrap_or(detected);
         let (mut text, lossy) = encoding.decode(bytes);
         if !force && looks_binary(bytes, &text, lossy, encoding) {
             return None;
@@ -452,10 +518,11 @@ impl Document {
         }
         let mut doc = Self::from_text(&text, name);
         doc.path = Some(path.to_path_buf());
-        doc.crlf = crlf;
-        doc.encoding = encoding;
+        doc.crlf = editorconfig.crlf.unwrap_or(crlf);
+        doc.encoding = if encoding == Encoding::Utf8Bom && editorconfig.charset == Some(Encoding::Utf8) { Encoding::Utf8 } else { encoding };
         doc.disk = disk_time(path);
-        doc.indent = doc.detect_indent();
+        doc.indent = editorconfig.indent(doc.detect_indent());
+        doc.editorconfig = editorconfig;
         if lossy {
             doc.note = Some(format!("This file is not valid {}; invalid bytes were replaced.", encoding.label()));
         }
@@ -651,64 +718,132 @@ impl Document {
     fn record(&mut self, changes: Vec<Change>, before: Vec<Sel>, after: Vec<Sel>, kind: Kind) {
         let from = self.version;
         self.version = next_version();
-        self.redo.clear();
-        if kind != Kind::Other
-            && let Some(last) = self.undo.last_mut()
-            && last.kind == kind
-            && last.to == from
-            && same(&last.after, &before)
-        {
-            last.changes.extend(changes);
-            last.after = after;
-            last.to = self.version;
+        let last = &mut self.nodes[self.cur];
+        if kind != Kind::Other && self.cur != 0 && last.next.is_none() && last.t.kind == kind && last.t.to == from && same(&last.t.after, &before) {
+            last.t.changes.extend(changes);
+            last.t.after = after;
+            last.t.to = self.version;
             return;
         }
-        self.undo.push(Transaction { changes, before, after, kind, from, to: self.version });
+        let t = Transaction { changes, before, after, kind, from, to: self.version };
+        self.nodes.push(Node { t, parent: self.cur, next: None, time: unix_now() });
+        self.nodes[self.cur].next = Some(self.nodes.len() - 1);
+        self.cur = self.nodes.len() - 1;
     }
 
     pub fn fix_after(&mut self, sels: &[Sel]) {
-        if let Some(last) = self.undo.last_mut() {
-            last.after = sels.to_vec();
+        if self.cur != 0 {
+            self.nodes[self.cur].t.after = sels.to_vec();
         }
     }
 
     pub fn undo(&mut self, sels: &mut Vec<Sel>) -> bool {
-        let Some(t) = self.undo.pop() else { return false };
-        let mut line = usize::MAX;
-        for c in t.changes.iter().rev() {
-            let inserted = c.inserted.chars().count();
-            if inserted > 0 {
-                self.rope.remove(c.pos..c.pos + inserted);
-            }
-            if !c.removed.is_empty() {
-                self.rope.insert(c.pos, &c.removed);
-            }
-            line = line.min(self.line_of(c.pos));
+        if self.cur == 0 {
+            return false;
         }
-        *sels = t.before.clone();
-        self.version = t.from;
+        let (i, node) = (self.cur, &self.nodes[self.cur]);
+        let line = replay(&mut self.rope, &node.t.changes, false);
+        *sels = node.t.before.clone();
+        self.version = node.t.from;
+        self.cur = node.parent;
+        self.nodes[self.cur].next = Some(i);
         self.touch(line);
-        self.redo.push(t);
         true
     }
 
     pub fn redo(&mut self, sels: &mut Vec<Sel>) -> bool {
-        let Some(t) = self.redo.pop() else { return false };
-        let mut line = usize::MAX;
-        for c in &t.changes {
-            let removed = c.removed.chars().count();
-            if removed > 0 {
-                self.rope.remove(c.pos..c.pos + removed);
-            }
-            if !c.inserted.is_empty() {
-                self.rope.insert(c.pos, &c.inserted);
-            }
-            line = line.min(self.line_of(c.pos));
-        }
-        *sels = t.after.clone();
-        self.version = t.to;
+        let Some(i) = self.nodes[self.cur].next else { return false };
+        let node = &self.nodes[i];
+        let line = replay(&mut self.rope, &node.t.changes, true);
+        *sels = node.t.after.clone();
+        self.version = node.t.to;
+        self.cur = i;
         self.touch(line);
-        self.undo.push(t);
+        true
+    }
+
+    pub fn undo_goto(&mut self, target: usize, sels: &mut Vec<Sel>) -> bool {
+        if target >= self.nodes.len() || target == self.cur {
+            return false;
+        }
+        let mut path = vec![target];
+        while let Some(&n) = path.last().filter(|n| **n != 0) {
+            path.push(self.nodes[n].parent);
+        }
+        while !path.contains(&self.cur) {
+            self.undo(sels);
+        }
+        let fork = path.iter().position(|n| *n == self.cur).unwrap_or(0);
+        for &n in path[..fork].iter().rev() {
+            self.nodes[self.cur].next = Some(n);
+            self.redo(sels);
+        }
+        true
+    }
+
+    pub fn undo_states(&self) -> Vec<UndoState> {
+        let mut kids = vec![vec![]; self.nodes.len()];
+        for (i, n) in self.nodes.iter().enumerate().skip(1) {
+            kids[n.parent].push(i);
+        }
+        let mut out = vec![];
+        let mut stack = vec![(0, 0)];
+        while let Some((i, depth)) = stack.pop() {
+            let label = match self.nodes[i].t.changes.first() {
+                None => "Original".to_owned(),
+                Some(c) => {
+                    let more = if self.nodes[i].t.changes.len() > 1 { format!(" (+{} more)", self.nodes[i].t.changes.len() - 1) } else { String::new() };
+                    let snip = |s: &str| s.chars().take(40).collect::<String>().replace('\n', "\u{21b5}").replace('\t', " ");
+                    match (c.removed.is_empty(), c.inserted.is_empty()) {
+                        (true, _) => format!("Typed \"{}\"{more}", snip(&c.inserted)),
+                        (false, true) => format!("Deleted \"{}\"{more}", snip(&c.removed)),
+                        _ => format!("Replaced \"{}\" with \"{}\"{more}", snip(&c.removed), snip(&c.inserted)),
+                    }
+                }
+            };
+            out.push(UndoState { id: i, depth, current: i == self.cur, time: self.nodes[i].time, label });
+            let branch = usize::from(kids[i].len() > 1);
+            stack.extend(kids[i].iter().map(|k| (*k, depth + branch)));
+        }
+        out
+    }
+
+    pub fn undo_file(path: &Path) -> PathBuf {
+        undo_dir().join(format!("{:016x}.json", fnv(path.to_string_lossy().to_lowercase().bytes())))
+    }
+
+    pub fn write_undo(&self) {
+        let Some(path) = &self.path else { return };
+        if self.nodes.len() < 2 || self.is_dirty() {
+            return;
+        }
+        let text = self.undo_json();
+        // shortcut: histories over 16 MB are not kept, upgrade to trimming the oldest branches if users hit it
+        if text.len() < 16 << 20 && std::fs::create_dir_all(undo_dir()).is_ok() {
+            let _ = std::fs::write(Self::undo_file(path), text);
+        }
+    }
+
+    fn undo_json(&self) -> String {
+        serde_json::json!({"hash": fnv(self.rope.bytes()), "version": self.version, "cur": self.cur, "nodes": &self.nodes}).to_string()
+    }
+
+    pub fn read_undo(&mut self) -> bool {
+        let Some(path) = &self.path else { return false };
+        std::fs::read_to_string(Self::undo_file(path)).is_ok_and(|text| self.restore_undo(&text))
+    }
+
+    fn restore_undo(&mut self, text: &str) -> bool {
+        let Ok(mut file) = serde_json::from_str::<Undofile>(text) else { return false };
+        if file.hash != fnv(self.rope.bytes()) || file.cur >= file.nodes.len() || file.nodes.iter().any(|n| n.parent >= file.nodes.len()) || self.nodes.len() > 1 {
+            return false;
+        }
+        let mut fresh = std::collections::HashMap::from([(file.version, self.version)]);
+        let mut map = |v: u64| *fresh.entry(v).or_insert_with(next_version);
+        for n in file.nodes.iter_mut().skip(1) {
+            (n.t.from, n.t.to) = (map(n.t.from), map(n.t.to));
+        }
+        (self.nodes, self.cur) = (file.nodes, file.cur);
         true
     }
 
@@ -1707,6 +1842,40 @@ mod tests {
         assert_eq!(d.rope.to_string(), "xyab\nxycd\nxyef");
         d.backspace(&mut sels, false, true);
         assert_eq!(d.rope.to_string(), "xab\nxcd\nxef");
+    }
+
+    #[test]
+    fn undo_tree_keeps_branches_and_survives_a_round_trip() {
+        let mut d = doc("a");
+        let mut sels = vec![Sel::caret(1)];
+        d.insert_text(&mut sels, "\nb");
+        d.insert_text(&mut sels, "\nc");
+        d.undo(&mut sels);
+        d.insert_text(&mut sels, "\nd");
+        assert_eq!(d.rope.to_string(), "a\nb\nd");
+        let states = d.undo_states();
+        assert_eq!(states.len(), 4);
+        let lost = states.iter().find(|s| s.label.contains('c')).unwrap().id;
+        assert!(d.undo_goto(lost, &mut sels));
+        assert_eq!(d.rope.to_string(), "a\nb\nc");
+        d.redo(&mut sels);
+        assert_eq!(d.rope.to_string(), "a\nb\nc");
+        d.undo(&mut sels);
+        d.redo(&mut sels);
+        assert_eq!(d.rope.to_string(), "a\nb\nc");
+        d.mark_clean();
+        let saved = d.undo_json();
+        let mut fresh = doc("a\nb\nc");
+        assert!(fresh.restore_undo(&saved));
+        assert!(!fresh.is_dirty());
+        fresh.undo(&mut sels);
+        fresh.undo(&mut sels);
+        assert_eq!(fresh.rope.to_string(), "a");
+        assert!(fresh.is_dirty());
+        fresh.redo(&mut sels);
+        fresh.redo(&mut sels);
+        assert!(!fresh.is_dirty());
+        assert!(!doc("changed").restore_undo(&saved));
     }
 
     #[test]
