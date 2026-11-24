@@ -509,6 +509,11 @@ impl Halo {
                 self.settings.column_selection ^= true;
                 self.settings.save();
             }
+            ToggleVimMode => {
+                self.settings.vim ^= true;
+                self.editors.vim.reset();
+                self.settings.save();
+            }
             ToggleWordWrap => {
                 self.settings.word_wrap = if self.settings.word_wrap == "off" { "on" } else { "off" }.into();
                 self.settings.save();

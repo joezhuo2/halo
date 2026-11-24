@@ -35,6 +35,10 @@ impl Halo {
                         self.cmds.push(Command::ToggleMacroRecording);
                     }
 
+                    if self.settings.vim && item(ui, &theme, &self.editors.vim.status(), self.editors.vim.line.is_some(), "Vim mode (click to turn off)").clicked() {
+                        self.cmds.push(Command::ToggleVimMode);
+                    }
+
                     if let Some(name) = self.session.workspace.name().filter(|_| self.session.workspace.is_multi())
                         && item(ui, &theme, &format!("{} {name}", icons::FOLDERS), false, "Workspace folders: show the Explorer").clicked()
                     {

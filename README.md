@@ -211,6 +211,13 @@ language you want diagnostics and completion in. Each is optional.
   (`markdown.validate.enabled`), `Ctrl+V` with an image on the clipboard
   saves it as `image.png` next to the file and links it (Windows), and
   `Shift`+drop of files inserts links to them.
+- **Vim mode** (off by default; Toggle Vim Mode, or Settings > Text Editor):
+  normal, insert, visual and visual line modes with counts, the motions
+  `hjkl w b e W B E 0 ^ $ gg G f t F T ; , { } % n N * #`, the operators
+  `d c y > <` (doubled for whole lines), `x X D C s S Y p P r J ~ u .`,
+  `/` and `?` search, and `:w`, `:q`, `:wq`, `:wa` and `:<line>`. The status
+  bar shows the mode. Yanks also go to the clipboard; redo stays on
+  `Ctrl+Y` because `Ctrl+R` opens recent files.
 - **Images** (png, jpg, gif, webp, bmp, ico, svg) open in a viewer with zoom
   and pan. Binary files show a notice instead of text, and files over 20 MB
   open in a light mode without highlighting or language servers.

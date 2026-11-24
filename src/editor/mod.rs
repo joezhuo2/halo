@@ -29,6 +29,7 @@ mod search_editor;
 mod snippet;
 mod linked;
 mod typography;
+pub mod vim;
 
 use crate::command::{self, Command, Scope};
 use crate::git::{Git, LineChange};
@@ -322,6 +323,7 @@ pub struct Editors {
     links: md_links::Links,
     ai: ai_inline::Ai,
     chat: chat::Chat,
+    pub vim: vim::Vim,
 }
 
 pub fn clip_history() -> Vec<String> {
@@ -670,6 +672,7 @@ impl Editors {
             bookmarks: Default::default(),
             layouts: Default::default(),
             jump: None,
+            vim: vim::Vim::default(),
             tests: Default::default(),
             root: None,
             intel: Intel::default(),
@@ -2263,6 +2266,17 @@ impl Editors {
             self.popup_keys(&mut events, doc_id, buf, tab);
             self.ai_keys(&mut events, doc_id, buf, tab);
             self.peek_escape(&mut events, doc_id);
+            if settings.vim && !diffed {
+                let out = self.vim.keys(&mut events, buf, &mut tab.sels, &unit, settings.tab_size);
+                pending.extend(out.cmds);
+                if let Some(text) = out.copy {
+                    ctx.copy_text(text);
+                }
+                if out.moved {
+                    self.last_input = now;
+                    tab.reveal = tab.sels.last().map(|s| s.head);
+                }
+            }
             let release = |e: &Event| matches!(e, Event::Key { key: Key::V, pressed: false, modifiers, .. } if modifiers.matches_exact(egui::Modifiers::COMMAND));
             if hl.language == "Markdown" && !diffed && !buf.read_only && events.iter().any(release) {
                 md_insert::paste_image(buf, &mut tab.sels);
@@ -2328,6 +2342,7 @@ impl Editors {
                 self.format_range(doc_id, buf, lang, from, to, settings, &ctx);
             }
         }
+        let vim_block = settings.vim && !diffed && self.vim.mode != vim::Mode::Insert;
         let find_open = self.find.open && is_active;
         if find_open {
             self.refresh_matches(doc_id, buf, tab);
@@ -3078,7 +3093,7 @@ impl Editors {
                         let mode = if mode == "explicit" && typed_move && !pressed_text { "off" } else { mode };
                         let p = origin + typography::Caret::position_for(slot, &ctx, target - origin, sel.head, buf_ref.version, mode, now);
                         let color = ui::with_alpha(theme.accent, caret_alpha);
-                        match prefs::caret_rect(&settings.cursor_style, p.x, p.y, line_h, char_w) {
+                        match prefs::caret_rect(if vim_block { "block" } else { &settings.cursor_style }, p.x, p.y, line_h, char_w) {
                             (caret, true) if caret.width() > 2.0 && caret.height() > 3.0 => painter.rect_filled(caret, CornerRadius::ZERO, ui::with_alpha(color, 0.6)),
                             (caret, true) => painter.rect_filled(caret, CornerRadius::ZERO, color),
                             (caret, false) => painter.rect_stroke(caret, CornerRadius::ZERO, Stroke::new(1.0, color), StrokeKind::Inside),

@@ -75,6 +75,7 @@ pub const SETTINGS: &[Meta] = &[
     m("peek_context_lines", 0, ED, "Peek Context Lines", "The number of lines shown above the target in the peek definition and references preview. The preview scrolls with the mouse wheel.", Kind::Int(1, 40)),
     m("mouse_wheel_zoom", 0, ED, "Mouse Wheel Zoom", "Zoom with Ctrl and the mouse wheel over the editor.", Kind::Toggle),
     m("multi_cursor_modifier", 0, ED, "Multi Cursor Modifier", "The key held while clicking to add a cursor. The other one follows links.", Kind::Choice(&[("alt", "Alt"), ("ctrlCmd", "Ctrl")])),
+    m("vim", 0, ED, "Vim Mode", "Edit with Vim keys: normal, insert and visual modes, motions, operators, counts, registers, search and : commands.", Kind::Toggle),
     m("column_selection", 0, ED, "Column Selection", "Dragging with the mouse selects a box of columns instead of a range of text.", Kind::Toggle),
     m("word_separators", 0, ED, "Word Separators", "Characters that end a word for word motions, double click and word deletion. ASCII only.", Kind::Custom),
     m("match_brackets", 0, ED, "Match Brackets", "Highlight the bracket that matches the one at the cursor.", Kind::Choice(&[("always", "Always"), ("near", "Near"), ("never", "Never")])),
