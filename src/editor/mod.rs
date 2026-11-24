@@ -2448,7 +2448,8 @@ impl Editors {
             }
             _ => vec![],
         };
-        let row_folds: &[(usize, usize)] = if diffed { &[] } else { folds };
+        let diff_folds = shown.as_ref().map_or(vec![], |d| d.hidden(total));
+        let row_folds: &[(usize, usize)] = if shown.is_some() { &diff_folds } else if diffed { &[] } else { folds };
         let fixed = ((text_rect.height() * 0.4 / line_h) as u32).clamp(4, 18);
         let peek_line = self.peek_line(g, doc_id, buf);
         let change = if diffed || peek_line.is_some() { None } else { self.change_anchor(doc_id, buf, g) };
@@ -2526,7 +2527,7 @@ impl Editors {
         let (mut caret_at, mut hover_at, mut zone_y, mut over_word, mut lens_open) = (None, None, None, None, None);
         let (mut over_problem, mut ctrl_span) = (None, None);
         let mut toggle_fold = None;
-        let folded: &[(usize, usize)] = if diffed { &[] } else { folds };
+        let folded: &[(usize, usize)] = if shown.is_some() { &diff_folds } else if diffed { &[] } else { folds };
         if has_focus {
             let at = (doc_id, buf.line_of(tab.sels.first().map_or(0, |s| s.head)), buf.version);
             crate::sound::cursor(settings, at, problems, marks.as_ref().map_or(&[], |m| &m.0), folded);
@@ -3379,7 +3380,9 @@ impl Editors {
             self.marks.apply(path, action);
         }
         self.tests.clicked = test_click.or(self.tests.clicked.take());
-        if let Some(line) = toggle_fold {
+        if let (Some(line), Some(d)) = (toggle_fold, shown.as_mut()) {
+            d.opened.push(line);
+        } else if let Some(line) = toggle_fold {
             match folds.iter().position(|f| f.0 == line) {
                 Some(at) => drop(folds.remove(at)),
                 None => folds.extend(opens(line).map(|at| (line, ranges[at].1))),

@@ -251,6 +251,7 @@ pub enum Command {
     AccessibleDiffViewerNext,
     AccessibleDiffViewerPrev,
     ToggleInlineDiff,
+    ToggleUnchangedRegions,
     MarkdownPreview,
     OpenInLogViewer,
     ReopenInHexEditor,
@@ -801,7 +802,7 @@ pub fn all() -> Vec<Command> {
         FocusGroupUp, FocusGroupDown, MoveEditorLeft, MoveEditorRight, MoveEditorUp, MoveEditorDown, CloseGroup, MoveEditorToNewWindow,
         CopyEditorToNewWindow, MoveEditorToMainWindow,
         AgentChangesKeepAll, AgentChangesUndoAll, AgentChangesShow, AgentChangesResetBaseline,
-        ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff, FilterExplorer, ToggleFileNesting, FocusOpenEditors,
+        ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff, ToggleUnchangedRegions, FilterExplorer, ToggleFileNesting, FocusOpenEditors,
         MarkdownPreview, MarkdownPreviewSide, OpenInLogViewer, ReopenInHexEditor, ToggleTableView, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
         MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
         AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations, ToggleOpenEditorsTree,
@@ -1020,7 +1021,7 @@ impl Command {
             | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown => "Selection",
             ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
             | AgentChangesKeepAll | AgentChangesUndoAll | AgentChangesShow | AgentChangesResetBaseline
-            | ToggleWordWrap | ToggleVimMode | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | FilterExplorer | ToggleFileNesting
+            | ToggleWordWrap | ToggleVimMode | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | ToggleUnchangedRegions | FilterExplorer | ToggleFileNesting
             | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | OpenInLogViewer | ReopenInHexEditor | ToggleTableView | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
             | LayoutTwoColumns | LayoutThreeColumns | LayoutTwoRows | LayoutThreeRows | LayoutGrid | LayoutTwoRowsRight | LayoutTwoColumnsBottom
             | ToggleMaximizeGroup | ToggleEditorGroupLock | ResetGroupSizes | FocusGroupLeft | FocusGroupRight | FocusGroupUp | FocusGroupDown | MoveEditorLeft
@@ -1304,6 +1305,7 @@ impl Command {
             AccessibleDiffViewerNext => "Accessible Diff Viewer: Go to Next Difference",
             AccessibleDiffViewerPrev => "Accessible Diff Viewer: Go to Previous Difference",
             ToggleInlineDiff => "Toggle Inline Diff View",
+            ToggleUnchangedRegions => "Diff: Toggle Collapse Unchanged Regions",
             MarkdownPreview => "Markdown: Open Preview",
             OpenInLogViewer => "View: Open Active File in Log Viewer",
             ReopenInHexEditor => "View: Reopen Active File in Hex Editor",

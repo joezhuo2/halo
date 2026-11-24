@@ -175,6 +175,17 @@ fn change_header(hunks: &[Hunk], index: usize) -> String {
     format!("Change {} of {}: {} original, {} modified", index + 1, hunks.len(), span(&h.left), span(&h.right))
 }
 
+fn unchanged(hunks: &[Hunk], total: usize) -> Vec<(usize, usize)> {
+    let ends = std::iter::once(0).chain(hunks.iter().map(|h| h.right.end));
+    let starts = hunks.iter().map(|h| h.right.start).chain([total]);
+    let span = |(s, e): (usize, usize)| {
+        let first = if s == 0 { 1 } else { s + CONTEXT };
+        let last = if e >= total { total } else { e.saturating_sub(CONTEXT) };
+        (last >= first + 4).then(|| (first - 1, last - 1))
+    };
+    ends.zip(starts).filter_map(span).collect()
+}
+
 pub(super) struct DiffTab {
     pub title: String,
     top: PathBuf,
@@ -191,6 +202,8 @@ pub(super) struct DiffTab {
     rows: ((u64, usize), Vec<diff::Row>),
     viewer: Option<Viewer>,
     pub inline: bool,
+    pub collapse: bool,
+    pub opened: Vec<usize>,
     pub scroll: f32,
     pub text_top: f32,
     pub line_h: f32,
@@ -218,6 +231,8 @@ impl DiffTab {
             rows: ((0, 0), vec![]),
             viewer: None,
             inline: load.inline,
+            collapse: true,
+            opened: vec![],
             scroll: 0.0,
             text_top: 0.0,
             line_h: 16.0,
@@ -227,6 +242,13 @@ impl DiffTab {
     #[cfg(test)]
     pub fn hunk_count(&self) -> usize {
         self.model.hunks.len()
+    }
+
+    pub fn hidden(&self, total: usize) -> Vec<(usize, usize)> {
+        if !self.collapse {
+            return vec![];
+        }
+        unchanged(&self.model.hunks, total).into_iter().filter(|f| !self.opened.contains(&f.0)).collect()
     }
 
     pub fn pads(&self) -> Vec<(usize, u32)> {
@@ -502,7 +524,8 @@ pub(super) fn paint_pads(
     }
 }
 
-fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, right_len: usize, settings: &Settings) {
+fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, starts: &[u32], settings: &Settings) {
+    let right_len = starts.len() - 1;
     let font = &FontId::monospace(settings.font_size);
     let char_w = ui.ctx().fonts_mut(|f| f.glyph_width(font, 'm'));
     let style = typography::FontStyle::new(settings, char_w);
@@ -513,17 +536,31 @@ fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, right_len: us
         d.rows = ((d.computed, right_len), diff::align(&d.model.hunks, total, right_len));
     }
     let line_h = d.line_h;
-    let first = (d.scroll / line_h).floor().max(0.0) as usize;
-    let shown = &d.rows.1[first.min(d.rows.1.len())..(first + (rect.height() / line_h) as usize + 2).min(d.rows.1.len())];
-    let lines = shown.iter().filter_map(|r| r.left);
+    let mut place = vec![0u32; d.rows.1.len()];
+    let (mut next, mut behind) = (starts[right_len], 0);
+    for (i, row) in d.rows.1.iter().enumerate().rev() {
+        match row.right {
+            Some(r) => (next, behind, place[i]) = (starts[r], 0, starts[r]),
+            None => {
+                behind += 1;
+                place[i] = next.saturating_sub(behind);
+            }
+        }
+    }
+    let first = (d.scroll / line_h).floor().max(0.0) as u32;
+    let last = first + (rect.height() / line_h) as u32 + 2;
+    let visible = |row: &diff::Row| row.right.is_none_or(|r| starts[r + 1] > starts[r]);
+    let window = place.partition_point(|p| *p < first)..place.partition_point(|p| *p <= last);
+    let shown: Vec<(u32, diff::Row)> = window.map(|i| (place[i], d.rows.1[i])).filter(|(_, row)| visible(row)).collect();
+    let lines = shown.iter().filter_map(|(_, r)| r.left);
     let range = lines.clone().min().unwrap_or(0)..lines.max().map_or(0, |l| l + 1);
     if !d.hl.ensure(&d.rope, range, theme, Duration::from_millis(6)) {
         ui.ctx().request_repaint();
     }
     let gutter = (total.to_string().len().max(3) as f32 + 2.0) * char_w + 14.0;
     let number_font = FontId::monospace(font.size - 1.0);
-    for (index, found) in shown.iter().enumerate() {
-        let y = d.text_top + (first + index) as f32 * line_h - d.scroll;
+    for (at, found) in &shown {
+        let y = d.text_top + *at as f32 * line_h - d.scroll;
         let row = Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), line_h));
         let Some(line) = found.left else {
             hatch(&painter, row, theme);
@@ -648,6 +685,9 @@ impl Editors {
             Some((g, t)) => {
                 let tab = &mut self.groups[g].tabs[t];
                 fresh.inline = tab.diff.as_ref().map_or(fresh.inline, |d| d.inline);
+                if let Some(d) = tab.diff.as_ref() {
+                    (fresh.collapse, fresh.opened) = (d.collapse, d.opened.clone());
+                }
                 fresh.viewer = tab.diff.as_ref().and_then(|d| d.viewer);
                 tab.diff = Some(Box::new(fresh));
                 let old = std::mem::replace(&mut tab.doc, doc);
@@ -697,7 +737,9 @@ impl Editors {
             (count, at) => format!("{} of {count}", at.map_or(0, |at| at + 1)),
         };
         let selected = tab.sels.iter().any(|s| !s.is_empty());
-        let mut actions: Vec<(&str, Command)> = vec![(if d.inline { icons::COLUMNS } else { icons::ROWS }, Command::ToggleInlineDiff)];
+        let fold_icon = if d.collapse { icons::ARROWS_OUT_LINE_VERTICAL } else { icons::ARROWS_IN_LINE_VERTICAL };
+        let mut actions: Vec<(&str, Command)> =
+            vec![(if d.inline { icons::COLUMNS } else { icons::ROWS }, Command::ToggleInlineDiff), (fold_icon, Command::ToggleUnchangedRegions)];
         actions.extend([(icons::ARROW_DOWN, Command::NextChange), (icons::ARROW_UP, Command::PrevChange)]);
         let ranges = match d.spec.side() {
             Side::Working => vec![(icons::ARROW_U_UP_LEFT, Command::RevertSelectedRanges), (icons::PLUS, Command::StageSelectedRanges)],
@@ -735,7 +777,7 @@ impl Editors {
         let id = Id::new(("diff_view", &d.title));
         if !d.inline {
             let left = area.with_max_x(area.center().x - GAP / 2.0);
-            paint_left(ui, theme, d, left, starts.len() - 1, settings);
+            paint_left(ui, theme, d, left, starts, settings);
             let gap = Rect::from_min_max(pos2(left.right(), area.top()), pos2(area.center().x + GAP / 2.0, area.bottom()));
             ui.painter().rect_filled(gap, CornerRadius::ZERO, theme.bg);
             ui.painter().vline(gap.center().x, gap.y_range(), Stroke::new(1.0, theme.border));
@@ -1066,7 +1108,7 @@ impl Editors {
             return true;
         }
         let ranged = matches!(cmd, StageSelectedRanges | RevertSelectedRanges | UnstageSelectedRanges);
-        if !ranged && !matches!(cmd, NextChange | PrevChange | ShowNextChange | ShowPrevChange | ToggleInlineDiff | StageHunk | RevertHunk | UnstageHunk) {
+        if !ranged && !matches!(cmd, NextChange | PrevChange | ShowNextChange | ShowPrevChange | ToggleInlineDiff | ToggleUnchangedRegions | StageHunk | RevertHunk | UnstageHunk) {
             return false;
         }
         let at = self.diffs.at.take();
@@ -1077,6 +1119,12 @@ impl Editors {
         if *cmd == ToggleInlineDiff {
             if let Some(d) = tab.diff.as_mut() {
                 d.inline ^= true;
+            }
+            return true;
+        }
+        if *cmd == ToggleUnchangedRegions {
+            if let Some(d) = tab.diff.as_mut() {
+                (d.collapse, d.opened) = (!d.collapse, vec![]);
             }
             return true;
         }
@@ -1182,6 +1230,15 @@ mod tests {
 
     fn strings(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn collapses_unchanged_runs_but_keeps_context() {
+        let hunk = |r: std::ops::Range<usize>| Hunk { left: r.clone(), right: r };
+        assert_eq!(unchanged(&[hunk(20..22)], 40), [(0, 16), (24, 39)]);
+        assert_eq!(unchanged(&[hunk(5..6), hunk(12..13)], 15), []);
+        assert_eq!(unchanged(&[hunk(3..4), hunk(14..15)], 15), [(6, 10)]);
+        assert_eq!(unchanged(&[], 10), [(0, 9)]);
     }
 
     #[test]
