@@ -476,7 +476,9 @@ impl Vim {
                 let line = if start < a { line + 1 } else { line }.min(cx.buf.lines() - 1);
                 cx.set(cx.first_nonblank(line));
             }
-            'd' => drop(cx.edit(a, b, String::new())),
+            'd' => {
+                cx.edit(a, b, String::new());
+            }
             'c' => {
                 let (a, b) = match lines {
                     true => (cx.first_nonblank(cx.buf.line_of(a)), cx.buf.line_end(cx.buf.line_of(b.saturating_sub(1).max(a)))),
@@ -638,7 +640,9 @@ impl Vim {
                 return Step::Got(false);
             }
             'u' => {
-                (0..k).for_each(|_| drop(cx.buf.undo(cx.sels)));
+                for _ in 0..k {
+                    cx.buf.undo(cx.sels);
+                }
                 if let Some(s) = cx.sels.first().copied() {
                     cx.set(s.start());
                 }

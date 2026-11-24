@@ -157,7 +157,11 @@ impl HexView {
             let at = self.cursor as isize;
             for event in events {
                 match event {
-                    Event::Text(text) => text.chars().for_each(|c| drop(self.put(c))),
+                    Event::Text(text) => {
+                        for c in text.chars() {
+                            self.put(c);
+                        }
+                    }
                     Event::Key { key, pressed: true, modifiers, .. } => match key {
                         Key::ArrowLeft => self.go(at - 1),
                         Key::ArrowRight => self.go(at + 1),

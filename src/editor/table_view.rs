@@ -16,10 +16,6 @@ pub struct TableView {
     sort: Option<(usize, bool)>,
 }
 
-pub fn is_table(path: Option<&Path>) -> bool {
-    path.and_then(Path::extension).is_some_and(|e| matches!(e.to_string_lossy().to_lowercase().as_str(), "csv" | "tsv" | "psv"))
-}
-
 pub fn delimiter(path: Option<&Path>, text: &str) -> char {
     match path.and_then(Path::extension).map(|e| e.to_string_lossy().to_lowercase()).as_deref() {
         Some("tsv") => return '\t',
@@ -184,6 +180,5 @@ mod tests {
         table.sort = Some((1, true));
         table.resort();
         assert_eq!(table.order, [3, 1, 2]);
-        assert!(is_table(Some(Path::new("A.CSV"))) && !is_table(Some(Path::new("a.rs"))));
     }
 }

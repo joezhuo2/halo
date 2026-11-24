@@ -28,7 +28,7 @@ impl Index {
         }
         for (i, b) in chunk.iter().enumerate() {
             if *b == b'\n' {
-                if self.lines % STEP == 0 {
+                if self.lines.is_multiple_of(STEP) {
                     self.marks.push(self.scanned + i as u64 + 1);
                 }
                 self.lines += 1;

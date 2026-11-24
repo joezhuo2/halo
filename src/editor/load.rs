@@ -37,7 +37,7 @@ impl Content {
 pub enum Loaded {
     Doc(Box<Document>),
     Binary,
-    Huge(u64),
+    Huge,
     Failed(String),
 }
 
@@ -56,7 +56,7 @@ fn read(path: &Path, force: bool) -> Loaded {
         Err(e) => return Loaded::Failed(format!("Cannot open {name}: {e}")),
     };
     if size > HUGE && !force {
-        return Loaded::Huge(size);
+        return Loaded::Huge;
     }
     match std::fs::read(path) {
         Ok(bytes) => Document::from_bytes(path, &bytes, None, force).map_or(Loaded::Binary, |doc| Loaded::Doc(Box::new(doc))),
@@ -145,7 +145,7 @@ impl Editors {
             match loaded {
                 Loaded::Doc(buf) => self.arrive(id, *buf),
                 Loaded::Binary => self.docs.get_mut(&id).iter_mut().for_each(|d| d.content = Content::Binary),
-                Loaded::Huge(_) => self.docs.get_mut(&id).iter_mut().for_each(|d| d.content = Content::Stream(Box::new(StreamView::open(d.buf.path.clone().unwrap_or_default(), ctx)))),
+                Loaded::Huge => self.docs.get_mut(&id).iter_mut().for_each(|d| d.content = Content::Stream(Box::new(StreamView::open(d.buf.path.clone().unwrap_or_default(), ctx)))),
                 Loaded::Failed(error) => {
                     self.banner = Some((error, None));
                     let tabs: Vec<_> = (0..self.groups.len()).flat_map(|g| (0..self.groups[g].tabs.len()).rev().map(move |t| (g, t))).collect();
