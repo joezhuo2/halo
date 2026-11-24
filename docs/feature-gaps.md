@@ -27,17 +27,9 @@ asking for that VS Code itself does not have. Checked against the README,
   reopen, and the running process is still there.
 - **Remote editing without a server on the host**: SSH or SFTP editing for
   small machines where VS Code Server will not install.
-
 - **Structural search and replace** and tree-sitter based selection and
   motion (JetBrains SSR, Helix, Zed).
-- **Persistent undo**: undo history survives closing the file and restarting,
-  like Vim's `undofile`. Hot exit keeps the text but not the undo stack.
-- **Undo tree**: browse and restore branches of undo history instead of
-  losing them after an undo followed by an edit.
-- **Virtual space**: place the cursor and column selections past the end of a
-  line (long-standing VS Code request, Visual Studio and JetBrains have it).
-- **EditorConfig built in**: VS Code still needs an extension for
-  `.editorconfig`.
+
 - **Rewrap / reflow**: hard-wrap a comment or Markdown paragraph to the ruler,
   keeping comment prefixes (`gq` in Vim, the Rewrap extension).
 - **Elastic tabstops**: align tab-separated columns across lines in

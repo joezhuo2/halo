@@ -84,7 +84,11 @@ language you want diagnostics and completion in. Each is optional.
   `Ctrl+Shift+L` selects every occurrence, `Shift+Alt+Right` and
   `Shift+Alt+Left` grow and shrink the selection (by the language server's
   selection ranges when it has them), and `Ctrl+U` undoes the last cursor
-  move.
+  move. With Virtual Space on, the cursor and box selections can go past the
+  end of a line.
+- **Undo tree:** Edit: Show Undo Tree... restores any earlier state, including
+  edits an undo would otherwise lose. Persistent Undo (off by default) keeps
+  the history of saved files across restarts.
 - **Subword navigation:** Cursor Word Part Left and Right (and their Select
   forms) stop at camelCase humps, acronyms, underscores, hyphens and digits;
   `Ctrl+Alt+Backspace` and `Ctrl+Alt+Delete` delete a word part.
@@ -245,6 +249,8 @@ language you want diagnostics and completion in. Each is optional.
   line breaks). Click a column header to sort, numbers by value.
 - **Auto save** (off by default): after a delay, on focus change or on window
   change. Saving can trim trailing whitespace and add a final newline.
+- **EditorConfig** is built in: indentation, line endings, charset, trailing
+  whitespace and final newline follow `.editorconfig` files.
 - **Hot exit:** unsaved and untitled files come back the next time Halo
   opens. When a file you changed also changes on disk, a bar offers Compare,
   Use Disk Version and Overwrite.

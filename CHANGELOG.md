@@ -6,6 +6,34 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-11-24
+
+Checked with unit tests and clippy. Not yet looked at on screen: the Undo
+Tree picker and virtual space carets and selections.
+
+### Added
+
+- **Undo tree:** an undo followed by an edit no longer throws away the undone
+  edits. Edit: Show Undo Tree... lists every state of the file, with branches
+  indented, and restores the one you pick. Redo follows the branch you were
+  last on.
+- **Persistent undo** (Files: Persistent Undo, `files.persistentUndo`, off by
+  default): the undo history of a saved file is kept in Halo's settings
+  folder, under `undo`, when the file is saved or closed, and comes back the
+  next time the file opens. The history is dropped if the file changed
+  outside Halo, and histories over 16 MB are not kept.
+- **Virtual space** (Editor: Virtual Space, `editor.virtualSpace`, off by
+  default): clicking, `Right`, `Up` and `Down` and box selections can put the
+  cursor past the end of a line. Typing, pasting, `Tab` or `Delete` there fills
+  the gap with spaces, or with tabs when the file is indented with tabs.
+  `Backspace` moves back through the gap. Turned off while word wrap is on.
+- **EditorConfig built in:** `.editorconfig` files are read when a file opens,
+  from its folder up to the one marked `root = true`. Halo applies
+  `indent_style`, `indent_size`, `tab_width`, `end_of_line`, `charset`,
+  `trim_trailing_whitespace` and `insert_final_newline`, and these override
+  the matching settings. Number ranges (`{1..3}`) in section names are not
+  supported yet.
+
 ## [0.1.20] - 2026-11-24
 
 Checked with unit tests, clippy and the GitHub API calls against a public
@@ -797,7 +825,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.20...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.21...HEAD
+[0.1.21]: https://github.com/joezhuo2/halo/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/joezhuo2/halo/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/joezhuo2/halo/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/joezhuo2/halo/compare/v0.1.17...v0.1.18
