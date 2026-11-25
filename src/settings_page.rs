@@ -96,6 +96,7 @@ pub const SETTINGS: &[Meta] = &[
     m("minimap_side", 0, ED, "Minimap Side", "The side of the editor the minimap is on.", Kind::Choice(&[("right", "Right"), ("left", "Left")])),
     m("breadcrumbs", 0, ED, "Breadcrumbs", "Show the path and the enclosing symbols above the text.", Kind::Toggle),
     m("hide_secrets", 0, ED, "Hide Secrets on Screen", "Mask credential values until a caret or selection touches their line.", Kind::Toggle),
+    m("elastic_tabstops", 0, ED, "Elastic Tabstops", "Align tab-separated columns across neighbouring lines, also in proportional fonts. Indent tabs keep their width.", Kind::Toggle),
     m("code_lens", 0, ED, "Code Lens", "Show reference counts and the language server's lenses, such as Run and Debug, above declarations. Click one to run it.", Kind::Toggle),
     m("lightbulb", 0, ED, "Lightbulb", "Show a lightbulb in the gutter when code actions are available on the cursor line.", Kind::Toggle),
     m("inlay_hints", 0, ED, "Inlay Hints", "Show inferred types and parameter names inside the line.", Kind::Toggle),

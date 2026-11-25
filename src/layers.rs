@@ -34,6 +34,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("cursor_smooth_caret_animation", "editor.cursorSmoothCaretAnimation"),
     ("copy_with_syntax_highlighting", "editor.copyWithSyntaxHighlighting"),
     ("hide_secrets", "halo.hideSecrets"),
+    ("elastic_tabstops", "editor.elasticTabstops"),
     ("code_lens", "editor.codeLens"),
     ("lightbulb", "editor.lightbulb.enabled"),
     ("markdown_validate", "markdown.validate.enabled"),

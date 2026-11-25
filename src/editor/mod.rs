@@ -1,6 +1,7 @@
 mod ai_inline;
 pub mod bookmarks;
 pub mod mark_style;
+mod elastic;
 pub mod layouts;
 mod buffer;
 mod chat;
@@ -2707,6 +2708,20 @@ impl Editors {
                         ui.ctx().request_repaint();
                     }
                     let hl: &Highlighter = hl;
+                    let elastic = (settings.elastic_tabstops && wrap_cols.is_none()).then(|| {
+                        let measure = |s: &str| ui.painter().layout_job(style.apply(LayoutJob::simple_singleline(s.into(), font.clone(), theme.text))).size().x;
+                        let has = |l: usize| !elastic::cells(&visible_text(buf_ref, l)).1.is_empty();
+                        let (mut a, mut b) = (first, last);
+                        // shortcut: blocks are scanned at most 200 lines past the view, so a longer block may align differently while scrolling.
+                        while a > 0 && first - a < 200 && has(a - 1) { a -= 1; }
+                        while b < total && b - last < 200 && has(b) { b += 1; }
+                        let lines: Vec<(usize, Vec<f32>)> = (a..b).map(|l| {
+                            let text = visible_text(buf_ref, l);
+                            let (indent, cells) = elastic::cells(&text);
+                            (indent, cells.into_iter().map(measure).collect())
+                        }).collect();
+                        (a, elastic::pads(&lines, measure("	")))
+                    });
                     let initial_sels = if secret.is_some() || search.is_some() { tab.sels.clone() } else { vec![] };
                     let layout = |painter: &egui::Painter, line: usize, sels: &[Sel]| -> Row {
                         let text = visible_text(buf_ref, line);
@@ -2779,7 +2794,11 @@ impl Editors {
                                 let within: Vec<(usize, &str)> = inserts.iter().filter(|x| x.0 >= span.start && (x.0 < span.end || last)).copied().collect();
                                 let hints = hints.iter().filter(|h| h.0 >= start && (h.0 < end || last)).map(|h| (h.0 - start, h.1)).collect();
                                 let format = if ghost.is_some() { &ghost_format } else { &hint_format };
-                                let galley = painter.layout_job(style.apply(job(&text, span, hl.get(line), &font, theme.text, &over, &within, format)));
+                                let mut laid = style.apply(job(&text, span, hl.get(line), &font, theme.text, &over, &within, format));
+                                if let Some(pads) = elastic.as_ref().and_then(|(a, pads)| pads.get(line.checked_sub(*a)?)).filter(|p| !p.is_empty()) {
+                                    laid = elastic::apply(laid, pads);
+                                }
+                                let galley = painter.layout_job(laid);
                                 Piece { start, galley, hints }
                             })
                             .collect();

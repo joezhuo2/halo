@@ -528,6 +528,10 @@ impl Halo {
                 self.settings.hide_secrets ^= true;
                 self.settings.save();
             }
+            ToggleElasticTabstops => {
+                self.settings.elastic_tabstops ^= true;
+                self.settings.save();
+            }
             ToggleMinimap => {
                 self.settings.minimap ^= true;
                 self.settings.save();
