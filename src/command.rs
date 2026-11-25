@@ -211,6 +211,10 @@ pub enum Command {
     ActivityBarHidden,
     MoveView,
     MoveViewTo(crate::workbench::View),
+    MoveViewToNewWindow,
+    MoveViewBackToMain,
+    DetachView(crate::workbench::View),
+    AttachView(crate::workbench::View),
     MoveViewPlace(crate::workbench::View, crate::workbench::Place),
     ResetViewLocations,
 
@@ -827,7 +831,7 @@ pub fn all() -> Vec<Command> {
         ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ShowProblems, RefreshExplorer, ToggleInlineDiff, ToggleUnchangedRegions, FilterExplorer, ToggleFileNesting, FocusOpenEditors,
         MarkdownPreview, MarkdownPreviewSide, OpenInLogViewer, ReopenInHexEditor, ToggleTableView, ToggleFullScreen, ToggleZenMode, ToggleCenteredLayout, ToggleSidebarPosition, ToggleSecondarySidebar,
         MovePanelLeft, MovePanelRight, MovePanelBottom, MovePanelTop, TogglePanelPosition, ToggleMaximizedPanel, AlignPanelCenter, AlignPanelJustify,
-        AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, ResetViewLocations, ToggleOpenEditorsTree,
+        AlignPanelLeft, AlignPanelRight, ActivityBarSide, ActivityBarTop, ActivityBarHidden, MoveView, MoveViewToNewWindow, MoveViewBackToMain, ResetViewLocations, ToggleOpenEditorsTree,
         SetWindowColor, ZoomInEditor, ZoomOutEditor, ZoomResetEditor, SaveLayout, SwitchLayout, DeleteLayout,
         GoToFile, ShowCommands, FindInFiles, NewSearchEditor, OpenSearchEditor, RerunSearchEditorSearch, ToggleSearchEditorContextLines,
         ToggleSearchEditorCaseSensitive, ToggleSearchEditorWholeWord, ToggleSearchEditorRegex, GoToSymbol, GoToLine, GoToBracket, NextEditor, PrevEditor, GoBack, GoForward, GoToLastEditLocation,
@@ -1017,6 +1021,8 @@ impl Command {
             Self::OpenSearchEditor => return "search.action.openInEditor".into(),
             Self::TriggerInlineSuggestion => return "editor.action.inlineSuggest.trigger".into(),
             Self::RewrapComment => return "rewrap.rewrapComment".into(),
+            Self::MoveViewToNewWindow => return "workbench.action.moveViewToNewWindow".into(),
+            Self::MoveViewBackToMain => return "workbench.action.moveViewBackToMainWindow".into(),
             Self::CustomizeMenus => return "halo.customizeMenus".into(),
             Self::RestRequest => return "rest-client.request".into(),
             Self::RestRerun => return "rest-client.rerun-last-request".into(),
@@ -1062,7 +1068,7 @@ impl Command {
             | MoveEditorToMainWindow | ToggleFullScreen | ToggleZenMode | ToggleCenteredLayout
             | ToggleSidebarPosition | ToggleSecondarySidebar | MovePanelLeft | MovePanelRight | MovePanelBottom | MovePanelTop
             | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter | AlignPanelJustify | AlignPanelLeft | AlignPanelRight
-            | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations
+            | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView | MoveViewTo(_) | MoveViewPlace(..) | MoveViewToNewWindow | MoveViewBackToMain | DetachView(_) | AttachView(_) | ResetViewLocations
             | SetWindowColor | SetWindowColorTo(_) | ZoomInEditor | ZoomOutEditor | ZoomResetEditor | SaveLayout | SwitchLayout | DeleteLayout
             | OpenLayout(_) | RemoveLayout(_) | ToggleOpenEditorsTree => "View",
             GoToFile | ShowCommands | FindInFiles | GoToSymbol | GoToLine | CursorWordPartLeft | CursorWordPartRight | GoToBracket | GoTo(..) | NextEditor | PrevEditor | GoBack
@@ -1299,6 +1305,10 @@ impl Command {
             ActivityBarHidden => "View: Hide Activity Bar",
             MoveView => "View: Move View...",
             MoveViewTo(_) => "View: Move View To...",
+            MoveViewToNewWindow => "View: Move View into New Window",
+            MoveViewBackToMain => "View: Move View Back to Main Window",
+            DetachView(_) => "Move into New Window",
+            AttachView(_) => "Move Back to Main Window",
             MoveViewPlace(..) => "View: Move View",
             ResetViewLocations => "View: Reset View Locations",
             GoToFile => "Go to File...",

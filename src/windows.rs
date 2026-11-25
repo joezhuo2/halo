@@ -117,5 +117,31 @@ impl Halo {
             });
         }
         self.editors.close_empty_groups();
+        for (view, at) in self.session.layout.detached.clone() {
+            let size = at.map_or(egui::vec2(420.0, 560.0), |r| egui::vec2(r[2], r[3]));
+            let mut builder = egui::ViewportBuilder::default().with_title(format!("{} - Halo", view.name())).with_inner_size(size).with_min_inner_size([240.0, 160.0]);
+            if let Some(r) = at {
+                builder = builder.with_position([r[0], r[1]]);
+            }
+            ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("halo_view_window", view as u8)), builder, |ui, _| {
+                if !self.page.keys.recording() {
+                    self.global_shortcuts(ui.ctx());
+                }
+                let (close, outer, inner) = ui.input(|i| (i.viewport().close_requested(), i.viewport().outer_rect, i.viewport().inner_rect));
+                if let (Some(outer), Some(inner)) = (outer, inner)
+                    && let Some(d) = self.session.layout.detached.iter_mut().find(|d| d.0 == view)
+                {
+                    d.1 = Some([outer.min.x, outer.min.y, inner.width(), inner.height()]);
+                }
+                let fill = self.theme.panel;
+                egui::CentralPanel::default().frame(egui::Frame::new().fill(fill)).show(ui, |ui| {
+                    let rect = ui.max_rect();
+                    self.view_ui(ui, view, rect);
+                });
+                if close {
+                    self.cmds.push(crate::command::Command::AttachView(view));
+                }
+            });
+        }
     }
 }

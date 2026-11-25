@@ -524,7 +524,7 @@ impl Halo {
             ToggleFullScreen | ToggleZenMode | ToggleCenteredLayout | ToggleSidebarPosition | ToggleSecondarySidebar | MovePanelLeft
             | MovePanelRight | MovePanelBottom | MovePanelTop | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter
             | AlignPanelJustify | AlignPanelLeft | AlignPanelRight | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView
-            | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations => self.layout_command(cmd),
+            | MoveViewTo(_) | MoveViewPlace(..) | MoveViewToNewWindow | MoveViewBackToMain | DetachView(_) | AttachView(_) | ResetViewLocations => self.layout_command(cmd),
             ToggleHideSecrets => {
                 self.settings.hide_secrets ^= true;
                 self.settings.save();

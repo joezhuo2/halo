@@ -207,6 +207,7 @@ pub struct Zen {
 #[serde(default)]
 pub struct Workbench {
     pub moved: Vec<(View, Place)>,
+    pub detached: Vec<(View, Option<[f32; 4]>)>,
     pub active: [Option<View>; 3],
     pub panel_at: Option<Edge>,
     pub panel_max: bool,
@@ -224,6 +225,7 @@ impl Default for Workbench {
     fn default() -> Self {
         Self {
             moved: vec![],
+            detached: vec![],
             active: [None, None, Some(Terminal)],
             panel_at: None,
             panel_max: false,
@@ -245,7 +247,7 @@ impl Workbench {
     }
 
     pub fn views(&self, place: Place) -> Vec<View> {
-        ALL.into_iter().filter(|v| self.place(*v) == place).collect()
+        ALL.into_iter().filter(|v| self.place(*v) == place && !self.is_detached(*v)).collect()
     }
 
     pub fn tops(&self, place: Place) -> Vec<View> {
@@ -277,8 +279,27 @@ impl Workbench {
         true
     }
 
+    pub fn is_detached(&self, view: View) -> bool {
+        self.detached.iter().any(|d| d.0 == view)
+    }
+
+    pub fn detach(&mut self, view: View) -> bool {
+        if self.is_detached(view) {
+            return false;
+        }
+        self.detached.push((view, None));
+        true
+    }
+
+    pub fn attach(&mut self, view: View) -> bool {
+        let before = self.detached.len();
+        self.detached.retain(|d| d.0 != view);
+        before != self.detached.len()
+    }
+
     pub fn reset_views(&mut self) {
         self.moved.clear();
+        self.detached.clear();
         self.active = Self::default().active;
     }
 
@@ -423,6 +444,7 @@ fn side_menu(ui: &mut Ui, right: bool, cmds: &mut Vec<Command>) {
         (if right { "Move Primary Side Bar Left" } else { "Move Primary Side Bar Right" }, Command::ToggleSidebarPosition),
         ("Hide Primary Side Bar", Command::ToggleSidebar),
         ("Move View...", Command::MoveView),
+        ("Move View into New Window...", Command::MoveViewToNewWindow),
         ("Reset View Locations", Command::ResetViewLocations),
     ];
     for (label, cmd) in items {
@@ -528,6 +550,24 @@ impl Halo {
             }
             MoveViewPlace(view, place) => {
                 if self.session.layout.move_view(view, place) {
+                    self.reveal(view);
+                }
+            }
+            MoveViewToNewWindow => {
+                let items = ALL.into_iter().filter(|v| !layout.is_detached(*v)).map(|v| (v.name().to_owned(), layout.place(v).name().to_owned(), DetachView(v))).collect();
+                self.search.pick("Select a view to move into a new window", items);
+            }
+            MoveViewBackToMain => match layout.detached.as_slice() {
+                [] => {}
+                [(view, _)] => self.cmds.push(AttachView(*view)),
+                list => {
+                    let items = list.iter().map(|(v, _)| (v.name().to_owned(), String::new(), AttachView(*v))).collect();
+                    self.search.pick("Select a view to move back to the main window", items);
+                }
+            },
+            DetachView(view) => drop(layout.detach(view)),
+            AttachView(view) => {
+                if layout.attach(view) {
                     self.reveal(view);
                 }
             }
@@ -701,9 +741,16 @@ impl Halo {
                 if resp.clicked() {
                     clicked = Some(*view);
                 }
-                if primary {
-                    resp.context_menu(|ui| side_menu(ui, right, &mut self.cmds));
-                }
+                resp.context_menu(|ui| {
+                    if ui.button("Move into New Window").clicked() {
+                        self.cmds.push(Command::DetachView(*view));
+                        ui.close();
+                    }
+                    if primary {
+                        ui.separator();
+                        side_menu(ui, right, &mut self.cmds);
+                    }
+                });
             }
             if !primary {
                 return;
@@ -730,7 +777,7 @@ impl Halo {
         }
     }
 
-    fn view_ui(&mut self, ui: &mut Ui, view: View, rect: Rect) {
+    pub(crate) fn view_ui(&mut self, ui: &mut Ui, view: View, rect: Rect) {
         let cwd = self.session.folder.clone();
         let active = self.editors.active_path();
         ui.scope_builder(UiBuilder::new().max_rect(rect).id_salt(("view", view as u8)), |ui| {
@@ -768,7 +815,7 @@ impl Halo {
             ui.add_space(ui::SECTION + 8.0);
             return ui::skeleton(ui, &self.theme, 8);
         }
-        let views = self.session.layout.views(self.session.layout.place(Explorer));
+        let views = if self.session.layout.is_detached(Explorer) { vec![] } else { self.session.layout.views(self.session.layout.place(Explorer)) };
         let (has_outline, has_timeline) = (views.contains(&Outline), views.contains(&Timeline));
         let full = ui.available_rect_before_wrap().height();
         let timeline_open = has_timeline && self.session.timeline;
@@ -1005,6 +1052,24 @@ mod tests {
         assert_eq!(app.session.layout.place(TestResults), Place::Panel);
     }
 
+    #[test]
+    fn headless_detaches_views_into_windows_and_brings_them_back() {
+        let (ctx, mut app) = headless();
+        run(&ctx, &mut app, 0.0, vec![]);
+        app.cmds.extend([Command::DetachView(Explorer), Command::DetachView(Problems)]);
+        run(&ctx, &mut app, 0.1, vec![]);
+        run(&ctx, &mut app, 0.2, vec![]);
+        assert!(app.session.layout.is_detached(Explorer) && app.session.layout.is_detached(Problems));
+        assert!(!app.showing(Explorer) && app.session.layout.tops(Place::Primary)[0] == Search);
+        app.cmds.push(Command::AttachView(Explorer));
+        run(&ctx, &mut app, 0.3, vec![]);
+        assert!(app.showing(Explorer) && !app.session.layout.is_detached(Explorer));
+        app.cmds.push(Command::MoveViewBackToMain);
+        run(&ctx, &mut app, 0.4, vec![]);
+        run(&ctx, &mut app, 0.5, vec![]);
+        assert!(app.session.layout.detached.is_empty() && app.showing(Problems));
+    }
+
     fn open_changes_in(dir: std::path::PathBuf) {
         let run_git = |args: &[&str]| crate::git::exec(&dir, args).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
@@ -1181,7 +1246,15 @@ mod tests {
         assert!(w.views(Place::Secondary).is_empty() && w.shown(Place::Secondary).is_none());
         let back: Workbench = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
         assert_eq!(back, w);
+        assert!(w.detach(Explorer) && w.detach(Terminal) && !w.detach(Terminal));
+        assert_eq!(w.tops(Place::Primary), [Search, SourceControl, RunAndDebug, Testing, Outline, Timeline]);
+        assert!(!w.tops(Place::Panel).contains(&Terminal) && w.shown(Place::Panel) != Some(Terminal));
+        w.detached[0].1 = Some([10.0, 20.0, 300.0, 400.0]);
+        let back: Workbench = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+        assert_eq!(back.detached, w.detached);
+        assert!(w.attach(Explorer) && !w.attach(Explorer) && w.tops(Place::Primary)[0] == Explorer);
         w.reset_views();
+        assert!(w.detached.is_empty());
         assert!(w.moved.is_empty() && w.active == Workbench::default().active && w.place(Ai) == Place::Secondary);
         let old: crate::settings::Session = serde_json::from_str(r#"{"sidebar":true,"search":true,"debug_view":false,"ai":true}"#).unwrap();
         assert!(old.ai && old.layout == Workbench::default());

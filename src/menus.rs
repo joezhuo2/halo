@@ -35,7 +35,7 @@ pub fn appearance() -> Vec<Option<Command>> {
         Some(MovePanelLeft), Some(MovePanelRight), Some(MovePanelBottom), Some(MovePanelTop), Some(TogglePanelPosition), Some(ToggleMaximizedPanel), None,
         Some(AlignPanelCenter), Some(AlignPanelJustify), Some(AlignPanelLeft), Some(AlignPanelRight), None,
         Some(ActivityBarSide), Some(ActivityBarTop), Some(ActivityBarHidden), None,
-        Some(MoveView), Some(ResetViewLocations),
+        Some(MoveView), Some(MoveViewToNewWindow), Some(MoveViewBackToMain), Some(ResetViewLocations),
     ]
 }
 
