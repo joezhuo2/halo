@@ -95,7 +95,7 @@ fn numbered(text: &str) -> Option<(usize, bool, usize)> {
     let count = digits.bytes().take_while(u8::is_ascii_digit).count();
     let number = digits[..count].parse().ok()?;
     let matched = digits[count..].starts_with(':');
-    (matched || digits[count..].starts_with(' ')).then(|| (number, matched, (text.len() - digits.len() + count + 2).min(text.len())))
+    (matched || digits[count..].starts_with(' ')).then(|| (number, matched, digits[count..].char_indices().nth(2).map_or(text.len(), |(i, _)| text.len() - digits.len() + count + i)))
 }
 
 fn plural(count: usize, noun: &str) -> String {
@@ -399,6 +399,7 @@ mod tests {
         assert!(marks.found("   9  line 9 foo", 9).is_empty() && marks.found("  10: foo", 0).is_empty());
         assert_eq!(numbered("  10:"), Some((10, true, 5)));
         assert_eq!(numbered("   9  x"), Some((9, false, 6)));
+        assert_eq!(numbered("  10:éa"), Some((10, true, 7)));
         assert!(numbered("  x: 1").is_none() && numbered("src/a.rs:").is_none() && numbered("  10x").is_none());
         assert_eq!(file_name(&buf).as_deref(), Some("foo.code-search"));
         let mut saved = Document::from_text("", "a.code-search".into());

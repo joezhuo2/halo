@@ -17,6 +17,9 @@ All notable changes to Halo are documented here. The format follows
   a disk conflict when the saved bytes still match.
 - Settings search handles non-ASCII queries, and the large-file viewer can
   render in a split shorter than its scrollbar thumb.
+- Editing a numbered line in a Search Editor so non-ASCII text follows the
+  line number no longer crashes, and the merge editor's padding rows can't
+  underflow.
 
 ### Changed
 

@@ -90,7 +90,7 @@ pub(super) fn tint(painter: &Painter, theme: &Theme, m: &MergeTab, line: usize, 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_pads(painter: &Painter, theme: &Theme, pads: &[(usize, u32)], starts: &[u32], (first, last): (usize, usize), top: f32, clip: Rect, line_h: f32) {
     for &(line, count) in pads.iter().filter(|p| p.0 >= first && p.0 <= last + 1) {
-        let y = top + (starts[line.min(starts.len() - 1)] - count) as f32 * line_h;
+        let y = top + starts.get(line.min(starts.len().saturating_sub(1))).map_or(0, |s| s.saturating_sub(count)) as f32 * line_h;
         hatch(painter, Rect::from_min_size(pos2(clip.left(), y), vec2(clip.width(), count as f32 * line_h)), theme);
     }
 }
