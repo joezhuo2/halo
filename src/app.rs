@@ -521,6 +521,10 @@ impl Halo {
             | MovePanelRight | MovePanelBottom | MovePanelTop | TogglePanelPosition | ToggleMaximizedPanel | AlignPanelCenter
             | AlignPanelJustify | AlignPanelLeft | AlignPanelRight | ActivityBarSide | ActivityBarTop | ActivityBarHidden | MoveView
             | MoveViewTo(_) | MoveViewPlace(..) | ResetViewLocations => self.layout_command(cmd),
+            ToggleHideSecrets => {
+                self.settings.hide_secrets ^= true;
+                self.settings.save();
+            }
             ToggleMinimap => {
                 self.settings.minimap ^= true;
                 self.settings.save();

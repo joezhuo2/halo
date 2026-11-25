@@ -32,6 +32,7 @@ mod run_form;
 mod scm;
 mod scratch;
 mod search;
+mod secrets;
 mod settings;
 mod settings_page;
 mod shortcuts;

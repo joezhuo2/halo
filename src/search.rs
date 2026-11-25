@@ -110,7 +110,7 @@ fn parse_grep(text: &str) -> Vec<Item> {
         .filter_map(|line| {
             let mut parts = line.splitn(3, '\0');
             let (path, number, text) = (parts.next()?, parts.next()?.parse().ok()?, parts.next()?);
-            Some(Item::Hit(path.to_owned(), number, text.trim().chars().take(200).collect()))
+            Some(Item::Hit(path.to_owned(), number, text.trim().to_owned()))
         })
         .take(SHOWN * 4)
         .collect()
@@ -379,7 +379,11 @@ impl Search {
                                 (icons::FILE, name.to_owned(), dir.to_owned())
                             }
                             Item::Command(c) => (icons::CARET_RIGHT, c.label().to_owned(), command::shortcut_text(&ctx, c).unwrap_or_default()),
-                            Item::Hit(path, line, text) => (icons::TEXT_ALIGN_LEFT, text.clone(), format!("{path}:{line}")),
+                            Item::Hit(path, line, text) => {
+                                let kind = editors.config.hide_secrets.then(|| crate::secrets::kind(Path::new(path))).flatten();
+                                let shown = crate::secrets::fragment(kind, text);
+                                (icons::TEXT_ALIGN_LEFT, shown.chars().take(200).collect(), format!("{path}:{line}"))
+                            },
                             Item::Symbol(line, name) => (icons::CUBE, name.clone(), format!("line {}", line + 1)),
                             Item::Workspace(symbol) => {
                                 let file = symbol.path.as_deref().and_then(Path::file_name).unwrap_or_default().to_string_lossy();

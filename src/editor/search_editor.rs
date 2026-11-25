@@ -165,6 +165,26 @@ pub(super) fn file_name(buf: &Document) -> Option<String> {
     Some(format!("{}.code-search", if safe.trim().is_empty() { "Untitled" } else { safe.trim() }))
 }
 
+#[derive(Default)]
+pub(super) struct Sources {
+    version: Option<u64>,
+    headers: Vec<(usize, Option<crate::secrets::Kind>)>,
+}
+
+impl Sources {
+    pub(super) fn update(&mut self, buf: &Document) {
+        if self.version == Some(buf.version) { return }
+        self.headers.clear();
+        for (line, slice) in buf.rope.lines().enumerate() {
+            if matches!(slice.chars().next(), None | Some(' ' | '\n')) { continue }
+            let text = slice.to_string();
+            let kind = text.trim_end().strip_suffix(':').and_then(|p| crate::secrets::kind(std::path::Path::new(p)));
+            self.headers.push((line, kind));
+        }
+        self.version = Some(buf.version);
+    }
+}
+
 pub(super) struct Marks {
     top: usize,
     pattern: Option<Pattern>,
@@ -176,6 +196,26 @@ impl Marks {
             let (header, top) = header_of(buf);
             Self { top, pattern: header.pattern() }
         })
+    }
+
+    pub(super) fn masked(&self, buf: &Document, line: usize, sources: &Sources) -> Option<String> {
+        if line < self.top { return None }
+        let index = sources.headers.partition_point(|h| h.0 < line).checked_sub(1)?;
+        let kind = sources.headers[index].1?;
+        let text = buf.line_text(line);
+        let (_, _, prefix) = numbered(&text)?;
+        let source = &text[prefix..];
+        if kind == crate::secrets::Kind::Url && source.chars().count() >= MAX_LINE
+            && let Some((scheme, rest)) = source.split_once("://")
+            && let Some((user, tail)) = rest.split_once(':')
+            && !rest.contains(['/', '?', '#'])
+        {
+            return Some(format!("{}{scheme}://{user}:{}", &text[..prefix], "\u{2022}".repeat(tail.chars().count())));
+        }
+        match crate::secrets::fragment(Some(kind), source) {
+            std::borrow::Cow::Owned(display) => Some(format!("{}{display}", &text[..prefix])),
+            _ => None,
+        }
     }
 
     pub(super) fn color(&self, text: &str, line: usize, theme: &Theme) -> Option<(usize, usize, Color32)> {

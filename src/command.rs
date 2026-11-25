@@ -182,6 +182,7 @@ pub enum Command {
     OpenFolderInNewWindow,
     DuplicateWorkspace,
     ToggleMinimap,
+    ToggleHideSecrets,
     ToggleWordWrap,
     ToggleVimMode,
     ToggleTheme,
@@ -804,7 +805,7 @@ pub fn all() -> Vec<Command> {
         SelectAll, AddCursorAbove, AddCursorBelow, AddCursorsToLineEnds, SelectNextOccurrence, MoveSelectionToNextFindMatch, SelectAllOccurrences, ExpandSelection, ShrinkSelection,
         CursorWordPartLeftSelect, CursorWordPartRightSelect,
         SelectToBracket, CursorUndo, ToggleColumnSelection, CursorColumnSelectLeft, CursorColumnSelectRight, CursorColumnSelectUp,
-        CursorColumnSelectDown, ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleWordWrap, ToggleVimMode,
+        CursorColumnSelectDown, ShowExplorer, ShowSourceControl, ShowRunAndDebug, ShowTesting, ToggleSidebar, TogglePanel, ToggleAi, SplitEditor, ToggleMinimap, ToggleHideSecrets, ToggleWordWrap, ToggleVimMode,
         SplitEditorDown, SplitEditorLeft, SplitEditorUp, LayoutSingle, LayoutTwoColumns, LayoutThreeColumns, LayoutTwoRows, LayoutThreeRows,
         LayoutGrid, LayoutTwoRowsRight, LayoutTwoColumnsBottom, ToggleMaximizeGroup, ToggleEditorGroupLock, ResetGroupSizes, FocusGroupLeft, FocusGroupRight,
         FocusGroupUp, FocusGroupDown, MoveEditorLeft, MoveEditorRight, MoveEditorUp, MoveEditorDown, CloseGroup, MoveEditorToNewWindow,
@@ -993,6 +994,7 @@ impl Command {
             return format!("git{op:?}");
         }
         match self {
+            Self::ToggleHideSecrets => return "halo.toggleHideSecrets".into(),
             Self::NewSearchEditor => return "search.action.openNewEditor".into(),
             Self::OpenSearchEditor => return "search.action.openInEditor".into(),
             Self::TriggerInlineSuggestion => return "editor.action.inlineSuggest.trigger".into(),
@@ -1028,7 +1030,7 @@ impl Command {
             | CursorWordPartLeftSelect | CursorWordPartRightSelect
             | ExpandSelection | ShrinkSelection | SelectToBracket | CursorUndo | ToggleColumnSelection | CursorColumnSelectLeft
             | CursorColumnSelectRight | CursorColumnSelectUp | CursorColumnSelectDown => "Selection",
-            ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap
+            ShowExplorer | ShowSourceControl | ShowRunAndDebug | ShowTesting | ToggleSidebar | TogglePanel | ToggleAi | SplitEditor | ToggleMinimap | ToggleHideSecrets
             | AgentChangesKeepAll | AgentChangesUndoAll | AgentChangesShow | AgentChangesResetBaseline
             | ToggleWordWrap | ToggleVimMode | ToggleTheme | ZoomIn | ZoomOut | ZoomReset | ShowProblems | RefreshExplorer | ToggleInlineDiff | ToggleUnchangedRegions | FilterExplorer | ToggleFileNesting
             | FocusOpenEditors | MarkdownPreview | MarkdownPreviewSide | OpenInLogViewer | ReopenInHexEditor | ToggleTableView | SplitEditorDown | SplitEditorLeft | SplitEditorUp | LayoutSingle
@@ -1246,6 +1248,7 @@ impl Command {
             OpenFolderInNewWindow => "Open Folder in New Window...",
             DuplicateWorkspace => "Duplicate Workspace in New Window",
             ToggleMinimap => "Toggle Minimap",
+            ToggleHideSecrets => "Toggle Hide Secrets on Screen",
             ToggleWordWrap => "Toggle Word Wrap",
             ToggleVimMode => "Toggle Vim Mode",
             ToggleTheme => "Toggle Light/Dark Theme",

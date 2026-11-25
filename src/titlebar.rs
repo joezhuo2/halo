@@ -153,7 +153,7 @@ impl Halo {
         self.menu_with(ui, "View", &[
             Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), Some(ShowTesting), None,
             Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), Some(ShowProblems), Some(ShowOutput), Some(ShowNotifications), None,
-            Some(SplitEditor), Some(SplitEditorDown), Some(ToggleMaximizeGroup), Some(ResetGroupSizes), Some(ToggleMinimap), Some(MarkdownPreview), Some(MarkdownPreviewSide), None,
+            Some(SplitEditor), Some(SplitEditorDown), Some(ToggleMaximizeGroup), Some(ResetGroupSizes), Some(ToggleMinimap), Some(ToggleHideSecrets), Some(MarkdownPreview), Some(MarkdownPreviewSide), None,
             Some(ToggleTheme), Some(ZoomIn), Some(ZoomOut), Some(ZoomReset),
         ], &[
             Some(ToggleFullScreen), Some(ToggleZenMode), Some(ToggleCenteredLayout), None,

@@ -387,6 +387,7 @@ impl Editors {
     pub(super) fn merge_after(&mut self, ui: &mut Ui, body: Rect, theme: &Theme, settings: &Settings, doc: &mut Doc, tab: &mut Tab) {
         let Some(m) = tab.merge.as_mut() else { return };
         let a = areas(body, m.base);
+        let kind = settings.hide_secrets.then(|| crate::secrets::kind(&m.path)).flatten();
         let font = FontId::monospace(settings.font_size);
         let number_font = FontId::monospace(settings.font_size - 1.0);
         let char_w = ui.ctx().fonts_mut(|f| f.glyph_width(&font, 'm'));
@@ -416,7 +417,7 @@ impl Editors {
                     continue;
                 };
                 let chunk = &m.model.chunks[row.chunk];
-                let text: String = side[line].trim_end_matches('\n').chars().take(MAX_COLS).collect();
+                let text: String = crate::secrets::fragment(kind, side[line].trim_end_matches('\n')).chars().take(MAX_COLS).collect();
                 let galley = painter.layout_job(style.apply(job(&text, 0..text.len(), p.hl.get(line), &font, theme.text, &[], &[], &TextFormat::default())));
                 let alpha = match chunk.kind {
                     merge::Kind::Conflict if chunk.state == State::Base => Some(0.14),

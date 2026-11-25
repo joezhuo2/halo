@@ -17,6 +17,7 @@ pub(crate) struct Hit {
     pub(crate) line: usize,
     pub(crate) col: usize,
     text: String,
+    masked: Option<String>,
     mark: (usize, usize),
 }
 
@@ -80,9 +81,10 @@ fn listed(globs: &[Regex], path: &str) -> bool {
     globs.iter().any(|glob| glob.is_match(path).unwrap_or(false))
 }
 
-fn scan(text: &str, pattern: &Pattern, limit: usize) -> Vec<Hit> {
+fn scan(text: &str, pattern: &Pattern, limit: usize, kind: Option<crate::secrets::Kind>) -> Vec<Hit> {
     let (mut line, mut line_start, mut seen) = (1, 0, 0);
     let mut hits = vec![];
+    let (mut context_at, mut inside) = (0, false);
     for (from, to) in pattern.find(text).into_iter().take(limit) {
         for (at, _) in text[seen..from].match_indices('\n') {
             line += 1;
@@ -94,7 +96,18 @@ fn scan(text: &str, pattern: &Pattern, limit: usize) -> Vec<Hit> {
         let shown = line_start + (whole.len() - whole.trim_start().len());
         let before = text[shown..from].chars().count();
         let length = text[from..to.min(line_end)].chars().count();
+        if crate::secrets::contextual(kind) {
+            for previous in text[context_at..line_start].lines() {
+                inside = crate::secrets::after(kind, previous, inside);
+            }
+            context_at = line_start;
+        }
+        let masked = match crate::secrets::mask(kind, &text[line_start..line_end], inside) {
+            std::borrow::Cow::Owned(s) => Some(s.chars().skip(text[line_start..shown].chars().count()).take(240).collect()),
+            _ => None,
+        };
         hits.push(Hit {
+            masked,
             line,
             col: whole.chars().count() + 1,
             text: text[shown..line_end].chars().take(240).collect(),
@@ -125,7 +138,7 @@ pub(crate) fn each_file(roots: &[(PathBuf, String)], query: &Query, mut found: i
             continue;
         }
         let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
-        let hits = scan(&text, &pattern, MAX_HITS - total);
+        let hits = scan(&text, &pattern, MAX_HITS - total, crate::secrets::kind(std::path::Path::new(&path)));
         if !hits.is_empty() {
             total += hits.len();
             found(path, &text, hits);
@@ -305,15 +318,16 @@ impl FindPanel {
                     for hit in file.hits.iter().filter(|_| file.open) {
                         let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
                         ui::row_bg(ui, theme, r, row.id, row.hovered(), false);
-                        let byte = |col: usize| hit.text.char_indices().nth(col).map_or(hit.text.len(), |c| c.0);
-                        ui::tree_item(ui, &row, hit.text.trim(), false, 1, None);
+                        let text = hit.masked.as_deref().filter(|_| editors.config.hide_secrets).unwrap_or(&hit.text);
+                        let byte = |col: usize| text.char_indices().nth(col).map_or(text.len(), |c| c.0);
+                        ui::tree_item(ui, &row, text.trim(), false, 1, None);
                         let (from, to) = (byte(hit.mark.0), byte(hit.mark.1));
                         let plain = TextFormat::simple(FontId::monospace(12.0), theme.text);
                         let found = TextFormat { background: ui::with_alpha(theme.accent, 0.3), ..plain.clone() };
                         let mut job = LayoutJob::default();
-                        job.append(&hit.text[..from], 0.0, plain.clone());
-                        job.append(&hit.text[from..to], 0.0, found);
-                        job.append(&hit.text[to..], 0.0, plain);
+                        job.append(&text[..from], 0.0, plain.clone());
+                        job.append(&text[from..to], 0.0, found);
+                        job.append(&text[to..], 0.0, plain);
                         let painter = ui.painter().with_clip_rect(r);
                         let galley = painter.layout_job(job);
                         painter.galley(pos2(r.left() + 26.0, r.center().y - galley.size().y / 2.0), galley, Color32::PLACEHOLDER);
@@ -368,6 +382,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn masks_search_results_before_clipping_and_keeps_match_columns() {
+        use crate::secrets::Kind;
+        let pattern = Pattern::new("token", true, false, false).unwrap();
+        let url = format!("   https://me:token{}@host", "x".repeat(250));
+        let hits = scan(&url, &pattern, 10, Some(Kind::Url));
+        let hit = &hits[0];
+        assert_eq!((hit.col, hit.mark), (15, (11, 16)));
+        assert!(hit.text.contains("token"));
+        assert_eq!(hit.masked, Some(format!("https://me:{}", "\u{2022}".repeat(229))));
+        let hits = scan("token\n-----BEGIN KEY-----\ntoken\n-----END KEY-----\ntoken", &pattern, 10, Some(Kind::Pem));
+        assert_eq!(hits.iter().map(|h| h.masked.is_some()).collect::<Vec<_>>(), [false, true, false]);
+    }
+
+    #[test]
     fn matches_globs_scans_lines_and_replaces_on_disk() {
         let globs = globs("src, *.md,docs/**/*.txt ");
         let hit = |path: &str| listed(&globs, path);
@@ -375,8 +403,8 @@ mod tests {
         assert!(!hit("srcs/a.rs") && !hit("a.mdx") && !hit("docs/c.rs"));
 
         let pattern = Pattern::new("foo", true, false, false).unwrap();
-        let hits = scan("a\n  x foo foo\nfoo", &pattern, 10);
-        assert_eq!(hits[0], Hit { line: 2, col: 5, text: "x foo foo".into(), mark: (2, 5) });
+        let hits = scan("a\n  x foo foo\nfoo", &pattern, 10, None);
+        assert_eq!(hits[0], Hit { masked: None, line: 2, col: 5, text: "x foo foo".into(), mark: (2, 5) });
         assert_eq!(hits.iter().map(|h| (h.line, h.col)).collect::<Vec<_>>(), vec![(2, 5), (2, 9), (3, 1)]);
 
         let dir = std::env::temp_dir().join(format!("halo-find-test-{}", std::process::id()));

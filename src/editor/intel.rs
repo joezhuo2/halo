@@ -442,6 +442,24 @@ pub(super) struct Hover {
     drawn: usize,
 }
 
+struct PeekFile {
+    lines: Vec<String>,
+    kind: Option<crate::secrets::Kind>,
+    secret_lines: Vec<bool>,
+}
+
+impl PeekFile {
+    fn new(path: &Path, lines: Vec<String>) -> Self {
+        let kind = crate::secrets::kind(path);
+        let secret_lines = crate::secrets::line_states(kind, &lines);
+        Self { lines, kind, secret_lines }
+    }
+
+    fn display(&self, line: usize, hide: bool) -> Option<std::borrow::Cow<'_, str>> {
+        Some(crate::secrets::mask(self.kind.filter(|_| hide), self.lines.get(line)?, self.secret_lines.get(line).copied().unwrap_or(false)))
+    }
+}
+
 pub(super) struct Peek {
     pub doc: u64,
     pub pos: usize,
@@ -450,7 +468,7 @@ pub(super) struct Peek {
     title: String,
     items: Vec<Location>,
     selected: usize,
-    files: HashMap<String, Vec<String>>,
+    files: HashMap<String, PeekFile>,
     hierarchy: Option<(bool, bool)>,
     reveal: bool,
     scroll: isize,
@@ -927,11 +945,9 @@ impl Editors {
 
     fn open_peek(&mut self, doc: u64, pos: usize, title: &str, mut items: Vec<Location>, hierarchy: Option<(bool, bool)>) {
         items.truncate(500);
-        let mut files: HashMap<String, Vec<String>> = HashMap::new();
-        for item in &mut items {
-            let lines = files.entry(lsp::key(&item.path)).or_insert_with(|| self.lines_of(&item.path));
-            let text = lines.get(item.start.0).map(|line| line.trim()).unwrap_or_default();
-            item.label = if item.label.is_empty() { text.to_owned() } else { format!("{}   {text}", item.label) };
+        let mut files = HashMap::new();
+        for item in &items {
+            files.entry(lsp::key(&item.path)).or_insert_with(|| PeekFile::new(&item.path, self.lines_of(&item.path)));
         }
         let anchor = self.docs.get(&doc).map_or((0, 0), |d| {
             let line = d.buf.line_of(pos.min(d.buf.len()));
@@ -1439,7 +1455,7 @@ impl Editors {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn hover_ui(&mut self, ctx: &egui::Context, theme: &Theme, font: &FontId, g: usize, id: u64, at: Option<Pos2>, line_h: f32) {
+    pub(super) fn hover_ui(&mut self, ctx: &egui::Context, theme: &Theme, font: &FontId, g: usize, id: u64, at: Option<Pos2>, line_h: f32, masked: Option<&str>) {
         let Some(hover) = self.intel.hover.as_mut().filter(|h| (h.group, h.doc) == (g, id) && !h.blocks.is_empty()) else { return };
         let Some(at) = at else { return };
         let (pivot, pos) = match at.y > ctx.content_rect().center().y {
@@ -1455,6 +1471,10 @@ impl Editors {
             popup_frame(theme).inner_margin(8.0).show(ui, |ui| {
                 ui.set_max_width(580.0);
                 ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    if let Some(text) = masked {
+                        ui.add(egui::Label::new(RichText::new(text).font(font.clone()).color(theme.text)).wrap());
+                        return;
+                    }
                     for (kind, text) in &hover.blocks {
                         let (shown, found) = if *kind == 0 { hover_links(text) } else { Default::default() };
                         let rich = match kind {
@@ -1611,6 +1631,7 @@ impl Editors {
         painter.rect_filled(header, CornerRadius::ZERO, ui::mix(theme.panel, theme.accent, 0.14));
         let (mut close, mut flip, mut jump, mut select) = (false, false, None, None);
         let current = peek.items.get(peek.selected).cloned();
+        let hide = self.config.hide_secrets;
         let name = current.as_ref().map(|item| file_name(&item.path)).unwrap_or_default();
         let folder = current.as_ref().and_then(|item| item.path.parent()).map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default();
         ui.scope_builder(UiBuilder::new().max_rect(header.shrink2(vec2(8.0, 0.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
@@ -1638,13 +1659,13 @@ impl Editors {
                 ui.input_mut(|i| i.smooth_scroll_delta.y = 0.0);
                 peek.scroll -= (wheel / row_h).round() as isize;
             }
-            let total = lines.map_or(0, Vec::len);
+            let total = lines.map_or(0, |file| file.lines.len());
             let natural = item.start.0 as isize - context.min(shown / 2) as isize;
             peek.scroll = peek.scroll.clamp(-natural.max(0), (total as isize - natural - 1).max(0));
             let first = (natural + peek.scroll).max(0) as usize;
             let clip = painter.with_clip_rect(preview);
             for (index, line) in (first..first + shown).enumerate() {
-                let Some(text) = lines.and_then(|lines| lines.get(line)) else { break };
+                let Some(text) = lines.and_then(|file| file.display(line, hide)) else { break };
                 let y = preview.top() + index as f32 * row_h;
                 if line == item.start.0 {
                     let band = Rect::from_min_size(pos2(preview.left(), y), vec2(preview.width(), row_h));
@@ -1671,9 +1692,11 @@ impl Editors {
                 for (index, item) in peek.items.iter().enumerate() {
                     let (r, row) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
                     ui::row_bg(ui, theme, r, row.id, row.hovered(), index == peek.selected);
-                    ui::list_item(ui, &row, &item.label, index == peek.selected, (index, peek.items.len()));
+                    let source = peek.files.get(&lsp::key(&item.path)).and_then(|f| f.display(item.start.0, hide)).unwrap_or_default();
+                    let label = if item.label.is_empty() || matches!(source, std::borrow::Cow::Owned(_)) { source.trim().to_owned() } else { format!("{}   {}", item.label, source.trim()) };
+                    ui::list_item(ui, &row, &label, index == peek.selected, (index, peek.items.len()));
                     let p = ui.painter().with_clip_rect(r.shrink2(vec2(6.0, 0.0)));
-                    let end = p.text(r.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, &item.label, FontId::proportional(12.5), theme.text);
+                    let end = p.text(r.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, &label, FontId::proportional(12.5), theme.text);
                     let place = format!("{}:{}", file_name(&item.path), item.start.0 + 1);
                     p.text(pos2(end.right() + 10.0, r.center().y), Align2::LEFT_CENTER, place, FontId::proportional(11.5), theme.text_dim);
                     if index == peek.selected && reveal {

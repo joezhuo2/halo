@@ -105,9 +105,13 @@ fn eol(text: &str, crlf: bool) -> String {
     if crlf { text.replace('\n', "\r\n") } else { text.to_owned() }
 }
 
-fn line_text(rope: &Rope, line: usize) -> String {
+fn line_text(rope: &Rope, line: usize, kind: Option<crate::secrets::Kind>, inside: bool) -> String {
     if line >= rope.len_lines() {
         return String::new();
+    }
+    if kind.is_some() {
+        let text = rope.line(line).to_string();
+        return crate::secrets::mask(kind, text.trim_end_matches('\n'), inside).chars().take(MAX_COLS).collect();
     }
     let text: String = rope.line(line).chars().take(MAX_COLS).collect();
     text.trim_end_matches('\n').to_owned()
@@ -191,6 +195,7 @@ pub(super) struct DiffTab {
     top: PathBuf,
     spec: Spec,
     args: Vec<String>,
+    secret_lines: Vec<bool>,
     left: Arc<String>,
     rope: Rope,
     hl: Highlighter,
@@ -210,12 +215,17 @@ pub(super) struct DiffTab {
 }
 
 impl DiffTab {
+    pub(super) fn secret(&self) -> Option<crate::secrets::Kind> {
+        crate::secrets::kind(Path::new(&self.spec.rel))
+    }
+
     fn new(load: &Load, left: String) -> Self {
         let crlf = left.contains("\r\n");
         let left = left.replace("\r\n", "\n");
         let rope = Rope::from_str(&left);
         let hl = Highlighter::new(Some(&load.top.join(&load.spec.rel)), &rope);
         Self {
+            secret_lines: crate::secrets::line_states(crate::secrets::kind(Path::new(&load.spec.rel)), left.lines()),
             title: load.title.clone(),
             top: load.top.clone(),
             spec: load.spec.clone(),
@@ -498,7 +508,9 @@ pub(super) fn paint_pads(
     font: &FontId,
     style: typography::FontStyle,
     line_h: f32,
+    hide_secrets: bool,
 ) {
+    let kind = hide_secrets.then(|| d.secret()).flatten();
     let number_font = FontId::monospace(font.size - 1.0);
     for &(line, count) in pads.iter().filter(|p| p.0 >= lines.0 && p.0 <= lines.1) {
         let y = top(line);
@@ -515,7 +527,7 @@ pub(super) fn paint_pads(
             let row = Rect::from_min_size(pos2(clip.left(), y + k as f32 * line_h), vec2(clip.width(), line_h));
             painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.2));
             ui::contrast_border(painter, theme, row, theme.deleted);
-            let text = line_text(&d.rope, l);
+            let text = line_text(&d.rope, l, kind, d.secret_lines.get(l).copied().unwrap_or(false));
             let galley = painter.layout_job(style.apply(job(&text, 0..text.len(), d.hl.get(l), font, theme.text, &[], &[], &TextFormat::default())));
             marks(painter, &galley, text_x, row, d.model.left.get(&l), ui::with_alpha(theme.deleted, 0.45));
             painter.text(pos2(number_x, row.center().y), Align2::RIGHT_CENTER, l + 1, number_font.clone(), ui::with_alpha(theme.deleted, 0.9));
@@ -525,6 +537,7 @@ pub(super) fn paint_pads(
 }
 
 fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, starts: &[u32], settings: &Settings) {
+    let kind = settings.hide_secrets.then(|| d.secret()).flatten();
     let right_len = starts.len() - 1;
     let font = &FontId::monospace(settings.font_size);
     let char_w = ui.ctx().fonts_mut(|f| f.glyph_width(font, 'm'));
@@ -566,7 +579,7 @@ fn paint_left(ui: &Ui, theme: &Theme, d: &mut DiffTab, rect: Rect, starts: &[u32
             hatch(&painter, row, theme);
             continue;
         };
-        let text = line_text(&d.rope, line);
+        let text = line_text(&d.rope, line, kind, d.secret_lines.get(line).copied().unwrap_or(false));
         let galley = painter.layout_job(style.apply(job(&text, 0..text.len(), d.hl.get(line), font, theme.text, &[], &[], &TextFormat::default())));
         if found.changed {
             painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(theme.deleted, 0.2));
@@ -868,7 +881,10 @@ impl Editors {
         painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, theme.border));
         let last = buf.lines() - 1;
         let right_len = if buf.rope.line(last).len_chars() == 0 { last } else { last + 1 };
-        let lines_of = |change: usize| change_lines(hunks, change, right_len, |l| line_text(&d.rope, l), |r| buf.line_text(r));
+        let kind = self.config.hide_secrets.then(|| d.secret()).flatten();
+        let lines_of = |change: usize| change_lines(hunks, change, right_len,
+            |l| line_text(&d.rope, l, kind, d.secret_lines.get(l).copied().unwrap_or(false)),
+            |r| crate::secrets::fragment(kind, &buf.line_text(r)).into_owned());
         let first = |lines: &[ViewLine]| lines.iter().position(|l| l.left.is_none() || l.right.is_none()).unwrap_or(0);
         v.change = v.change.min(hunks.len() - 1);
         let mut lines = lines_of(v.change);
@@ -1065,7 +1081,8 @@ impl Editors {
             }
             let color = if removed { theme.deleted } else { theme.added };
             painter.rect_filled(row, CornerRadius::ZERO, ui::with_alpha(color, 0.13));
-            let shown: String = text.chars().take(MAX_COLS).collect();
+            let kind = buf.path.as_deref().filter(|_| self.config.hide_secrets).and_then(crate::secrets::kind);
+            let shown = crate::secrets::fragment(kind, &text).chars().take(MAX_COLS).collect();
             let galley = painter.layout_job(style.apply(LayoutJob::simple_singleline(shown, font.clone(), theme.text)));
             marks(&painter, &galley, text_x, row, ranges, ui::with_alpha(color, 0.3));
             painter.text(pos2(body.left() + 14.0, row.center().y), Align2::CENTER_CENTER, if removed { "-" } else { "+" }, font.clone(), color);

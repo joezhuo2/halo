@@ -111,7 +111,8 @@ impl MultiDiff {
         self.closed = closed;
     }
 
-    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, rect: Rect, font_size: f32, cmds: &mut Vec<Command>) {
+    pub fn ui(&mut self, ui: &mut Ui, theme: &Theme, rect: Rect, settings: &crate::settings::Settings, cmds: &mut Vec<Command>) {
+        let font_size = settings.font_size;
         ui.painter().rect_filled(rect, CornerRadius::ZERO, theme.bg);
         if let Some(rx) = &self.rx {
             match rx.try_recv() {
@@ -231,12 +232,15 @@ impl MultiDiff {
                         }
                     }
                     let x = row.left() + 16.0 + number_w * 2.0;
+                    let kind = settings.hide_secrets.then(|| crate::secrets::kind(&full)
+                        .or_else(|| file.from.as_ref().and_then(|p| crate::secrets::kind(std::path::Path::new(p))))).flatten();
                     if line.kind == '@' {
-                        painter.text(pos2(x, row.center().y), Align2::LEFT_CENTER, &line.text, font.clone(), theme.text_dim);
+                        let header = line.text.split_once(" @@").filter(|_| kind.is_some()).map(|(coords, _)| format!("{coords} @@"));
+                        painter.text(pos2(x, row.center().y), Align2::LEFT_CENTER, header.as_ref().unwrap_or(&line.text), font.clone(), theme.text_dim);
                         continue;
                     }
                     painter.text(pos2(x, row.center().y), Align2::LEFT_CENTER, line.kind, font.clone(), mark);
-                    painter.text(pos2(x + char_w * 2.0, row.center().y), Align2::LEFT_CENTER, &line.text, font.clone(), theme.text);
+                    painter.text(pos2(x + char_w * 2.0, row.center().y), Align2::LEFT_CENTER, crate::secrets::fragment(kind, &line.text), font.clone(), theme.text);
                     if resp.double_clicked() {
                         let at = line.new.or(line.old).unwrap_or(1);
                         cmds.extend([Command::OpenPath(full), Command::GoTo(at, 1)]);

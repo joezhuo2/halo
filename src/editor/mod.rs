@@ -101,6 +101,9 @@ struct Doc {
     folds: Vec<(usize, usize)>,
     ranges: folding::Cache,
     depths: (u64, Vec<u32>),
+    secret_lines: Option<(u64, Option<crate::secrets::Kind>, Vec<bool>)>,
+    virtual_secret: Option<crate::secrets::Kind>,
+    search_sources: search_editor::Sources,
     backed: u64,
     stale: bool,
     blame: crate::blame::Blame,
@@ -802,7 +805,7 @@ impl Editors {
             self.banner = Some((note.clone(), None));
         }
         let hl = Highlighter::new(buf.path.as_deref().filter(|_| !buf.large), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], ranges: (None, vec![]), depths: (0, vec![]), backed: 0, stale: false, blame: Default::default(), content: Content::Text, top: 0 });
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], ranges: (None, vec![]), depths: (0, vec![]), secret_lines: None, virtual_secret: None, search_sources: Default::default(), backed: 0, stale: false, blame: Default::default(), content: Content::Text, top: 0 });
         id
     }
 
@@ -939,6 +942,7 @@ impl Editors {
         let existing = self.docs.iter().find(|(_, d)| d.buf.read_only && d.buf.title == title).map(|(id, _)| *id);
         let id = existing.unwrap_or_else(|| self.insert_doc(Document::from_text("", String::new())));
         if let Some(doc) = self.docs.get_mut(&id) {
+            doc.virtual_secret = syntax.and_then(crate::secrets::kind);
             doc.hl = Highlighter::new(syntax, &buf.rope);
             doc.max_cols = (0, 0);
             doc.buf = buf;
@@ -1898,7 +1902,7 @@ impl Editors {
             if let Some(mut doc) = self.docs.remove(&doc_id) {
                 let mut body = body;
                 if let Content::Multi(view) = &mut doc.content {
-                    view.ui(ui, theme, body, settings.font_size, pending);
+                    view.ui(ui, theme, body, settings, pending);
                 } else if let Content::Remote(view) = &mut doc.content {
                     view.ui(ui, theme, body, settings.font_size, pending);
                 } else if !self.special(ui, g, &mut body, theme, settings, &mut doc, &mut tab) {
@@ -2299,7 +2303,7 @@ impl Editors {
         let style = typography::FontStyle::new(settings, glyph_w);
         let char_w = glyph_w + style.spacing;
         let line_h = prefs::line_height(settings.line_height, row_h, settings.font_size);
-        let Doc { buf, hl, max_cols, conflicts, lang, folds, ranges, depths, stale, .. } = doc;
+        let Doc { buf, hl, max_cols, conflicts, lang, folds, ranges, depths, secret_lines, search_sources, stale, .. } = doc;
         if !settings.smooth_scrolling {
             ui.style_mut().scroll_animation = egui::style::ScrollAnimation::none();
         }
@@ -2459,6 +2463,7 @@ impl Editors {
             *max_cols = (buf.version, (0..total).map(|l| buf.line_len(l)).max().unwrap_or(0).min(MAX_COLS));
         }
         let search = search_editor::Marks::of(buf);
+        if settings.hide_secrets && search.is_some() { search_sources.update(buf); }
         // shortcut: nesting counts brackets in strings and comments too, upgrade to syntax scopes if the colors drift
         let colored = settings.bracket_colors && buf.rope.len_bytes() < 1_000_000 && search.is_none();
         if colored && depths.0 != buf.version {
@@ -2623,6 +2628,25 @@ impl Editors {
         let dropping = hl.language == "Markdown" && !diffed && !buf.read_only && ctx.input(|i| !i.raw.dropped_files.is_empty());
         let drop_pos = dropping.then(|| md_insert::drop_pos(&ctx)).flatten().filter(|p| text_rect.contains(*p));
         let mut drop_at = None;
+        let secret = settings.hide_secrets.then(|| path.as_deref().and_then(crate::secrets::kind).or(doc.virtual_secret).or_else(|| shown.as_ref()?.secret())).flatten();
+        if crate::secrets::contextual(secret) && secret_lines.as_ref().is_none_or(|p| (p.0, p.1) != (buf.version, secret)) {
+            *secret_lines = Some((buf.version, secret, crate::secrets::line_states(secret, buf.rope.lines().map(|line| line.to_string()))));
+        }
+        let protected = |buf: &Document, line: usize, sels: &[Sel]| {
+            let (start, end) = (buf.line_start(line), buf.line_end(line));
+            !sels.iter().any(|s| s.start() <= end && s.end() >= start)
+        };
+        let masked = |buf: &Document, line: usize, sels: &[Sel]| -> Option<String> {
+            if !settings.hide_secrets || (secret.is_none() && search.is_none()) || !protected(buf, line, sels) { return None }
+            if let Some(search) = &search { return search.masked(buf, line, search_sources) }
+            let kind = secret?;
+            let text = buf.line_text(line);
+            let inside = secret_lines.as_ref().and_then(|p| p.2.get(line)).copied().unwrap_or(false);
+            match crate::secrets::mask(Some(kind), &text, inside) {
+                std::borrow::Cow::Owned(mask) => Some(mask),
+                _ => None,
+            }
+        };
         let buf_ref: &Document = buf;
         let lang_ref: &Lang = lang;
         let out = ui
@@ -2649,8 +2673,22 @@ impl Editors {
                         ui.ctx().request_repaint();
                     }
                     let hl: &Highlighter = hl;
-                    let layout = |painter: &egui::Painter, line: usize| -> Row {
+                    let initial_sels = if secret.is_some() || search.is_some() { tab.sels.clone() } else { vec![] };
+                    let layout = |painter: &egui::Painter, line: usize, sels: &[Sel]| -> Row {
                         let text = visible_text(buf_ref, line);
+                        if let Some(mask) = masked(buf_ref, line, sels) {
+                            let len = text.chars().count();
+                            let mut cuts = vec![0];
+                            if let Some(cols) = wrap_cols { buffer::wrap(text.chars(), cols, |at| cuts.push(at)); }
+                            let mut chars = mask.chars();
+                            let pieces = cuts.iter().enumerate().map(|(i, &start)| {
+                                let end = cuts.get(i + 1).copied().unwrap_or(len);
+                                let shown = chars.by_ref().take(end - start).collect();
+                                let galley = painter.layout_job(style.apply(LayoutJob::simple_singleline(shown, font.clone(), theme.text)));
+                                Piece { start, galley, hints: vec![] }
+                            }).collect();
+                            return Row { len, pieces, swatches: vec![], odd: vec![] };
+                        }
                         let mut over = lang_ref.tokens.get(&line).filter(|_| settings.semantic_highlighting)
                             .map(|tokens| intel::semantic_colors(&text, tokens, theme)).unwrap_or_default();
                         if let Some(mut depth) = depths.get(line).copied() {
@@ -2718,7 +2756,7 @@ impl Editors {
                         if lens.is_some() {
                             return buf_ref.line_start(line);
                         }
-                        buf_ref.line_start(line) + layout(painter, line).hit(piece, pos.x - text_x)
+                        buf_ref.line_start(line) + layout(painter, line, &initial_sels).hit(piece, pos.x - text_x)
                     };
                     let vhit = |painter: &egui::Painter, pos: Pos2| -> (usize, usize) {
                         let p = hit(painter, pos);
@@ -2726,13 +2764,13 @@ impl Editors {
                         if !buf_ref.virtual_space || lens.is_some() || p != buf_ref.line_end(line) {
                             return (p, 0);
                         }
-                        let end = text_x + layout(painter, line).x(0, buf_ref.line_len(line));
+                        let end = text_x + layout(painter, line, &initial_sels).x(0, buf_ref.line_len(line));
                         (p, ((pos.x - end) / char_w).round().max(0.0) as usize)
                     };
                     let swatch_box = |x: f32, y: f32| Rect::from_min_size(pos2(x + 2.0, y + ((line_h - swatch_s) / 2.0).round()), vec2(swatch_s, swatch_s));
                     let swatch_at = |painter: &egui::Painter, pos: Pos2| {
                         let (line, lens, piece) = row_at(pos.y);
-                        let row = layout(painter, line);
+                        let row = layout(painter, line, &initial_sels);
                         let start = buf_ref.line_start(line);
                         row.swatches.iter().filter(|_| lens.is_none()).find_map(|s| {
                             let at = row.piece(s.0);
@@ -2860,7 +2898,7 @@ impl Editors {
                             let p = hit(&painter, pos);
                             let (a, b) = buf_ref.word_at(p);
                             let (line, _, piece) = row_at(pos.y);
-                            let row = layout(&painter, line);
+                            let row = layout(&painter, line, &tab.sels);
                             let inside = pos.x - text_x <= row.pieces[piece.min(row.pieces.len() - 1)].galley.size().x;
                             if inside && a < b && buf_ref.rope.get_char(a).is_some_and(is_word) {
                                 over_word = Some((a, b));
@@ -2945,7 +2983,7 @@ impl Editors {
                     for line in (first..last).filter(|line| starts[line + 1] > starts[*line]) {
                         let y = origin.y + top_of(line) as f32 * line_h;
                         let start = buf_ref.line_start(line);
-                        let row = layout(&painter, line);
+                        let row = layout(&painter, line, &tab.sels);
                         let len = row.len;
                         if wrap_cols.is_none() {
                             ui.expand_to_include_x(text_x + row.x(0, len) + spare * char_w);
@@ -3124,7 +3162,7 @@ impl Editors {
                         }
                         let last = row.pieces.last().unwrap();
                         let mut after = pos2(text_x + last.galley.size().x + char_w * 3.0, bottom - line_h / 2.0);
-                        if !diffed && settings.inline_values && stopped.is_some_and(|stop| (stop.saturating_sub(50)..=stop).contains(&line)) {
+                        if secret.is_none() && !diffed && settings.inline_values && stopped.is_some_and(|stop| (stop.saturating_sub(50)..=stop).contains(&line)) {
                             let label = self.marks.inline_label(&buf_ref.line_text(line));
                             if !label.is_empty() {
                                 after.x = painter.text(after, Align2::LEFT_CENTER, label, font.clone(), theme.text_dim).right() + char_w * 3.0;
@@ -3155,7 +3193,7 @@ impl Editors {
                                 painter.hline(x0..=x1, y + line_h - 2.0, Stroke::new(1.0, theme.accent));
                             }
                         }
-                        if settings.render_whitespace != "none" {
+                        if settings.render_whitespace != "none" && masked(buf_ref, line, &tab.sels).is_none() {
                             let dim = Stroke::new(1.0, ui::with_alpha(theme.text_dim, 0.5));
                             let chars: Vec<char> = buf_ref.rope.line(line).chars().take(len).collect();
                             let selected = |column: usize| tab.sels.iter().any(|s| s.start() <= start + column && start + column < s.end());
@@ -3271,7 +3309,7 @@ impl Editors {
                             origin.y + (starts[line.min(total)] as f32 - size as f32) * line_h
                         };
                         let numbers = (text_x, gutter.right() - 10.0 - glyph_w);
-                        diff_view::paint_pads(&painter, theme, d, &pads, &pad_top, (first, last), clip, numbers, &font, style, line_h);
+                        diff_view::paint_pads(&painter, theme, d, &pads, &pad_top, (first, last), clip, numbers, &font, style, line_h, settings.hide_secrets);
                     }
                     if merging.is_some() {
                         merge_view::paint_pads(&painter, theme, &pads, &starts, (first, last), origin.y, clip, line_h);
@@ -3297,7 +3335,7 @@ impl Editors {
                     if let Some(pos) = tab.reveal.take() {
                         let line = buf_ref.line_of(pos);
                         let column = pos - buf_ref.line_start(line);
-                        let row = layout(&painter, line);
+                        let row = layout(&painter, line, &tab.sels);
                         let piece = row.piece(column);
                         let x = text_x + row.x(piece, column);
                         let top = origin.y + (top_of(line) + piece) as f32 * line_h;
@@ -3358,7 +3396,7 @@ impl Editors {
                 hl.ensure(&buf.rope, *line..line + 1, theme, Duration::from_millis(2));
                 let p = ui.painter().with_clip_rect(r);
                 p.rect_filled(r, CornerRadius::ZERO, ui::mix(theme.bg, theme.hover, if resp.hovered() { 0.8 } else { 0.3 }));
-                let text = visible_text(buf, *line);
+                let text = masked(buf, *line, &tab.sels).map(|s| s.chars().take(MAX_COLS).collect()).unwrap_or_else(|| visible_text(buf, *line));
                 let galley = p.layout_job(style.apply(job(&text, 0..text.len(), hl.get(*line), &font, theme.text, &[], &[], &hint_format)));
                 let left = r.left() + gutter_w;
                 p.with_clip_rect(r.with_min_x(left - 4.0)).galley(pos2(left - out.state.offset.x, r.center().y - galley.size().y / 2.0), galley, theme.text);
@@ -3400,7 +3438,11 @@ impl Editors {
                     break;
                 }
                 let (mut indent, mut len) = (0, 0);
-                for c in buf.rope.line(line).chars().take_while(|c| *c != '\n').take(90) {
+                let slice = buf.rope.line(line);
+                let display = secret.and_then(|_| masked(buf, line, &tab.sels));
+                let mut raw = slice.chars();
+                let mut bullets = display.as_deref().map(str::chars);
+                for c in std::iter::from_fn(|| match &mut bullets { Some(chars) => chars.next(), None => raw.next() }).take_while(|c| *c != '\n').take(90) {
                     let width = buffer::column_width(c);
                     if indent == len && c.is_whitespace() { indent += width; }
                     len += width;
@@ -3501,8 +3543,10 @@ impl Editors {
             self.intel.queued.push(Queued::Peek(doc_id, from_lsp(buf, (symbol.line, symbol.col)), title, found.clone()));
         }
         self.track_hover(over_word.or(over_problem), g, doc_id, buf, lang, now, &ctx);
-        crate::debug::hover_ui(&ctx, theme, &mut self.marks, (g, doc_id), over_word.map(|(a, b)| buf.text_of(a, b)), now);
-        self.hover_ui(&ctx, theme, &font, g, doc_id, hover_at, line_h);
+        let debug_word = over_word.filter(|(a, _)| masked(buf, buf.line_of(*a), &tab.sels).is_none()).map(|(a, b)| buf.text_of(a, b));
+        crate::debug::hover_ui(&ctx, theme, &mut self.marks, (g, doc_id), debug_word, now);
+        let hover_line = self.intel.hover.as_ref().filter(|h| h.doc == doc_id).and_then(|h| masked(buf, buf.line_of(h.word.0.min(buf.len())), &tab.sels));
+        self.hover_ui(&ctx, theme, &font, g, doc_id, hover_at, line_h, hover_line.as_deref());
         if pick_caret && picked.is_none() {
             self.banner = notice("There is no color value at the cursor.".into());
         }
@@ -4061,6 +4105,43 @@ end", "word ".repeat(100)))], &settings);
         assert!(again.backup(&dir.join("backups")).is_empty());
         assert_eq!(std::fs::read_dir(dir.join("backups")).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hides_values_in_painted_rows_and_reveals_all_selection_lines() {
+        fn labels(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| labels(s, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let settings = Settings { lsp: false, ..Settings::default() };
+        let mut editors = Editors::new();
+        let raw = "A=first\nB=second\nC=third\nD=fourth";
+        let mut buf = Document::from_text(raw, ".env".into());
+        buf.path = Some(PathBuf::from(".env"));
+        let sels = vec![Sel::new(buf.line_start(1), 0), Sel::caret(buf.line_start(3))];
+        let id = editors.insert_doc(buf);
+        editors.place(id, false);
+        editors.groups[0].tabs[0].sels = sels;
+        let mut draw = |settings: &Settings| {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 600.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| editors.ui(ui, &Theme::dark(), settings, &Git::new(), &mut vec![]));
+            out.textures_delta.clear();
+            let mut text = vec![];
+            out.shapes.iter().for_each(|s| labels(&s.shape, &mut text));
+            text
+        };
+        let _ = draw(&settings);
+        let text = draw(&settings);
+        for line in ["A=first", "B=second", "D=fourth"] { assert!(text.iter().any(|s| s == line)); }
+        assert!(text.contains(&format!("C={}", "\u{2022}".repeat(5))));
+        assert!(!text.iter().any(|s| s.contains("third")));
+        let text = draw(&Settings { hide_secrets: false, ..settings });
+        assert!(text.iter().any(|s| s == "C=third"));
+        assert_eq!(editors.docs[&id].buf.rope.to_string(), raw);
     }
 
     #[test]
