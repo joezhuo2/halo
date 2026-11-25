@@ -323,7 +323,7 @@ pub fn set_word_separators(separators: &str) {
     }
 }
 
-fn is_word_in(c: char, mask: [u64; 2]) -> bool {
+pub(super) fn is_word_in(c: char, mask: [u64; 2]) -> bool {
     match c.is_ascii() {
         true => !c.is_ascii_whitespace() && !c.is_ascii_control() && mask[c as usize / 64] & (1 << (c as usize % 64)) == 0,
         false => c.is_alphanumeric(),
@@ -1435,12 +1435,16 @@ impl Document {
     }
 
     pub fn word_at(&self, pos: usize) -> (usize, usize) {
+        self.word_at_with(pos, is_word)
+    }
+
+    pub(super) fn word_at_with(&self, pos: usize, word: impl Fn(char) -> bool) -> (usize, usize) {
         let len = self.len();
         let (mut start, mut end) = (pos.min(len), pos.min(len));
-        while start > 0 && is_word(self.rope.char(start - 1)) {
+        while start > 0 && word(self.rope.char(start - 1)) {
             start -= 1;
         }
-        while end < len && is_word(self.rope.char(end)) {
+        while end < len && word(self.rope.char(end)) {
             end += 1;
         }
         if start == end && end < len && self.rope.char(end) != '\n' {

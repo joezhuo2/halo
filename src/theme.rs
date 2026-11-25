@@ -27,6 +27,7 @@ pub struct Theme {
     pub text_dim: Color32,
     pub accent: Color32,
     pub selection: Color32,
+    pub mark_styles: [Color32; 5],
     pub added: Color32,
     pub modified: Color32,
     pub deleted: Color32,
@@ -108,6 +109,7 @@ impl Theme {
     }
 
     pub fn colors(&mut self) -> Vec<(&'static str, &mut Color32)> {
+        let [one, two, three, four, five] = &mut self.mark_styles;
         let s = &mut self.syntax;
         vec![
             ("background", &mut self.bg),
@@ -119,6 +121,7 @@ impl Theme {
             ("text", &mut self.text),
             ("dimText", &mut self.text_dim),
             ("accent", &mut self.accent),
+            ("markStyle1", one), ("markStyle2", two), ("markStyle3", three), ("markStyle4", four), ("markStyle5", five),
             ("selection", &mut self.selection),
             ("comment", &mut s.comment),
             ("string", &mut s.string),
@@ -145,6 +148,7 @@ impl Theme {
             text_dim: rgb(0x999ea8),
             accent: rgb(0x9fdcf7),
             selection: rgb(0x34515f),
+            mark_styles: [rgb(0x70cc93), rgb(0x78baf0), rgb(0xf3c962), rgb(0xcd95eb), rgb(0xf79085)],
             added: rgb(0x7fd38a),
             modified: rgb(0xe6c35c),
             deleted: rgb(0xf0736b),
@@ -185,6 +189,7 @@ impl Theme {
             text_dim: rgb(0x5e636c),
             accent: rgb(0x187098),
             selection: rgb(0xc4e6f6),
+            mark_styles: [rgb(0x228044), rgb(0x2079bd), rgb(0x9f7300), rgb(0x8844aa), rgb(0xc14439)],
             added: rgb(0x237834),
             modified: rgb(0x826300),
             deleted: rgb(0xc0362e),

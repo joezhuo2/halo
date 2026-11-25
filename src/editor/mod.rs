@@ -1,5 +1,6 @@
 mod ai_inline;
 pub mod bookmarks;
+pub mod mark_style;
 pub mod layouts;
 mod buffer;
 mod chat;
@@ -102,6 +103,8 @@ struct Doc {
     ranges: folding::Cache,
     depths: (u64, Vec<u32>),
     secret_lines: Option<(u64, Option<crate::secrets::Kind>, Vec<bool>)>,
+    style_cache: mark_style::Cache,
+    transient_marks: Vec<mark_style::Mark>,
     virtual_secret: Option<crate::secrets::Kind>,
     search_sources: search_editor::Sources,
     backed: u64,
@@ -317,6 +320,7 @@ pub struct Editors {
     pub ai_open: bool,
     pub lsp: Lsp,
     pub marks: crate::debug::Marks,
+    pub style_marks: mark_style::Files,
     pub bookmarks: bookmarks::Bookmarks,
     pub layouts: layouts::Layouts,
     jump: Option<(u64, String, Vec<usize>)>,
@@ -697,6 +701,7 @@ impl Editors {
             ai_open: false,
             lsp: Lsp::default(),
             marks: Default::default(),
+            style_marks: Default::default(),
             bookmarks: Default::default(),
             layouts: Default::default(),
             jump: None,
@@ -805,7 +810,7 @@ impl Editors {
             self.banner = Some((note.clone(), None));
         }
         let hl = Highlighter::new(buf.path.as_deref().filter(|_| !buf.large), &buf.rope);
-        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], ranges: (None, vec![]), depths: (0, vec![]), secret_lines: None, virtual_secret: None, search_sources: Default::default(), backed: 0, stale: false, blame: Default::default(), content: Content::Text, top: 0 });
+        self.docs.insert(id, Doc { buf, hl, max_cols: (0, 0), conflicts: (0, vec![]), lang: Lang::default(), folds: vec![], ranges: (None, vec![]), depths: (0, vec![]), secret_lines: None, style_cache: Default::default(), transient_marks: vec![], virtual_secret: None, search_sources: Default::default(), backed: 0, stale: false, blame: Default::default(), content: Content::Text, top: 0 });
         id
     }
 
@@ -1081,6 +1086,11 @@ impl Editors {
             }
             let Some(path) = dialog.save_file() else { return false };
             doc.hl = Highlighter::new(Some(&path), &doc.buf.rope);
+            if !doc.transient_marks.is_empty() {
+                self.style_marks.insert(path.clone(), std::mem::take(&mut doc.transient_marks));
+            } else if let Some(list) = doc.buf.path.as_ref().and_then(|p| self.style_marks.get(p)).cloned() {
+                self.style_marks.insert(path.clone(), list);
+            }
             if let Some(old) = doc.buf.path.replace(path) {
                 self.lsp.close(&old);
             }
@@ -1263,6 +1273,18 @@ impl Editors {
             ToggleBreakpoint => {
                 if let Some((Some(path), line)) = self.with_active(|buf, tab| (buf.path.clone(), buf.line_of(tab.sels[0].head))) {
                     self.marks.toggle(&path, line);
+                }
+            }
+            MarkStyle(_) | UnmarkStyle(_) | UnmarkAll | UnmarkAtCursor => {
+                if let Some(doc) = self.docs.get_mut(&doc_id).filter(|d| d.content.is_text()) {
+                    let path = doc.buf.path.as_ref();
+                    let list = match path {
+                        Some(p) => self.style_marks.entry(p.clone()).or_default(),
+                        None => &mut doc.transient_marks,
+                    };
+                    let sel = self.groups[g].tabs[t].sels[0];
+                    mark_style::apply(list, cmd, &doc.buf, sel, &settings.of(path.map(PathBuf::as_path)).word_separators);
+                    if list.is_empty() && let Some(p) = path { self.style_marks.remove(p); }
                 }
             }
             ToggleBookmark | LabelBookmark => match self.with_active(|buf, tab| (buf.path.clone(), buf.line_of(tab.sels[0].head))) {
@@ -1776,6 +1798,13 @@ impl Editors {
 
     pub fn path_changed(&mut self, old: &Path, new: Option<&Path>) {
         self.links.stale();
+        for path in self.style_marks.keys().filter(|p| p.starts_with(old)).cloned().collect::<Vec<_>>() {
+            let list = self.style_marks.remove(&path).unwrap_or_default();
+            if let Some(new) = new {
+                let rest = path.strip_prefix(old).unwrap();
+                self.style_marks.insert(if rest.as_os_str().is_empty() { new.to_owned() } else { new.join(rest) }, list);
+            }
+        }
         self.bookmarks.path_changed(old, new);
         if let Some(new) = new {
             for id in self.lsp.will_rename(old, new) {
@@ -2568,6 +2597,11 @@ impl Editors {
         };
         let hover_word = self.intel.hover.as_ref().filter(|h| h.doc == doc_id && h.group == g).map(|h| h.word);
         let marks = path.as_deref().map(|p| (self.marks.of(p).to_vec(), self.marks.stopped_lines(p), self.marks.live));
+        let list = match &path {
+            Some(p) => self.style_marks.get(p).map(Vec::as_slice).unwrap_or_default(),
+            None => &doc.transient_marks,
+        };
+        let styled = doc.style_cache.get(buf, list, &settings.word_separators, &ctx);
         let bookmarked = path.as_deref().map(|p| self.bookmarks.lines(p)).unwrap_or_default();
         let stopped = path.as_deref().and_then(|p| self.marks.stopped_line(p));
         let band = self.marks.band.as_ref().filter(|b| path.is_none() && buf.read_only && b.0 == buf.title).map(|b| b.1);
@@ -2946,6 +2980,12 @@ impl Editors {
                             }
                             ui.separator();
                         }
+                        if let Some(cmd) = mark_style::menu(ui, theme) {
+                            activated = true;
+                            resp.request_focus();
+                            pending.push(cmd);
+                            ui.close();
+                        }
                         let items = [
                             Some(GoToDefinition), Some(PeekDefinition), Some(GoToImplementation), Some(FindReferences), Some(ShowCallHierarchy), None,
                             Some(RenameSymbol), Some(QuickFix), Some(FormatDocument), None,
@@ -3071,6 +3111,17 @@ impl Editors {
                         }
                         for (x0, x1, y) in scope.into_iter().flat_map(|(a, b)| spans(a.saturating_sub(start), b.saturating_sub(start))) {
                             painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), CornerRadius::ZERO, ui::with_alpha(theme.accent, 0.09));
+                        }
+                        if let Some(marked) = styled.lines.get(&line) {
+                            for &(a, b, style) in marked {
+                                let color = ui::mix(theme.bg, theme.mark_styles[style as usize], if theme.contrast { 0.30 } else { 0.38 });
+                                for (x0, x1, y) in spans(a, b) {
+                                    painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + line_h)), CornerRadius::same(2), color);
+                                }
+                                if b > len {
+                                    painter.rect_filled(Rect::from_min_size(at(len), vec2(char_w * 0.6, line_h)), CornerRadius::same(2), color);
+                                }
+                            }
                         }
                         let from = matches.partition_point(|m| m.1 <= start);
                         let found = search.as_ref().map(|s| s.found(&buf_ref.line_text(line), line)).unwrap_or_default();
@@ -3420,6 +3471,15 @@ impl Editors {
             self.last_input = now;
         }
 
+        for (index, runs) in styled.runs.iter().enumerate() {
+            let x = text_rect.right() - 8.0 + index as f32;
+            let scale = text_rect.height() / content.y.max(text_rect.height());
+            for &(first, end) in runs {
+                let y = text_rect.top() + top_of(first) as f32 * line_h * scale;
+                let bottom = text_rect.top() + (top_of(end - 1) + 1) as f32 * line_h * scale;
+                ui.painter().rect_filled(Rect::from_min_max(pos2(x, y), pos2(x + 2.0, bottom.max(y + 2.0))), CornerRadius::ZERO, theme.mark_styles[index]);
+            }
+        }
         if minimap_w > 0.0 && !diffed {
             let mm = match left_map {
                 true => Rect::from_min_max(body.min, pos2(text_rect.left(), body.bottom())),
@@ -3440,12 +3500,29 @@ impl Editors {
                 let (mut indent, mut len) = (0, 0);
                 let slice = buf.rope.line(line);
                 let display = secret.and_then(|_| masked(buf, line, &tab.sels));
+                let marked = styled.lines.get(&line);
+                let mut columns = [0; 91];
+                let mut shown_chars = 0;
                 let mut raw = slice.chars();
                 let mut bullets = display.as_deref().map(str::chars);
                 for c in std::iter::from_fn(|| match &mut bullets { Some(chars) => chars.next(), None => raw.next() }).take_while(|c| *c != '\n').take(90) {
                     let width = buffer::column_width(c);
                     if indent == len && c.is_whitespace() { indent += width; }
                     len += width;
+                    if marked.is_some() {
+                        shown_chars += 1;
+                        columns[shown_chars] = len;
+                    }
+                }
+                if let Some(marked) = marked {
+                    let x = mm.left() + 6.0;
+                    let y = mm.top() + i as f32 * step;
+                    for &(a, b, style) in marked {
+                        let (a, b) = (columns[a.min(shown_chars)], columns[b.min(shown_chars)]);
+                        if a == b { continue }
+                        let r = Rect::from_min_max(pos2(x + a as f32 * column_w, y), pos2(x + b as f32 * column_w, y + step.max(1.0)));
+                        p.rect_filled(r, CornerRadius::ZERO, theme.mark_styles[style as usize]);
+                    }
                 }
                 if indent >= len {
                     continue;
@@ -3470,6 +3547,14 @@ impl Editors {
                 let y = mm.top() + problem.start.0 as f32 * scale;
                 let mark = Rect::from_min_max(pos2(mm.right() - 5.0, y), pos2(mm.right() - 1.0, y + 2.0));
                 p.rect_filled(mark, CornerRadius::ZERO, intel::severity_color(theme, problem.severity));
+            }
+            for (index, runs) in styled.runs.iter().enumerate() {
+                let x = mm.right() - 16.0 + index as f32;
+                for &(first, end) in runs {
+                    let y = mm.top() + first as f32 * scale;
+                    let bottom = mm.top() + end as f32 * scale;
+                    p.rect_filled(Rect::from_min_max(pos2(x, y), pos2(x + 2.0, bottom.max(y + 2.0))), CornerRadius::ZERO, theme.mark_styles[index]);
+                }
             }
             let visible_lines = text_rect.height() / line_h;
             let top_row = scroll_y / line_h;

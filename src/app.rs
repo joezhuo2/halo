@@ -220,6 +220,7 @@ impl Halo {
             jump: None,
             startup: None,
         };
+        app.editors.style_marks.clone_from(&app.session.style_marks);
         app.editors.config = app.settings.clone();
         app
     }
@@ -234,6 +235,7 @@ impl Halo {
             crate::terminal_restore::save(&self.bottom, &self.editors, &self.settings, self.session.folder.as_deref());
         }
         crate::debug::store(&mut self.session, &self.editors.marks);
+        self.session.style_marks.clone_from(&self.editors.style_marks);
         self.editors.bookmarks.store(&mut self.session.bookmarks);
         self.editors.layouts.store(&mut self.session.layouts);
         if let Some(remembered) = workspace.file.clone().or_else(|| folder.clone().filter(|_| !workspace.is_multi())) {
@@ -337,6 +339,7 @@ impl Halo {
             let _ = std::fs::remove_dir_all(backups);
         }
         crate::debug::store(&mut self.session, &self.editors.marks);
+        self.session.style_marks.clone_from(&self.editors.style_marks);
         self.editors.bookmarks.store(&mut self.session.bookmarks);
         self.editors.layouts.store(&mut self.session.layouts);
         self.session.save();

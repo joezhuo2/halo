@@ -231,6 +231,10 @@ pub enum Command {
     GoBack,
     GoForward,
     GoToLastEditLocation,
+    MarkStyle(crate::editor::mark_style::Style),
+    UnmarkStyle(crate::editor::mark_style::Style),
+    UnmarkAll,
+    UnmarkAtCursor,
     ToggleBookmark,
     LabelBookmark,
     NextBookmark,
@@ -789,6 +793,7 @@ pub fn consume(i: &mut egui::InputState, shortcut: &KeyboardShortcut) -> bool {
 
 pub fn all() -> Vec<Command> {
     use Command::*;
+    use crate::editor::mark_style::Style as Mark;
     let mut commands = vec![
         NewFile, NewWindow, OpenFile, OpenFolder, OpenRecent, OpenFolderInNewWindow, DuplicateWorkspace, Save, SaveAs, SaveAll, CloseEditor, CloseFolder,
         AddFolderToWorkspace, RemoveFolderFromWorkspace, SaveWorkspaceAs, OpenWorkspaceFromFile, CloseWorkspace, OpenSettings, OpenSettingsJson,
@@ -799,6 +804,8 @@ pub fn all() -> Vec<Command> {
         CopyLineUp, CopyLineDown, DeleteLine, JoinLines, InsertLineAbove, InsertLineBelow, Fold, Unfold, FoldAll, UnfoldAll,
         FoldRecursively, UnfoldRecursively, FoldAllBlockComments, FoldLevel(1), FoldLevel(2), FoldLevel(3), FoldLevel(4), FoldLevel(5),
         FoldLevel(6), FoldLevel(7), PasteFromHistory, ToggleMacroRecording, PlayMacro,
+        MarkStyle(Mark::One), MarkStyle(Mark::Two), MarkStyle(Mark::Three), MarkStyle(Mark::Four), MarkStyle(Mark::Five),
+        UnmarkStyle(Mark::One), UnmarkStyle(Mark::Two), UnmarkStyle(Mark::Three), UnmarkStyle(Mark::Four), UnmarkStyle(Mark::Five), UnmarkAtCursor, UnmarkAll,
         SortLinesAscending, SortLinesDescending, RemoveDuplicateLines, ReverseLines, TransformToUppercase, TransformToLowercase,
         TransformToTitlecase, TransformToSnakecase, TransformToCamelcase, TransformToKebabcase,
         RenameSymbol, QuickFix, OrganizeImports, FormatDocument, FormatSelection, InlineChat, DeleteWordPartLeft, DeleteWordPartRight,
@@ -994,6 +1001,10 @@ impl Command {
             return format!("git{op:?}");
         }
         match self {
+            Self::MarkStyle(s) => return format!("halo.markStyle{}", *s as usize + 1),
+            Self::UnmarkStyle(s) => return format!("halo.unmarkStyle{}", *s as usize + 1),
+            Self::UnmarkAll => return "halo.unmarkAll".into(),
+            Self::UnmarkAtCursor => return "halo.unmarkAtCursor".into(),
             Self::ToggleHideSecrets => return "halo.toggleHideSecrets".into(),
             Self::NewSearchEditor => return "search.action.openNewEditor".into(),
             Self::OpenSearchEditor => return "search.action.openInEditor".into(),
@@ -1023,7 +1034,7 @@ impl Command {
             | Unfold | FoldAll | UnfoldAll | FoldLevel(_) | FoldRecursively | UnfoldRecursively | FoldAllBlockComments
             | PasteFromHistory | PasteText(_) | ToggleMacroRecording | PlayMacro
             | RenameSymbol | QuickFix | OrganizeImports | FormatDocument | FormatSelection
-            | InlineChat
+            | MarkStyle(_) | UnmarkStyle(_) | UnmarkAll | UnmarkAtCursor | InlineChat
             | SortLinesAscending | SortLinesDescending | RemoveDuplicateLines | ReverseLines | TransformToUppercase | TransformToLowercase
             | TransformToTitlecase | TransformToSnakecase | TransformToCamelcase | TransformToKebabcase | DeleteWordPartLeft | DeleteWordPartRight => "Edit",
             SelectAll | AddCursorAbove | AddCursorBelow | AddCursorsToLineEnds | SelectNextOccurrence | MoveSelectionToNextFindMatch | SelectAllOccurrences
@@ -1296,6 +1307,10 @@ impl Command {
             GoBack => "Go Back",
             GoForward => "Go Forward",
             GoToLastEditLocation => "Go to Last Edit Location",
+            MarkStyle(s) => s.mark_label(),
+            UnmarkStyle(s) => s.clear_label(),
+            UnmarkAtCursor => "Clear Mark at Cursor",
+            UnmarkAll => "Clear All Style Marks",
             ToggleBookmark => "Bookmarks: Toggle",
             LabelBookmark => "Bookmarks: Label...",
             NextBookmark => "Bookmarks: Jump to Next",

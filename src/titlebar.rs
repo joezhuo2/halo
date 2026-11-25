@@ -255,6 +255,13 @@ impl Halo {
                 self.menu(ui, "Appearance", appearance);
                 ui.separator();
             }
+            if title == "Edit" {
+                if let Some(cmd) = crate::editor::mark_style::menu(ui, &self.theme) {
+                    self.cmds.push(cmd);
+                    ui.close();
+                }
+                ui.separator();
+            }
             for item in items {
                 match item {
                     Some(cmd) => self.menu_item(ui, cmd.clone()),
