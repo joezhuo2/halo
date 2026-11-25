@@ -49,6 +49,7 @@ pub enum Command {
     OpenSettings,
     OpenSettingsJson,
     OpenKeybindings,
+    CustomizeMenus,
     OpenSnippets,
     SwitchProfile,
     SwitchProfileTo(String),
@@ -802,7 +803,7 @@ pub fn all() -> Vec<Command> {
     let mut commands = vec![
         NewFile, NewWindow, OpenFile, OpenFolder, OpenRecent, OpenFolderInNewWindow, DuplicateWorkspace, Save, SaveAs, SaveAll, CloseEditor, CloseFolder,
         AddFolderToWorkspace, RemoveFolderFromWorkspace, SaveWorkspaceAs, OpenWorkspaceFromFile, CloseWorkspace, OpenSettings, OpenSettingsJson,
-        OpenKeybindings, OpenSnippets, SwitchProfile, NewProfile, DeleteProfile, SyncUpload, SyncDownload, ManageWorkspaceTrust, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, CompareFolders, CompareFoldersAgain,
+        OpenKeybindings, CustomizeMenus, OpenSnippets, SwitchProfile, NewProfile, DeleteProfile, SyncUpload, SyncDownload, ManageWorkspaceTrust, CompareFile, CompareClipboard, CompareSaved, SelectForCompare, CompareWithSelected, CompareFolders, CompareFoldersAgain,
         NewScratch, OpenScratch,
         SelectTheme, ImportTheme, BrowseThemes, SelectIconTheme, ImportIconTheme, BrowseIconThemes, CutFiles, CopyFiles, PasteFiles, CloseAllEditors, Exit,
         Undo, Redo, UndoTree, Cut, Copy, Paste, Find, Replace, ToggleComment, RewrapComment, ToggleBlockComment, EmmetExpand, MoveLineUp, MoveLineDown,
@@ -1016,6 +1017,7 @@ impl Command {
             Self::OpenSearchEditor => return "search.action.openInEditor".into(),
             Self::TriggerInlineSuggestion => return "editor.action.inlineSuggest.trigger".into(),
             Self::RewrapComment => return "rewrap.rewrapComment".into(),
+            Self::CustomizeMenus => return "halo.customizeMenus".into(),
             Self::RestRequest => return "rest-client.request".into(),
             Self::RestRerun => return "rest-client.rerun-last-request".into(),
             Self::RestCancel => return "rest-client.cancel-request".into(),
@@ -1032,7 +1034,7 @@ impl Command {
         match self {
             NewFile | OpenFile | OpenFolder | OpenFolderIn(_) | OpenRecent | OpenPath(_) | Save | SaveAs | SaveAll | CloseEditor
             | CloseFolder | AddFolderToWorkspace | RemoveFolderFromWorkspace | RemoveWorkspaceFolder(_) | AddWorkspaceFolder(_) | MoveWorkspaceFolder(..)
-            | SaveWorkspaceAs | OpenWorkspaceFromFile | OpenWorkspace(_) | CloseWorkspace | OpenSettings | OpenSettingsJson | OpenKeybindings | OpenSnippets | PathChanged(..) | Exit | ImportTheme
+            | SaveWorkspaceAs | OpenWorkspaceFromFile | OpenWorkspace(_) | CloseWorkspace | OpenSettings | OpenSettingsJson | OpenKeybindings | CustomizeMenus | OpenSnippets | PathChanged(..) | Exit | ImportTheme
             | SwitchProfile | SwitchProfileTo(_) | NewProfile | CreateProfile(..) | DeleteProfile | DeleteProfileNamed(_) | RemoveProfile(_)
             | SyncUpload | SyncDownload | ManageWorkspaceTrust | SetFolderTrust(..)
             | BrowseThemes | SelectTheme | ImportThemeFile(_) | SetTheme(_) | ImportIconTheme | BrowseIconThemes | SelectIconTheme
@@ -1137,6 +1139,7 @@ impl Command {
             OpenSettings => "Settings",
             OpenSettingsJson => "Open settings.json",
             OpenKeybindings => "Keyboard Shortcuts (keybindings.json)",
+            CustomizeMenus => "Customize Menus and Toolbars",
             ImportTheme => "Preferences: Import VS Code Theme...",
             BrowseThemes => "Preferences: Browse Installed VS Code Themes...",
             SelectTheme => "Preferences: Color Theme",

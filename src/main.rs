@@ -23,6 +23,7 @@ mod http_client;
 mod ipc;
 mod jumplist;
 mod macros;
+mod menus;
 mod jsonc;
 mod layers;
 mod icon_theme;

@@ -50,6 +50,7 @@ pub struct Settings {
     pub shell_integration: bool,
     pub grammars: String,
     pub associations: BTreeMap<String, String>,
+    pub menus: BTreeMap<String, Vec<String>>,
     pub run: BTreeMap<String, String>,
     pub tasks: Vec<Task>,
     pub lsp: bool,
@@ -198,6 +199,7 @@ impl Default for Settings {
             shell_integration: true,
             grammars: dir().join("grammars").to_string_lossy().into_owned(),
             associations: BTreeMap::new(),
+            menus: BTreeMap::new(),
             run: [
                 ("py", r#"python "{file}""#),
                 ("js", r#"node "{file}""#),

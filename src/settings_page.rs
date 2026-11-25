@@ -164,6 +164,7 @@ pub const SETTINGS: &[Meta] = &[
     m("window_color", 2, "Workbench", "Window Color", "Tint the title bar so this window is easy to tell apart. Set it in the folder settings to give each folder its own color; Window: Set Color... does that.", Kind::Choice(crate::titlebar::WINDOW_COLORS)),
     m("show_tabs", 2, "Workbench", "Show Tabs", "Whether editor groups show their tab strip. Hide it to use the Open Editors list in the Explorer as vertical tabs.", Kind::Choice(&[("multiple", "Show"), ("none", "Hide")])),
     m("open_editors_tree", 2, "Workbench", "Open Editors Tree", "Group the Open Editors list in the Explorer by folder.", Kind::Toggle),
+    m("menus", 2, "Workbench", "Menus and Toolbars", "Add, remove and reorder the commands in the title bar menus, the editor context menu and the editor toolbar.", Kind::Custom),
     m("colors", 2, "Workbench", "Colors", "Interface colors on the left, syntax colors on the right.", Kind::Custom),
     m("default_terminal", 3, "Terminal", "Default Profile", "The shell a new terminal starts with.", Kind::Custom),
     m("terminals", 3, "Terminal", "Profiles", "The name, program and arguments of each shell.", Kind::Custom),
@@ -209,6 +210,8 @@ pub struct SettingsPage {
     new_adapter: (String, String),
     new_nesting: (String, String),
     new_exclude: String,
+    menu_location: usize,
+    menu_filter: String,
 }
 
 pub struct Query {
@@ -356,6 +359,12 @@ impl View {
 }
 
 impl SettingsPage {
+    pub fn show_menus(&mut self) {
+        self.open = true;
+        self.tab = 2;
+        self.query = "Menus and Toolbars".into();
+    }
+
     pub fn find_key(&mut self, ctx: &egui::Context) {
         if self.open && self.tab != 6 && ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::F))) {
             self.focus = true;
@@ -636,6 +645,7 @@ fn custom(ui: &mut Ui, theme: &Theme, key: &str, s: &mut Settings, page: &mut Se
                 page.themes = None;
             }
         }
+        "menus" => menus_editor(ui, theme, s, page),
         "files_exclude" => exclude_editor(ui, theme, &mut s.files_exclude, &mut page.new_exclude),
         "default_terminal" => {
             let names: Vec<String> = s.terminals.iter().map(|p| p.name.clone()).collect();
@@ -814,6 +824,58 @@ fn map_editor(ui: &mut Ui, theme: &Theme, id: &str, map: &mut BTreeMap<String, S
     });
     if let Some(key) = remove {
         map.remove(&key);
+    }
+}
+
+fn menus_editor(ui: &mut Ui, theme: &Theme, s: &mut Settings, page: &mut SettingsPage) {
+    use crate::menus;
+    let (location, name) = menus::LOCATIONS[page.menu_location.min(menus::LOCATIONS.len() - 1)];
+    egui::ComboBox::from_id_salt("menu_location").width(240.0).selected_text(name).show_ui(ui, |ui| {
+        for (i, (_, name)) in menus::LOCATIONS.iter().enumerate() {
+            ui.selectable_value(&mut page.menu_location, i, *name);
+        }
+    });
+    let before = menus::ids(location, &s.menus);
+    let mut ids = before.clone();
+    let mut change = None;
+    grid(ui, "settings_menus", 4, |ui| {
+        for (i, id) in ids.iter().enumerate() {
+            let entry = menus::parse(id);
+            let text = entry.as_ref().map_or_else(|| format!("Unknown: {id}"), menus::label);
+            ui.label(if entry == Some(menus::Entry::Sep) { egui::RichText::new(text).color(theme.text_dim) } else { egui::RichText::new(text) });
+            if ui.add_enabled(i > 0, egui::Button::new(icons::ARROW_UP)).on_hover_text("Move Up").clicked() { change = Some((i, -1)); }
+            if ui.add_enabled(i + 1 < ids.len(), egui::Button::new(icons::ARROW_DOWN)).on_hover_text("Move Down").clicked() { change = Some((i, 1)); }
+            if remove_button(ui, theme) { change = Some((i, 0)); }
+            ui.end_row();
+        }
+    });
+    match change {
+        Some((i, 0)) => drop(ids.remove(i)),
+        Some((i, d)) => ids.swap(i, (i as isize + d) as usize),
+        None => {}
+    }
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if ui.button("Add Separator").clicked() { ids.push("-".into()); }
+        if ui.add_enabled(s.menus.contains_key(location), egui::Button::new("Reset to Default")).clicked() {
+            s.menus.remove(location);
+            ids = menus::ids(location, &s.menus);
+        }
+    });
+    ui.add_space(4.0);
+    field(ui, &mut page.menu_filter, 320.0, "Add command: type to search");
+    let filter = page.menu_filter.to_lowercase();
+    if !filter.trim().is_empty() {
+        let found: Vec<crate::command::Command> = crate::command::all().into_iter().filter(|c| c.label().to_lowercase().contains(filter.trim()) || c.id().to_lowercase().contains(filter.trim())).take(12).collect();
+        for cmd in found {
+            if ui.button(format!("{}  {}", icons::PLUS, cmd.label())).clicked() {
+                ids.push(cmd.id());
+                page.menu_filter.clear();
+            }
+        }
+    }
+    if ids != before {
+        s.menus.insert(location.to_owned(), ids);
     }
 }
 

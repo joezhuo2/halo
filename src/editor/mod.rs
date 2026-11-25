@@ -1996,7 +1996,13 @@ impl Editors {
         let floating = self.win_of(g) != 0;
         let locked = group.locked;
         let md = group.tabs.get(active).is_some_and(|t| t.md.is_none() && self.docs.get(&t.doc).is_some_and(|d| d.buf.path.as_deref().is_some_and(markdown::is_markdown)));
-        let right = strip.right() - if last { 60.0 } else { 34.0 } - if md { 26.0 } else { 0.0 } - if locked { 26.0 } else { 0.0 };
+        let tools: Vec<Command> = crate::menus::resolve("editor.toolbar", &self.config.menus).into_iter().filter_map(|e| match e {
+            crate::menus::Entry::Cmd(Command::MarkdownPreview) if !md => None,
+            crate::menus::Entry::Cmd(Command::ToggleAi) if !last => None,
+            crate::menus::Entry::Cmd(cmd) => Some(cmd),
+            _ => None,
+        }).collect();
+        let right = strip.right() - 8.0 - 26.0 * tools.len() as f32 - if locked { 26.0 } else { 0.0 };
         let faces: Vec<_> = group.tabs.iter().map(|tab| {
             let terminal = self.terminals.get(&tab.doc);
             let (title, dirty) = match (terminal, self.docs.get(&tab.doc)) {
@@ -2196,20 +2202,24 @@ impl Editors {
                 }
             }
         });
-        if last {
-            let ai = Rect::from_center_size(pos2(strip.right() - 43.0, strip.center().y), vec2(24.0, 24.0));
-            ui.scope_builder(UiBuilder::new().max_rect(ai), |ui| {
-                if ui::icon_button(ui, theme, icons::ROBOT, 24.0, self.ai_open, "Toggle AI Panel (Ctrl+Alt+B)").clicked() {
-                    pending.push(Command::ToggleAi);
-                }
-            });
-        }
-        if md {
-            let eye = Rect::from_center_size(pos2(strip.right() - if last { 69.0 } else { 43.0 }, strip.center().y), vec2(24.0, 24.0));
-            ui.scope_builder(UiBuilder::new().max_rect(eye), |ui| {
-                if ui::icon_button(ui, theme, icons::EYE, 24.0, false, "Open Markdown Preview (Ctrl+Shift+V)").clicked() {
+        for (i, cmd) in tools.iter().enumerate() {
+            let at = Rect::from_center_size(pos2(strip.right() - 17.0 - 26.0 * (tools.len() - 1 - i) as f32, strip.center().y), vec2(24.0, 24.0));
+            let (icon, on, tip) = match cmd {
+                Command::ToggleAi => (icons::ROBOT, self.ai_open, "Toggle AI Panel".to_owned()),
+                Command::MarkdownPreview => (icons::EYE, false, "Open Markdown Preview".to_owned()),
+                Command::SplitEditor => (icons::SQUARE_SPLIT_HORIZONTAL, false, "Split Editor Right, Alt+click to split down".to_owned()),
+                Command::SplitEditorDown => (icons::SQUARE_SPLIT_VERTICAL, false, cmd.label().to_string()),
+                Command::ToggleMinimap => (icons::MAP_TRIFOLD, false, cmd.label().to_string()),
+                Command::CloseAllEditors | Command::CloseEditor => (icons::X, false, cmd.label().to_string()),
+                Command::SaveAll | Command::Save => (icons::FLOPPY_DISK, false, cmd.label().to_string()),
+                _ => (icons::LIGHTNING, false, cmd.label().to_string()),
+            };
+            let keys = command::shortcut_text(ui.ctx(), cmd).map(|k| format!(" ({k})")).unwrap_or_default();
+            ui.scope_builder(UiBuilder::new().max_rect(at), |ui| {
+                if ui::icon_button(ui, theme, icon, 24.0, on, &format!("{tip}{keys}")).clicked() {
                     self.active = g;
-                    pending.push(Command::MarkdownPreview);
+                    let split_down = *cmd == Command::SplitEditor && ui.input(|i| i.modifiers.alt);
+                    pending.push(if split_down { Command::SplitEditorDown } else { cmd.clone() });
                 }
             });
         }
@@ -2222,13 +2232,6 @@ impl Editors {
                 }
             });
         }
-        let split = Rect::from_center_size(pos2(strip.right() - 17.0, strip.center().y), vec2(24.0, 24.0));
-        ui.scope_builder(UiBuilder::new().max_rect(split), |ui| {
-            if ui::icon_button(ui, theme, icons::SQUARE_SPLIT_HORIZONTAL, 24.0, false, "Split Editor Right (Ctrl+\\), Alt+click to split down").clicked() {
-                self.active = g;
-                pending.push(if ui.input(|i| i.modifiers.alt) { Command::SplitEditorDown } else { Command::SplitEditor });
-            }
-        });
         if maximize {
             self.active = g;
             pending.push(Command::ToggleMaximizeGroup);
@@ -3022,22 +3025,23 @@ impl Editors {
                             }
                             ui.separator();
                         }
-                        if let Some(cmd) = mark_style::menu(ui, theme) {
-                            activated = true;
-                            resp.request_focus();
-                            pending.push(cmd);
-                            ui.close();
-                        }
-                        let items = [
-                            Some(GoToDefinition), Some(PeekDefinition), Some(GoToImplementation), Some(FindReferences), Some(ShowCallHierarchy), None,
-                            Some(RenameSymbol), Some(QuickFix), Some(FormatDocument), None,
-                            Some(InlineChat), None,
-                            Some(Cut), Some(Copy), Some(Paste),
-                        ];
-                        for item in items {
-                            let Some(cmd) = item else {
-                                ui.separator();
-                                continue;
+                        for item in crate::menus::resolve("editor.context", &settings.menus) {
+                            let cmd = match item {
+                                crate::menus::Entry::Cmd(cmd) => cmd,
+                                crate::menus::Entry::Special(crate::menus::MARK_STYLE) => {
+                                    if let Some(cmd) = mark_style::menu(ui, theme) {
+                                        activated = true;
+                                        resp.request_focus();
+                                        pending.push(cmd);
+                                        ui.close();
+                                    }
+                                    continue;
+                                }
+                                crate::menus::Entry::Special(_) => continue,
+                                crate::menus::Entry::Sep => {
+                                    ui.separator();
+                                    continue;
+                                }
                             };
                             let keys = command::shortcut_text(ui.ctx(), &cmd).unwrap_or_default();
                             if ui.add(egui::Button::new(cmd.label()).shortcut_text(keys)).clicked() {

@@ -29,6 +29,7 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("minimap", "editor.minimap.enabled"),
     ("auto_save", "files.autoSave"),
     ("associations", "files.associations"),
+    ("menus", "halo.menus"),
     ("font_ligatures", "editor.fontLigatures"),
     ("letter_spacing", "editor.letterSpacing"),
     ("cursor_smooth_caret_animation", "editor.cursorSmoothCaretAnimation"),

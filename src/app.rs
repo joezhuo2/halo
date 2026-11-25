@@ -442,6 +442,7 @@ impl Halo {
             CloseFolder => self.set_folder(None, ctx),
             NewWindow | OpenFolderInNewWindow | DuplicateWorkspace => self.window_command(&cmd),
             OpenSettings => self.page.open = true,
+            CustomizeMenus => self.page.show_menus(),
             OpenSnippets => {
                 crate::editor::write_sample_snippets();
                 self.editors.open(&crate::editor::snippets_path());

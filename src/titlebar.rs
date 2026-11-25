@@ -125,152 +125,75 @@ impl Halo {
     }
 
     fn menus(&mut self, ui: &mut Ui) {
-        use Command::*;
-        self.menu(ui, "File", &[
-            Some(NewFile), Some(NewWindow), Some(OpenFile), Some(OpenFolder), Some(OpenFolderInNewWindow), Some(OpenWorkspaceFromFile), Some(OpenRecent), None,
-            Some(AddFolderToWorkspace), Some(SaveWorkspaceAs), None,
-            Some(Save), Some(SaveAs), Some(SaveAll), None,
-            Some(CompareFile), Some(CompareClipboard), Some(CompareSaved), None,
-            Some(CloseEditor), Some(CloseFolder), Some(CloseWorkspace), None,
-            Some(OpenSettings), Some(OpenSettingsJson), Some(OpenKeybindings), None,
-            Some(SelectTheme), Some(SelectIconTheme), None,
-            Some(Exit),
-        ]);
-        self.menu(ui, "Edit", &[
-            Some(Undo), Some(Redo), None,
-            Some(Cut), Some(Copy), Some(Paste), None,
-            Some(Find), Some(Replace), None,
-            Some(ToggleComment), Some(RewrapComment), None,
-            Some(DeleteWordPartLeft), Some(DeleteWordPartRight), None,
-            Some(RenameSymbol), Some(QuickFix), Some(OrganizeImports), Some(FormatDocument), Some(FormatSelection),
-        ]);
-        self.menu(ui, "Selection", &[
-            Some(SelectAll), None,
-            Some(AddCursorAbove), Some(AddCursorBelow), Some(AddCursorsToLineEnds), Some(SelectNextOccurrence), None,
-            Some(CursorWordPartLeftSelect), Some(CursorWordPartRightSelect),
-            Some(ToggleColumnSelection),
-        ]);
-        self.menu_with(ui, "View", &[
-            Some(ShowExplorer), Some(ShowSourceControl), Some(ShowRunAndDebug), Some(ShowTesting), None,
-            Some(ToggleSidebar), Some(TogglePanel), Some(ToggleAi), Some(ShowProblems), Some(ShowOutput), Some(ShowNotifications), None,
-            Some(SplitEditor), Some(SplitEditorDown), Some(ToggleMaximizeGroup), Some(ResetGroupSizes), Some(ToggleMinimap), Some(ToggleHideSecrets), Some(MarkdownPreview), Some(MarkdownPreviewSide), None,
-            Some(ToggleTheme), Some(ZoomIn), Some(ZoomOut), Some(ZoomReset),
-        ], &[
-            Some(ToggleFullScreen), Some(ToggleZenMode), Some(ToggleCenteredLayout), None,
-            Some(ToggleSidebar), Some(ToggleSecondarySidebar), Some(TogglePanel), Some(ToggleSidebarPosition), None,
-            Some(MovePanelLeft), Some(MovePanelRight), Some(MovePanelBottom), Some(MovePanelTop), Some(TogglePanelPosition), Some(ToggleMaximizedPanel), None,
-            Some(AlignPanelCenter), Some(AlignPanelJustify), Some(AlignPanelLeft), Some(AlignPanelRight), None,
-            Some(ActivityBarSide), Some(ActivityBarTop), Some(ActivityBarHidden), None,
-            Some(MoveView), Some(ResetViewLocations),
-        ]);
-        self.menu(ui, "Go", &[
-            Some(GoToFile), Some(GoToSymbol), Some(GoToWorkspaceSymbol), Some(GoToLine), Some(GoToBracket), Some(FindInFiles), Some(NewSearchEditor), Some(ShowCommands), None,
-            Some(GoToDefinition), Some(GoToDeclaration), Some(GoToTypeDefinition), Some(GoToImplementation), Some(FindReferences),
-            Some(ShowCallHierarchy), Some(ShowTypeHierarchy), None,
-            Some(CursorWordPartLeft), Some(CursorWordPartRight),
-            Some(GoBack), Some(GoToLastEditLocation), Some(NextEditor), Some(PrevEditor), None,
-            Some(NextChange), Some(PrevChange),
-        ]);
-        ui.menu_button("Run", |ui| {
+        for (location, name) in crate::menus::LOCATIONS.iter().filter(|l| l.0.starts_with("menubar.")) {
+            let entries = crate::menus::resolve(location, &self.settings.menus);
+            ui.menu_button(name.trim_end_matches(" menu"), |ui| {
+                ui.set_min_width(230.0);
+                ui::menu_pad(ui);
+                for entry in entries {
+                    self.menu_entry(ui, entry);
+                }
+            });
+        }
+    }
+
+    fn menu(&mut self, ui: &mut Ui, title: &str, items: &[Option<Command>]) {
+        ui.menu_button(title, |ui| {
             ui.set_min_width(230.0);
             ui::menu_pad(ui);
-            for cmd in [StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging] {
-                self.menu_item(ui, cmd);
+            for item in items {
+                self.menu_entry(ui, item.clone().map_or(crate::menus::Entry::Sep, crate::menus::Entry::Cmd));
             }
-            ui.separator();
-            for cmd in [StepOver, StepInto, StepOut, PauseDebugging] {
-                self.menu_item(ui, cmd);
-            }
-            ui.separator();
-            for cmd in [RunToCursor, JumpToCursor] {
+        });
+    }
+
+    fn menu_entry(&mut self, ui: &mut Ui, entry: crate::menus::Entry) {
+        use crate::menus::{self, Entry};
+        use Command::*;
+        match entry {
+            Entry::Sep => drop(ui.separator()),
+            Entry::Cmd(cmd @ (RunToCursor | JumpToCursor)) => {
                 if self.editors.marks.cursor.allows(&cmd) && self.editors.source_cursor().is_some() {
                     self.menu_item(ui, cmd);
                 }
             }
-            let breakpoints = self.debug.breakpoint_commands(self.session.folder.is_some());
-            for cmd in [ToggleBreakpoint, EditBreakpoint, AddFunctionBreakpoint, BreakOnValueChange, RemoveAllBreakpoints, AddWatch, AddConfiguration] {
-                if breakpoints.allows(&cmd) { self.menu_item(ui, cmd); }
-            }
-            for cmd in [OpenDisassembly, OpenMemory] {
-                self.menu_item(ui, cmd);
-            }
-            ui.separator();
-            for cmd in [RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RunAllTestsWithCoverage, CancelTestRun] {
-                self.menu_item(ui, cmd);
-            }
-            ui.separator();
-            self.menu_item(ui, RunFile);
-            for command in [RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask, OpenTasksJson] {
-                self.menu_item(ui, command);
-            }
-            ui.separator();
-            let tasks: Vec<String> = self.settings.tasks.iter().map(|t| t.name.clone()).collect();
-            for name in tasks {
-                if ui.button(format!("Run Task: {name}")).clicked() {
-                    self.cmds.push(RunTask(name));
-                    ui.close();
+            Entry::Cmd(cmd @ (ToggleBreakpoint | EditBreakpoint | AddFunctionBreakpoint | BreakOnValueChange | RemoveAllBreakpoints | AddWatch | AddConfiguration)) => {
+                if self.debug.breakpoint_commands(self.session.folder.is_some()).allows(&cmd) {
+                    self.menu_item(ui, cmd);
                 }
             }
-            if ui.button("Configure Run Commands and Tasks...").clicked() {
-                self.cmds.push(OpenSettingsJson);
-                ui.close();
-            }
-        });
-        ui.menu_button("Terminal", |ui| {
-            ui.set_min_width(230.0);
-            ui::menu_pad(ui);
-            self.menu_item(ui, NewTerminal);
-            self.menu_item(ui, SplitTerminal);
-            self.menu_item(ui, KillTerminal);
-            self.menu_item(ui, NewTerminalInEditor);
-            self.menu_item(ui, MoveTerminalToEditor);
-            self.menu_item(ui, MoveTerminalToPanel);
-            ui.separator();
-            self.menu_item(ui, RenameTerminal);
-            self.menu_item(ui, ChangeTerminalColor);
-            self.menu_item(ui, RunRecentLine);
-            self.menu_item(ui, CopyLastCommandOutput);
-            self.menu_item(ui, ClearRestoredHistory);
-            ui.separator();
-            let names: Vec<String> = self.settings.terminals.iter().map(|p| p.name.clone()).collect();
-            for name in names {
-                if ui.button(format!("New {name}")).clicked() {
-                    self.cmds.push(NewTerminalWith(name));
-                    ui.close();
-                }
-            }
-        });
-        self.menu(ui, "Help", &[Some(InstallInPath), None, Some(About)]);
-    }
-
-    fn menu(&mut self, ui: &mut Ui, title: &str, items: &[Option<Command>]) {
-        self.menu_with(ui, title, items, &[]);
-    }
-
-    fn menu_with(&mut self, ui: &mut Ui, title: &str, items: &[Option<Command>], appearance: &[Option<Command>]) {
-        ui.menu_button(title, |ui| {
-            ui.set_min_width(230.0);
-            ui::menu_pad(ui);
-            if !appearance.is_empty() {
-                self.menu(ui, "Appearance", appearance);
-                ui.separator();
-            }
-            if title == "Edit" {
+            Entry::Cmd(cmd) => self.menu_item(ui, cmd),
+            Entry::Special(menus::APPEARANCE) => self.menu(ui, "Appearance", &menus::appearance()),
+            Entry::Special(menus::MARK_STYLE) => {
                 if let Some(cmd) = crate::editor::mark_style::menu(ui, &self.theme) {
                     self.cmds.push(cmd);
                     ui.close();
                 }
-                ui.separator();
             }
-            for item in items {
-                match item {
-                    Some(cmd) => self.menu_item(ui, cmd.clone()),
-                    None => {
-                        ui.separator();
+            Entry::Special(menus::TASKS) => {
+                let tasks: Vec<String> = self.settings.tasks.iter().map(|t| t.name.clone()).collect();
+                for name in tasks {
+                    if ui.button(format!("Run Task: {name}")).clicked() {
+                        self.cmds.push(RunTask(name));
+                        ui.close();
+                    }
+                }
+                if ui.button("Configure Run Commands and Tasks...").clicked() {
+                    self.cmds.push(OpenSettingsJson);
+                    ui.close();
+                }
+            }
+            Entry::Special(menus::PROFILES) => {
+                let names: Vec<String> = self.settings.terminals.iter().map(|p| p.name.clone()).collect();
+                for name in names {
+                    if ui.button(format!("New {name}")).clicked() {
+                        self.cmds.push(NewTerminalWith(name));
+                        ui.close();
                     }
                 }
             }
-        });
+            Entry::Special(_) => {}
+        }
     }
 
     fn menu_item(&mut self, ui: &mut Ui, cmd: Command) {
