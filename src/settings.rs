@@ -514,11 +514,23 @@ pub struct Backup {
     pub file: PathBuf,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct FolderState {
+    pub grid: Option<serde_json::Value>,
+    pub tree: Option<crate::explorer::TreeState>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pinned: Vec<(usize, PathBuf)>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Session {
     pub folder: Option<PathBuf>,
     pub workspace: crate::workspace::Workspace,
+    pub folder_states: BTreeMap<PathBuf, FolderState>,
     pub files: Vec<PathBuf>,
     pub pinned: Vec<(usize, PathBuf)>,
     pub grid: Option<serde_json::Value>,
@@ -545,6 +557,7 @@ impl Default for Session {
         Self {
             folder: None,
             workspace: Default::default(),
+            folder_states: BTreeMap::new(),
             files: vec![],
             pinned: vec![],
             grid: None,
@@ -569,6 +582,10 @@ impl Default for Session {
 }
 
 impl Session {
+    pub fn workspace_key(&self) -> Option<PathBuf> {
+        self.workspace.file.clone().or_else(|| self.folder.clone().filter(|_| !self.workspace.is_multi()))
+    }
+
     fn path() -> PathBuf {
         dir().join("session.json")
     }

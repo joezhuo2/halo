@@ -264,7 +264,7 @@ fn word_score(query: &str, word: &str) -> u32 {
         3
     } else if query.len() >= 3 && word.contains(query) {
         2
-    } else if query.len() >= 3 && word.starts_with(&query[..1]) && subsequence() {
+    } else if query.len() >= 3 && word.chars().next() == query.chars().next() && subsequence() {
         1
     } else {
         0
@@ -984,6 +984,8 @@ mod tests {
         assert!(rank("whitespace").starts_with(&["render_whitespace", "trim_trailing_whitespace"]));
         assert!(rank("font").iter().take(2).all(|k| k.starts_with("font")));
         assert!(rank("zzzz").is_empty());
+        assert!(rank("字体").is_empty());
+        assert_eq!(word_score("éct", "éclat"), 1);
         assert_eq!(rank("").len(), SETTINGS.len());
         let job = highlight("Tab Size", &["size".to_owned()], Color32::WHITE, Color32::RED, 13.0);
         assert_eq!(job.sections.len(), 2);

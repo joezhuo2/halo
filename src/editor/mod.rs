@@ -1102,8 +1102,7 @@ impl Editors {
             }
             doc.lang = Lang::default();
         }
-        let moved = |path: &PathBuf| buffer::disk_time(path).is_some_and(|now| doc.buf.disk.is_some_and(|then| then != now));
-        if !ask && doc.buf.path.as_ref().is_some_and(moved) {
+        if !ask && doc.buf.disk_changed() {
             doc.stale = true;
             return false;
         }
@@ -1806,13 +1805,12 @@ impl Editors {
                     doc.max_cols = (0, 0);
                     doc.buf = buf;
                 }
-                Ok(buf) => doc.buf.disk = buf.disk,
+                Ok(buf) => (doc.buf.disk, doc.buf.disk_hash) = (buf.disk, buf.disk_hash),
                 Err(_) => {}
             }
         }
         for doc in self.docs.values_mut().filter(|d| d.buf.is_dirty() && d.buf.disk.is_some()) {
-            let now = doc.buf.path.as_deref().and_then(buffer::disk_time);
-            doc.stale |= now.is_some() && now != doc.buf.disk;
+            doc.stale = doc.buf.disk_changed();
         }
     }
 
@@ -2859,8 +2857,12 @@ impl Editors {
                     };
 
                     let painter = ui.painter().clone();
-                    drop_at = drop_pos.map(|pos| hit(&painter, pos));
-                    let pointer = ui.input(|i| i.pointer.interact_pos());
+                    zone_y = zone.map(|(line, size, _)| origin.y + (starts[line + 1] - size) as f32 * line_h);
+                    let over_zone = |pos: &Pos2| zone_y.zip(zone).is_some_and(|(top, (_, size, _))| {
+                        text_rect.contains(*pos) && (top..top + size as f32 * line_h).contains(&pos.y)
+                    });
+                    drop_at = drop_pos.filter(|p| !over_zone(p)).map(|pos| hit(&painter, pos));
+                    let pointer = ui.input(|i| i.pointer.interact_pos()).filter(|p| !over_zone(p));
                     let (pressed, mods, down) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers, i.pointer.any_down()));
                     let on_lens = pointer.is_some_and(|pos| row_at(pos.y).1.is_some());
                     let ctrl_adds = settings.multi_cursor_modifier == "ctrlCmd";
@@ -2978,13 +2980,13 @@ impl Editors {
                             let (a, b) = buf_ref.word_at(p);
                             let (line, _, piece) = row_at(pos.y);
                             let row = layout(&painter, line, &tab.sels);
-                            let inside = pos.x - text_x <= row.pieces[piece.min(row.pieces.len() - 1)].galley.size().x;
+                            let inside = row.pieces.get(piece).is_some_and(|part| pos.x - text_x <= part.galley.size().x);
                             if inside && a < b && buf_ref.rope.get_char(a).is_some_and(is_word) {
                                 over_word = Some((a, b));
                             }
                             let start = buf_ref.line_start(line);
                             let column = p - start;
-                            let under = if column > 0 && row.x(piece, column) > pos.x - text_x { p - 1 } else { p };
+                            let under = if inside && column > 0 && row.x(piece, column) > pos.x - text_x { p - 1 } else { p };
                             if inside && intel::problem_at(problems, intel::to_lsp(buf_ref, under)) {
                                 over_problem = Some((under, under + 1));
                             }
@@ -3445,7 +3447,6 @@ impl Editors {
                         let target = Rect::from_min_max(pos2(x - gutter_w - char_w * 3.0, above), pos2(x + char_w * 4.0, top + line_h * (2.0 + around)));
                         ui.scroll_to_rect(target, None);
                     }
-                    zone_y = zone.map(|(line, size, _)| origin.y + (starts[line + 1] - size) as f32 * line_h);
                     if let (Some(y), Some((_, size, key))) = (zone_y, zone)
                         && tab.zone != Some(key)
                     {
@@ -4178,6 +4179,10 @@ end", "word ".repeat(100)))], &settings);
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![Event::Text("mine ".into())], &settings);
+        let touched = std::time::SystemTime::now() + Duration::from_secs(45);
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(touched).unwrap();
+        editors.reload_clean();
+        assert!(!editors.docs.values().next().unwrap().stale);
         std::fs::write(&path, "theirs\n").unwrap();
         let later = std::time::SystemTime::now() + Duration::from_secs(90);
         std::fs::File::options().write(true).open(&path).unwrap().set_modified(later).unwrap();
@@ -4200,6 +4205,12 @@ end", "word ".repeat(100)))], &settings);
         });
         assert!(saved, "a button in the changed-on-disk bar");
         assert_eq!((std::fs::read_to_string(&path).unwrap().as_str(), doc(&editors).1), ("mine one\n", false));
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(touched).unwrap();
+        assert!(!editors.docs.get_mut(&1).unwrap().buf.disk_changed());
+        std::fs::write(&path, "same len\n").unwrap();
+        file.set_modified(later).unwrap();
+        assert!(editors.docs.get_mut(&1).unwrap().buf.disk_changed());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -5067,6 +5078,39 @@ three
         drawn(&mut editors, vec![key(Key::Escape, Default::default())]);
         assert!(editors.intel.peek.is_none());
         assert_eq!(drawn(&mut editors, vec![]), before);
+    }
+
+    #[test]
+    fn pointer_and_wheel_in_a_references_peek_select_and_open_results() {
+        let ctx = egui::Context::default();
+        let mut editors = Editors::new();
+        let path = std::env::temp_dir().join(format!("halo-peek-{}.txt", std::process::id()));
+        std::fs::write(&path, (0..80).map(|n| format!("reference {n}\n")).collect::<String>()).unwrap();
+        editors.open(&path);
+        editors.finish_loads();
+        frame(&ctx, &mut editors, vec![]);
+        let places = (0..80).map(|n| lsp::Location { path: path.clone(), start: (n, 0), end: (n, 1), label: String::new() }).collect();
+        let over_list = pos2(650.0, 140.0);
+        frame(&ctx, &mut editors, vec![Event::PointerMoved(over_list)]);
+        editors.intel.queued.push(Queued::Peek(1, 3, "References", places));
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![]);
+        let peek = ctx.read_response(Id::new(("peek", 1u64))).unwrap().rect;
+        let preview = ctx.read_response(Id::new(("peek_preview", 1u64))).unwrap().rect;
+        let row = pos2(peek.right() - 38.0, preview.top() + 33.0);
+        let wheel = || Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -64.0), phase: egui::TouchPhase::Move, modifiers: Default::default() };
+        frame(&ctx, &mut editors, vec![Event::PointerMoved(preview.center()), wheel()]);
+        frame(&ctx, &mut editors, vec![Event::PointerMoved(row), wheel()]);
+        let button = |pressed| Event::PointerButton { pos: row, button: PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(&ctx, &mut editors, vec![button(true)]);
+        frame(&ctx, &mut editors, vec![button(false)]);
+        assert!(editors.intel.peek.is_some());
+        frame(&ctx, &mut editors, vec![button(true)]);
+        frame(&ctx, &mut editors, vec![button(false)]);
+        frame(&ctx, &mut editors, vec![]);
+        assert!(editors.intel.peek.is_none());
+        assert!(editors.with_active(|buf, tab| buf.line_of(tab.sels[0].head)).unwrap() > 0);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

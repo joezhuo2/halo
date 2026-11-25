@@ -211,6 +211,9 @@ language you want diagnostics and completion in. Each is optional.
 - **Editor group zoom:** `Ctrl+K Ctrl+=` and `Ctrl+K Ctrl+-` make the text of
   the active editor group larger or smaller without zooming the window;
   View: Reset Editor Group Zoom goes back.
+- Reopening a folder restores its tabs, active file, split layout and Explorer
+  tree, even after you work in another folder. Unsaved edits stay open when
+  you switch folders.
 - **Named layouts:** Layouts: Save Open Editors As... keeps the open tabs
   and splits under a name, Layouts: Switch... brings them back and
   Layouts: Delete... forgets one. They are saved per folder; files with

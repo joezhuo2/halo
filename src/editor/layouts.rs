@@ -52,12 +52,22 @@ impl Editors {
 
     fn open_layout(&mut self, name: &str) {
         let Some(saved) = self.layouts.named.get(name).cloned() else { return };
+        if !self.switch_grid(Some(&saved)) {
+            ui::notify(format!("The layout {name} could not be restored."));
+        }
+    }
+
+    pub fn switch_grid(&mut self, saved: Option<&Value>) -> bool {
         let before: Vec<u64> = self.docs.keys().chain(self.terminals.keys()).copied().collect();
         let keep: Vec<u64> = self.groups.iter().flat_map(|g| &g.tabs).map(|t| t.doc)
-            .filter(|doc| self.terminals.contains_key(doc) || self.docs.get(doc).is_some_and(|d| d.buf.is_dirty()))
+            .filter(|doc| self.terminals.contains_key(doc) || self.docs.get(doc).is_some_and(super::Doc::dirty))
             .collect();
-        if !self.restore_grid(&saved) {
-            return ui::notify(format!("The layout {name} could not be restored."));
+        if let Some(saved) = saved {
+            if !self.restore_grid(saved) { return false; }
+        } else {
+            self.groups = vec![Default::default()];
+            self.grid = Default::default();
+            self.active = 0;
         }
         (self.closing, self.switcher, self.drag, self.drop) = (None, None, None, None);
         self.previews.clear();
@@ -68,6 +78,7 @@ impl Editors {
         }
         before.into_iter().for_each(|doc| self.drop_doc(doc));
         self.want_focus = true;
+        true
     }
 
     pub(super) fn layout_dialog(&mut self, ui: &Ui) {

@@ -129,7 +129,12 @@ impl Halo {
 
     fn finish_startup(&mut self, startup: Startup, ctx: &egui::Context) {
         let Startup { arg, restore, fresh, args, cmds, .. } = startup;
-        let saved = std::mem::take(&mut self.session.workspace);
+        if let Some(key) = self.session.workspace_key() {
+            self.session.folder_states.entry(key).or_insert_with(|| crate::settings::FolderState {
+                grid: self.session.grid.clone(), files: self.session.files.clone(), pinned: self.session.pinned.clone(), tree: None,
+            });
+        }
+        let saved = self.session.workspace.clone();
         let last = match &saved.file {
             _ if !restore => Workspace::default(),
             Some(file) => Workspace::open(file).unwrap_or_else(|error| {
@@ -139,19 +144,16 @@ impl Halo {
             None if saved.folders.len() > 1 => saved,
             None => self.session.folder.clone().filter(|f| f.is_dir()).map(Workspace::single).unwrap_or_default(),
         };
-        let (workspace, files) = match arg {
-            Some(path) => (Workspace::single(strip_unc(path)), vec![]),
-            None if fresh && restore => (last, self.session.files.clone()),
-            None => (last, vec![]),
-        };
-        self.set_workspace(workspace, ctx);
-        if fresh && restore && !self.session.grid.as_ref().is_some_and(|grid| self.editors.restore_grid(grid)) {
-            let pins: Vec<_> = self.session.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
-            self.editors.restore_pins(&pins);
-        }
-        for file in files.iter().filter(|f| f.is_file()) {
-            if !self.editors.open_paths().contains(file) {
-                self.editors.open_restored(file);
+        let explicit = arg.is_some();
+        let workspace = arg.map_or(last, |path| Workspace::single(strip_unc(path)));
+        self.configure_workspace(workspace, ctx);
+        if restore && (fresh || explicit) {
+            if let Some(state) = self.session.workspace_key().and_then(|key| self.session.folder_states.get(&key)).cloned() {
+                self.restore_folder_state(&state);
+            } else if fresh {
+                self.restore_folder_state(&crate::settings::FolderState {
+                    grid: self.session.grid.clone(), files: self.session.files.clone(), pinned: self.session.pinned.clone(), tree: None,
+                });
             }
         }
         self.editors.restore(&self.session.backups);
@@ -226,10 +228,53 @@ impl Halo {
     }
 
     fn set_folder(&mut self, folder: Option<PathBuf>, ctx: &egui::Context) {
-        self.set_workspace(folder.map(strip_unc).map(Workspace::single).unwrap_or_default(), ctx);
+        self.open_workspace(folder.map(strip_unc).map(Workspace::single).unwrap_or_default(), ctx);
+    }
+
+    fn store_folder_state(&mut self) {
+        if let Some(key) = self.session.workspace_key() {
+            self.session.folder_states.insert(key, crate::settings::FolderState {
+                grid: Some(self.editors.folder_grid()), tree: Some(self.explorer.tree_state()), ..Default::default()
+            });
+        }
+    }
+
+    fn restore_folder_state(&mut self, state: &crate::settings::FolderState) {
+        if !self.editors.switch_grid(state.grid.as_ref()) || state.grid.is_none() {
+            let pins: Vec<_> = state.pinned.iter().filter(|(_, f)| f.is_file()).cloned().collect();
+            self.editors.restore_pins(&pins);
+        }
+        for path in state.files.iter().filter(|f| f.is_file()) {
+            if !self.editors.open_paths().contains(path) { self.editors.open_restored(path); }
+        }
+        if let Some(tree) = &state.tree {
+            self.explorer.restore_tree(tree, self.editors.active_path());
+        }
+    }
+
+    fn open_workspace(&mut self, workspace: Workspace, ctx: &egui::Context) {
+        if self.session.workspace == workspace { return; }
+        let had_folder = self.session.folder.is_some() || self.session.workspace.file.is_some();
+        self.store_folder_state();
+        self.configure_workspace(workspace, ctx);
+        if let Some(state) = self.session.workspace_key().and_then(|key| self.session.folder_states.get(&key)).cloned() {
+            self.restore_folder_state(&state);
+        } else if had_folder {
+            self.editors.switch_grid(None);
+        }
+        self.session.files = self.editors.open_paths();
+        self.session.pinned = self.editors.pinned_paths();
+        self.session.grid = Some(self.editors.grid_state());
+        self.session.save();
     }
 
     fn set_workspace(&mut self, workspace: Workspace, ctx: &egui::Context) {
+        self.store_folder_state();
+        self.configure_workspace(workspace, ctx);
+        self.session.save();
+    }
+
+    fn configure_workspace(&mut self, workspace: Workspace, ctx: &egui::Context) {
         let folder = workspace.first();
         if self.session.folder != folder {
             crate::terminal_restore::save(&self.bottom, &self.editors, &self.settings, self.session.folder.as_deref());
@@ -258,7 +303,6 @@ impl Halo {
         crate::debug::restore(&self.session, &mut self.editors.marks);
         self.editors.bookmarks.restore(&self.session.bookmarks, self.session.folder.clone());
         self.editors.layouts.restore(&self.session.layouts, self.session.folder.clone());
-        self.session.save();
     }
 
     fn edit_workspace(&mut self, edit: impl FnOnce(&mut Workspace), ctx: &egui::Context) {
@@ -310,7 +354,7 @@ impl Halo {
                 }
             }
             OpenWorkspace(file) => match Workspace::open(&file) {
-                Ok(workspace) => self.set_workspace(workspace, ctx),
+                Ok(workspace) => self.open_workspace(workspace, ctx),
                 Err(error) => ui::notify(error),
             },
             _ => self.set_folder(None, ctx),
@@ -330,6 +374,7 @@ impl Halo {
         if crate::windows::secondary() || self.startup.is_some() {
             return;
         }
+        self.store_folder_state();
         let backups = crate::settings::dir().join("backups");
         self.session.files = self.editors.open_paths();
         self.session.pinned = self.editors.pinned_paths();
@@ -1462,6 +1507,53 @@ mod tests {
         app.save_session();
         assert_eq!(app.session.files, files);
         assert_eq!(app.session.grid, None);
+    }
+
+    #[test]
+    fn switching_and_restarting_restores_each_folders_editors_and_explorer() {
+        use crate::settings::{Session, Settings};
+        use eframe::egui;
+        let base = std::env::temp_dir().join(format!("halo-folder-state-{}", std::process::id()));
+        let a = base.join("a");
+        let b = base.join("b");
+        let nested = a.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let [first, second, other] = [a.join("first.txt"), nested.join("second.txt"), b.join("other.txt")];
+        for path in [&first, &second, &other] { std::fs::write(path, "hello").unwrap(); }
+
+        let ctx = egui::Context::default();
+        let mut app = super::Halo::build(&ctx, Settings::default(), Session::default());
+        app.set_folder(Some(a.clone()), &ctx);
+        app.editors.open_kept(&first);
+        app.editors.open_kept(&second);
+        app.editors.open_kept(&first);
+        let tree = serde_json::from_value(serde_json::json!({
+            "expanded": [&nested], "flipped": [], "cursor": &second, "collapsed": false, "open_editors": false
+        })).unwrap();
+        app.explorer.restore_tree(&tree, Some(first.clone()));
+        app.set_folder(Some(b.clone()), &ctx);
+        assert!(app.editors.is_empty());
+        app.editors.open_kept(&other);
+        app.set_folder(Some(a.clone()), &ctx);
+        assert_eq!(app.editors.open_paths(), [first.clone(), second.clone()]);
+        assert_eq!(app.editors.active_path(), Some(first.clone()));
+        assert_eq!(serde_json::to_value(app.explorer.tree_state()).unwrap(), serde_json::to_value(&tree).unwrap());
+
+        app.set_folder(Some(b), &ctx);
+        assert_eq!(app.editors.open_paths(), [other]);
+        let session = serde_json::from_slice(&serde_json::to_vec(&app.session).unwrap()).unwrap();
+        let mut restarted = super::Halo::build(&ctx, Settings::default(), session);
+        let (_, loaded) = std::sync::mpsc::channel();
+        restarted.finish_startup(super::Startup { arg: Some(a), restore: true, fresh: false, args: Default::default(), cmds: vec![], tabs: true, loaded }, &ctx);
+        assert_eq!(restarted.editors.active_path(), Some(first));
+        assert_eq!(serde_json::to_value(restarted.explorer.tree_state()).unwrap(), serde_json::to_value(tree).unwrap());
+        drop((app, restarted));
+        for _ in 0..100 {
+            if std::fs::remove_dir_all(&base).is_ok() { return; }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

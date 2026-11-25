@@ -268,6 +268,7 @@ impl StreamView {
             ui.painter().text(body.center(), Align2::CENTER_CENTER, format!("Cannot read the file: {error}"), FontId::proportional(13.0), theme.text_dim);
             return open_editor;
         }
+        if !body.is_positive() { return open_editor; }
         let resp = ui.interact(body, egui::Id::new(("stream_view", &self.path)), Sense::click_and_drag());
         let max_top = lines.saturating_sub(rows);
         if resp.hovered() {
@@ -286,7 +287,7 @@ impl StreamView {
             }
         }
         let track = Rect::from_min_max(pos2(body.right() - 10.0, body.top()), body.max);
-        let thumb_h = (track.height() * rows as f32 / lines as f32).clamp(24.0, track.height());
+        let thumb_h = (track.height() * rows as f32 / lines as f32).clamp(24.0_f32.min(track.height()), track.height());
         let bar_resp = ui.interact(track, egui::Id::new(("stream_bar", &self.path)), Sense::click_and_drag());
         if let Some(pos) = bar_resp.interact_pointer_pos().filter(|_| bar_resp.dragged() || bar_resp.clicked()) {
             let frac = ((pos.y - track.top() - thumb_h / 2.0) / (track.height() - thumb_h).max(1.0)).clamp(0.0, 1.0);
@@ -352,6 +353,21 @@ impl StreamView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_split_can_display_a_stream() {
+        let ctx = egui::Context::default();
+        let path = std::env::temp_dir().join(format!("halo-short-stream-{}.log", std::process::id()));
+        std::fs::write(&path, "some text").unwrap();
+        let mut stream = StreamView::open(path.clone(), &ctx);
+        for height in [28.0, 40.0, 80.0] {
+            ctx.run_ui(Default::default(), |ui| {
+                stream.ui(ui, &Theme::dark(), Rect::from_min_size(ui.min_rect().min, vec2(600.0, height)), 14.0);
+            }).textures_delta.clear();
+        }
+        drop(stream);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn indexes_reads_searches_and_follows_a_growing_file() {
