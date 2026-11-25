@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "halo"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "alacritty_terminal",
  "dirs",

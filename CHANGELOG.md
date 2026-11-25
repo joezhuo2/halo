@@ -6,6 +6,51 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-11-25
+
+Checked with unit tests, clippy and a request through curl to a local test
+server. Not yet looked at on screen: elastic tabstops, mark styles, the
+menus editor in Settings and detached view windows.
+
+### Added
+
+- **Rewrap Comment / Text** (`Alt+Q`, Edit menu): hard-wraps the comment,
+  Markdown or plain text paragraph under each cursor, or the selected lines,
+  to the first ruler or `editor.wordWrapColumn`. Line comment prefixes,
+  ` * ` block comment lines, `>` quotes and list item indents are kept.
+- **Hide secrets on screen** (`halo.hideSecrets`, on by default, Toggle Hide
+  Secrets on Screen in the View menu): values in `.env`, `.env.*`, `.npmrc`,
+  `.pypirc`, `.netrc`, `.git-credentials`, `credentials`, `*.pem` and `*.key`
+  files show as dots until a cursor or selection touches their line. Copy,
+  search and save still use the real text. The minimap, sticky scroll,
+  hovers, peeks, search results and diffs are masked too.
+- **Mark styles:** Mark All Occurrences with Style 1 to 5 highlights a word
+  (whole word, case sensitive) or the selected text everywhere in the file,
+  in the editor, the minimap and the scroll bar. Clear one style, the mark
+  at the cursor or all marks. Marks are saved per file in the session.
+  Available from Edit > Mark Style, the editor context menu and the palette.
+- **Elastic tabstops** (`editor.elasticTabstops`, off by default, Toggle
+  Elastic Tabstops): tab separated cells on neighbouring lines line up in
+  columns, measured with the editor font, so it works with proportional
+  fonts. Indent tabs keep their width. Off while word wrap is on.
+- **HTTP client:** `.http` and `.rest` files show **Send Request** above each
+  request; `Ctrl+Alt+R` (Rest Client: Send Request) sends the one under the
+  cursor, and Rerun Last Request and Cancel Request are in the Run menu. The
+  REST Client and JetBrains syntax subset is supported: `###` separators,
+  `@name = value` variables, `{{name}}`, `{{$guid}}`, `{{$timestamp}}`,
+  `{{$processEnv NAME}}`, `?`/`&` query lines, headers and a body or
+  `< ./file`. Requests run through the system `curl`; the response opens in
+  a split beside the file, with JSON pretty-printed.
+- **Editable menus and toolbars:** Settings > Appearance > Menus and Toolbars
+  (or Customize Menus and Toolbars) adds, removes and reorders the commands
+  and separators of each title bar menu, the editor context menu and the
+  editor toolbar. Saved as `halo.menus` in settings.json.
+- **Detachable views:** "View: Move View into New Window" or Move into New
+  Window on an activity bar icon puts any side bar or panel view (Explorer,
+  Search, Source Control, Terminal, Problems, ...) in its own window. Closing
+  that window or "View: Move View Back to Main Window" returns it. Detached
+  views and their window positions are kept across restarts.
+
 ## [0.1.21] - 2026-11-24
 
 Checked with unit tests and clippy. Not yet looked at on screen: the Undo

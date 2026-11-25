@@ -89,6 +89,19 @@ language you want diagnostics and completion in. Each is optional.
 - **Undo tree:** Edit: Show Undo Tree... restores any earlier state, including
   edits an undo would otherwise lose. Persistent Undo (off by default) keeps
   the history of saved files across restarts.
+- **Rewrap** (`Alt+Q`): hard-wraps the comment or Markdown paragraph under
+  the cursor to the first ruler (or the word wrap column), keeping comment
+  prefixes, quotes and list indents.
+- **Mark styles:** Edit > Mark Style (also in the editor context menu)
+  highlights every occurrence of a word or the selection in one of five
+  colors, in the editor, the minimap and the scroll bar. Marks are kept per
+  file across restarts.
+- **Elastic tabstops** (off by default, `editor.elasticTabstops`): tab
+  separated columns line up across neighbouring lines, also in proportional
+  fonts.
+- **Hide secrets** (on by default): values in `.env`, `.npmrc`, `.netrc`,
+  `.git-credentials`, `*.pem` and similar files show as dots until a cursor
+  or selection is on their line, also in search results, hovers and diffs.
 - **Subword navigation:** Cursor Word Part Left and Right (and their Select
   forms) stop at camelCase humps, acronyms, underscores, hyphens and digits;
   `Ctrl+Alt+Backspace` and `Ctrl+Alt+Delete` delete a word part.
@@ -431,6 +444,16 @@ Each of these can be switched off under **Settings > Text Editor**.
   undo step, `Escape` discards it, and another prompt refines it. `Up` and
   `Down` recall earlier prompts.
 
+### HTTP client
+
+- `.http` and `.rest` files get a **Send Request** link above each request
+  (`Ctrl+Alt+R` sends the one under the cursor). Requests are separated by
+  `###` and support `@name = value` variables, `{{name}}`, `{{$guid}}`,
+  `{{$timestamp}}`, `{{$processEnv NAME}}`, query lines starting with `?` or
+  `&`, headers and a body (or `< ./file`). The response opens beside the file
+  with its status, headers and pretty-printed JSON. Requests go through the
+  system `curl`, so it must be on `PATH` (it ships with Windows 10 and later).
+
 ### Search
 
 The bar in the title bar (`Ctrl+P`) finds files by name. A prefix changes
@@ -480,6 +503,13 @@ what it searches:
   View..." or a drag moves the Explorer, Source Control, Testing, Outline,
   Timeline, Terminal and the other views between the side bars and the
   panel.
+- **Detachable views:** right-click an activity bar icon, or run "View: Move
+  View into New Window", to put the Explorer, Terminal, Problems or any other
+  view in its own window. Closing the window puts the view back; detached
+  windows come back after a restart.
+- **Editable menus:** Settings > Appearance > Menus and Toolbars (or
+  "Customize Menus and Toolbars") adds, removes and reorders the commands in
+  the title bar menus, the editor context menu and the editor toolbar.
 - **Open Recent** (`Ctrl+R`, or File > Open Recent) lists the recent folders
   and files to open again.
 - **Windows:** right-click the taskbar icon for recent folders, recent files
@@ -525,7 +555,7 @@ halo [options] [paths...]
 | --- | --- |
 | Text Editor | Font family, font size, tab size, spaces or tabs, minimap, breadcrumbs, code lens, inlay hints, semantic highlighting, format on save and paste, diagnostics and the status bar counts |
 | Files | Auto save |
-| Appearance | Dark or light theme, and every interface and syntax color for each theme |
+| Appearance | Dark or light theme, every interface and syntax color for each theme, and the commands in the menus and the editor toolbar |
 | Terminal | Default profile and the list of profiles |
 | Run and Tasks | The run command for each file extension, and named tasks |
 | Languages | Grammars folder, file associations, language servers and their commands, and the installed languages |
@@ -615,6 +645,10 @@ The sun or moon at the right end of the status bar also switches the theme.
 - Imported icon themes must use SVG or PNG icons, and imported color themes
   must be JSON.
 - No VS Code extensions.
+- The tab and Explorer context menus cannot be edited yet; the title bar
+  menus, the editor context menu and the editor toolbar can.
+- Elastic tabstops fall back to fixed tabs while word wrap is on.
+- `.http` files have no syntax highlighting.
 - Restored terminals show their old output and start a fresh shell; the
   programs that were running in them are not kept alive.
 - Terminal images do not appear on Windows: the Windows pseudo console drops

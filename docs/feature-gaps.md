@@ -29,22 +29,7 @@ asking for that VS Code itself does not have. Checked against the README,
   small machines where VS Code Server will not install.
 - **Structural search and replace** and tree-sitter based selection and
   motion (JetBrains SSR, Helix, Zed).
-
-- **Rewrap / reflow**: hard-wrap a comment or Markdown paragraph to the ruler,
-  keeping comment prefixes (`gq` in Vim, the Rewrap extension).
-- **Elastic tabstops**: align tab-separated columns across lines in
-  proportional fonts.
-- **Persistent word highlights**: mark a word in one of several colours and
-  keep it highlighted across the file and its minimap (Notepad++ mark styles).
-- **Hide secrets on screen**: mask values in `.env` and similar files until
-  the cursor is on the line, for streaming and screen sharing.
-- **Built-in HTTP client**: run requests from `.http` files and show the
-  response beside them (JetBrains HTTP Client, REST Client extension).
 - **Database browser**: connect, browse tables and run queries
   (JetBrains DataGrip).
 - **File watchers**: run a task when a matching file is saved, with its
   output parsed by the task's problem matcher (JetBrains File Watchers).
-- **Editable menus and toolbars**: add, remove and reorder commands in the
-  title bar, context menus and editor toolbar from Settings.
-- **Detachable panels**: move the terminal, Explorer or any side-bar view into
-  its own window, not only editors.
