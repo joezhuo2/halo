@@ -1102,8 +1102,7 @@ impl Editors {
             }
             doc.lang = Lang::default();
         }
-        let moved = |path: &PathBuf| buffer::disk_time(path).is_some_and(|now| doc.buf.disk.is_some_and(|then| then != now));
-        if !ask && doc.buf.path.as_ref().is_some_and(moved) {
+        if !ask && doc.buf.disk_changed() {
             doc.stale = true;
             return false;
         }
@@ -1806,13 +1805,12 @@ impl Editors {
                     doc.max_cols = (0, 0);
                     doc.buf = buf;
                 }
-                Ok(buf) => doc.buf.disk = buf.disk,
+                Ok(buf) => (doc.buf.disk, doc.buf.disk_hash) = (buf.disk, buf.disk_hash),
                 Err(_) => {}
             }
         }
         for doc in self.docs.values_mut().filter(|d| d.buf.is_dirty() && d.buf.disk.is_some()) {
-            let now = doc.buf.path.as_deref().and_then(buffer::disk_time);
-            doc.stale |= now.is_some() && now != doc.buf.disk;
+            doc.stale = doc.buf.disk_changed();
         }
     }
 
@@ -4181,6 +4179,10 @@ end", "word ".repeat(100)))], &settings);
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![], &settings);
         frame_with(&ctx, &mut editors, vec![Event::Text("mine ".into())], &settings);
+        let touched = std::time::SystemTime::now() + Duration::from_secs(45);
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(touched).unwrap();
+        editors.reload_clean();
+        assert!(!editors.docs.values().next().unwrap().stale);
         std::fs::write(&path, "theirs\n").unwrap();
         let later = std::time::SystemTime::now() + Duration::from_secs(90);
         std::fs::File::options().write(true).open(&path).unwrap().set_modified(later).unwrap();
@@ -4203,6 +4205,12 @@ end", "word ".repeat(100)))], &settings);
         });
         assert!(saved, "a button in the changed-on-disk bar");
         assert_eq!((std::fs::read_to_string(&path).unwrap().as_str(), doc(&editors).1), ("mine one\n", false));
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(touched).unwrap();
+        assert!(!editors.docs.get_mut(&1).unwrap().buf.disk_changed());
+        std::fs::write(&path, "same len\n").unwrap();
+        file.set_modified(later).unwrap();
+        assert!(editors.docs.get_mut(&1).unwrap().buf.disk_changed());
         let _ = std::fs::remove_file(&path);
     }
 

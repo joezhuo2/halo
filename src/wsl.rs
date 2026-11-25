@@ -13,6 +13,41 @@ pub fn parse(path: &Path) -> Option<(String, String)> {
     (!distro.is_empty()).then(|| (distro.to_owned(), linux))
 }
 
+pub fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    match std::fs::File::create(path) {
+        Ok(mut file) => file.write_all(bytes),
+        #[cfg(windows)]
+        Err(error) if error.raw_os_error() == Some(1224) => {
+            let Some((distro, linux)) = parse(&crate::app::strip_unc(path.to_owned())) else { return Err(error) };
+            write_mapped(&distro, &linux, bytes)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn write_mapped(distro: &str, path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::{Error, Write};
+    use std::process::Stdio;
+    let script = r#"set -eu
+stage=$(mktemp)
+trap 'rm -f -- "$stage"' EXIT
+cat > "$stage"
+test "$(wc -c < "$stage")" -eq "$2"
+dd if="$stage" of="$1" bs=65536 conv=notrunc status=none
+truncate -s "$2" -- "$1""#;
+    let mut child = crate::terminal::hidden_command("wsl.exe")
+        .args(["-d", distro, "-e", "sh", "-c", script, "halo-save", path, &bytes.len().to_string()])
+        .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn()?;
+    let written = child.stdin.take().expect("piped stdin").write_all(bytes);
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(Error::other(format!("WSL save failed ({}): {}", output.status, String::from_utf8_lossy(&output.stderr).trim())));
+    }
+    written
+}
+
 pub fn to_windows(distro: &str, linux: &str) -> PathBuf {
     PathBuf::from(format!(r"\\wsl.localhost\{distro}{}", linux.trim_end_matches('/').replace('/', "\\")))
 }
@@ -128,6 +163,36 @@ impl Wsl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "requires a running WSL distribution"]
+    fn saves_through_a_live_windows_mapping_on_wsl() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn CreateFileMappingW(file: RawHandle, attrs: *const std::ffi::c_void, protect: u32, high: u32, low: u32, name: *const u16) -> RawHandle;
+        }
+        let out = crate::terminal::hidden_command("wsl.exe").args(["-e", "sh", "-c", r#"printf '%s\n' "$WSL_DISTRO_NAME"; mktemp -d /tmp/halo-save.XXXXXXXX"#]).output().unwrap();
+        assert!(out.status.success());
+        let info = String::from_utf8(out.stdout).unwrap();
+        let mut lines = info.lines();
+        let dir = to_windows(lines.next().unwrap(), lines.next().unwrap());
+        let path = dir.join("sample '$HOME' file.cu");
+        std::fs::write(&path, b"original contents").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let handle = unsafe { CreateFileMappingW(file.as_raw_handle(), std::ptr::null(), 2, 0, 0, std::ptr::null()) };
+        assert!(!handle.is_null());
+        let section = unsafe { OwnedHandle::from_raw_handle(handle) };
+        assert_eq!(std::fs::File::create(&path).unwrap_err().raw_os_error(), Some(1224));
+        for bytes in [b"short".as_slice(), b"a longer value with \xff and \x00", b""] {
+            write_file(&path, bytes).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        drop((section, file));
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn maps_paths_and_wraps_commands() {

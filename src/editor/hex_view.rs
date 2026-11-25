@@ -48,7 +48,7 @@ impl HexView {
         if self.rx.is_some() || self.error.is_some() {
             return Err("The file is not loaded.".into());
         }
-        std::fs::write(&self.path, &self.bytes).map_err(|e| format!("Cannot save {}: {e}", self.path.display()))?;
+        crate::wsl::write_file(&self.path, &self.bytes).map_err(|e| format!("Cannot save {}: {e}", self.path.display()))?;
         (self.dirty, self.edited, self.saved) = (false, BTreeSet::new(), self.undo.len());
         Ok(())
     }

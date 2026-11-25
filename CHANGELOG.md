@@ -12,6 +12,9 @@ All notable changes to Halo are documented here. The format follows
 
 - Scrolling in the references list, selecting a result and opening it now
   work without crashing the editor (#3, #5).
+- Saving a WSL file held open by a Windows memory mapping now retries
+  inside its Linux distribution. A timestamp-only change no longer raises
+  a disk conflict when the saved bytes still match.
 - Settings search handles non-ASCII queries, and the large-file viewer can
   render in a split shorter than its scrollbar thumb.
 

@@ -1548,6 +1548,11 @@ mod tests {
         restarted.finish_startup(super::Startup { arg: Some(a), restore: true, fresh: false, args: Default::default(), cmds: vec![], tabs: true, loaded }, &ctx);
         assert_eq!(restarted.editors.active_path(), Some(first));
         assert_eq!(serde_json::to_value(restarted.explorer.tree_state()).unwrap(), serde_json::to_value(tree).unwrap());
+        drop((app, restarted));
+        for _ in 0..100 {
+            if std::fs::remove_dir_all(&base).is_ok() { return; }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
         std::fs::remove_dir_all(base).unwrap();
     }
 

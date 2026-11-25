@@ -183,6 +183,7 @@ pub struct Document {
     pub encoding: Encoding,
     pub indent: Option<(bool, usize)>,
     pub disk: Option<std::time::SystemTime>,
+    pub(super) disk_hash: Option<(usize, u64)>,
     pub version: u64,
     saved: u64,
     nodes: Vec<Node>,
@@ -452,6 +453,13 @@ pub fn disk_time(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
 }
 
+fn fingerprint(bytes: &[u8]) -> (usize, u64) {
+    use std::hash::{DefaultHasher, Hasher};
+    let mut hash = DefaultHasher::new();
+    hash.write(bytes);
+    (bytes.len(), hash.finish())
+}
+
 pub const HUGE: u64 = 256 * 1024 * 1024;
 
 pub fn looks_binary(bytes: &[u8], text: &str, lossy: bool, encoding: Encoding) -> bool {
@@ -478,6 +486,7 @@ impl Document {
             encoding: Encoding::Utf8,
             indent: None,
             disk: None,
+            disk_hash: None,
             version,
             saved: version,
             nodes: vec![root_node()],
@@ -525,12 +534,27 @@ impl Document {
         doc.crlf = editorconfig.crlf.unwrap_or(crlf);
         doc.encoding = if encoding == Encoding::Utf8Bom && editorconfig.charset == Some(Encoding::Utf8) { Encoding::Utf8 } else { encoding };
         doc.disk = disk_time(path);
+        doc.disk_hash = Some(fingerprint(bytes));
         doc.indent = editorconfig.indent(doc.detect_indent());
         doc.editorconfig = editorconfig;
         if lossy {
             doc.note = Some(format!("This file is not valid {}; invalid bytes were replaced.", encoding.label()));
         }
         Some(doc)
+    }
+
+    pub fn disk_changed(&mut self) -> bool {
+        let Some(path) = self.path.as_deref() else { return false };
+        let Some(stamp) = disk_time(path) else { return false };
+        if self.disk.is_none() || self.disk == Some(stamp) { return false; }
+        if let Some((len, hash)) = self.disk_hash
+            && std::fs::metadata(path).is_ok_and(|m| m.len() == len as u64)
+            && std::fs::read(path).is_ok_and(|bytes| fingerprint(&bytes) == (len, hash))
+        {
+            self.disk = Some(stamp);
+            return false;
+        }
+        true
     }
 
     pub fn save(&mut self) -> Result<Vec<u8>, String> {
@@ -540,9 +564,10 @@ impl Document {
             text = text.replace('\n', "\r\n");
         }
         let bytes = self.encoding.encode(&text);
-        std::fs::write(&path, &bytes).map_err(|e| format!("Cannot save {}: {e}", title_of(&path)))?;
+        crate::wsl::write_file(&path, &bytes).map_err(|e| format!("Cannot save {}: {e}", title_of(&path)))?;
         self.saved = self.version;
         self.disk = disk_time(&path);
+        self.disk_hash = Some(fingerprint(&bytes));
         self.title = title_of(&path);
         Ok(bytes)
     }
