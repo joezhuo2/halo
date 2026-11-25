@@ -410,6 +410,7 @@ pub(super) enum Queued {
 pub(super) enum LensClick {
     Own(usize, bool),
     Server(usize),
+    Http(usize),
 }
 
 const LENS_COMMANDS: [&str; 5] =

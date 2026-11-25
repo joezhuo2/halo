@@ -338,6 +338,9 @@ pub enum Command {
     RunBuildTask,
     RunTestTask,
     RerunLastTask,
+    RestRequest,
+    RestRerun,
+    RestCancel,
     TerminateTask,
     ShowRunningTasks,
     ConfigureDefaultBuildTask,
@@ -721,6 +724,7 @@ fn defaults() -> Vec<Binding> {
         e(C, Key::Slash, ToggleComment),
         bind(crate::shortcuts::REWRAP, None, Scope::Editor, RewrapComment),
         e(ca, Key::K, ToggleBookmark),
+        e(ca, Key::R, RestRequest),
         e(ca, Key::L, NextBookmark),
         e(ca, Key::J, PrevBookmark),
         e(Modifiers::ALT, Key::J, JumpToVisible),
@@ -834,7 +838,7 @@ pub fn all() -> Vec<Command> {
         RunFile, StartDebugging, RunWithoutDebugging, StopDebugging, RestartDebugging, PauseDebugging, StepOver, StepInto, StepOut, RunToCursor, JumpToCursor,
         ToggleBreakpoint, EditBreakpoint, AddFunctionBreakpoint, BreakOnValueChange, RemoveAllBreakpoints, AddWatch, AddConfiguration,
         EditLaunchForm, OpenDisassembly, OpenMemory,
-        RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
+        RunTaskPicker, RunBuildTask, RunTestTask, RerunLastTask, RestRequest, RestRerun, RestCancel, TerminateTask, ShowRunningTasks, ConfigureDefaultBuildTask,
         EditTaskForm, OpenTasksJson, RunAllTests, RunFailedTests, RunTestAtCursor, DebugTestAtCursor, RerunLastTestRun, CancelTestRun, RefreshTests,
         ShowTestOutput, RunAllTestsWithCoverage, ToggleCoverageDisplay, NewTerminal, SplitTerminal, KillTerminal, ScrollToPrevMark, ScrollToNextMark, RunRecentLine,
         CopyLastCommandOutput, RenameTerminal, ChangeTerminalColor, NewTerminalInEditor, MoveTerminalToEditor, MoveTerminalToPanel, ClearRestoredHistory,
@@ -1012,6 +1016,9 @@ impl Command {
             Self::OpenSearchEditor => return "search.action.openInEditor".into(),
             Self::TriggerInlineSuggestion => return "editor.action.inlineSuggest.trigger".into(),
             Self::RewrapComment => return "rewrap.rewrapComment".into(),
+            Self::RestRequest => return "rest-client.request".into(),
+            Self::RestRerun => return "rest-client.rerun-last-request".into(),
+            Self::RestCancel => return "rest-client.cancel-request".into(),
             Self::FoldLevel(level) => return format!("foldLevel{level}"),
             Self::InlineChat => return "inlineChat.start".into(),
             _ => {}
@@ -1064,7 +1071,7 @@ impl Command {
             | ToggleSearchEditorWholeWord | ToggleSearchEditorRegex => "Go",
             ShowHover | ShowColorPicker | TriggerSuggest | TriggerParameterHints | RestartLanguageServers => "Language",
             TriggerInlineSuggestion | SuggestNextEdit => "Language",
-            RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | TerminateTask | ShowRunningTasks
+            RunFile | RunTask(_) | RunTaskPicker | RunBuildTask | RunTestTask | RerunLastTask | RestRequest | RestRerun | RestCancel | TerminateTask | ShowRunningTasks
             | ConfigureDefaultBuildTask | OpenTasksJson | RunTaskLabel(_) | TerminateTaskLabel(_) | RevealTask(_) | SetDefaultBuild(_)
             | StartDebugging | RunWithoutDebugging | StopDebugging | RestartDebugging | PauseDebugging | StepOver
             | StepInto | StepOut | RunToCursor | JumpToCursor | ToggleBreakpoint | EditBreakpoint | AddFunctionBreakpoint | BreakOnValueChange | RemoveAllBreakpoints | AddWatch | AddConfiguration | RunAllTests
@@ -1411,6 +1418,9 @@ impl Command {
             RunBuildTask => "Tasks: Run Build Task",
             RunTestTask => "Tasks: Run Test Task",
             RerunLastTask => "Tasks: Rerun Last Task",
+            RestRequest => "Rest Client: Send Request",
+            RestRerun => "Rest Client: Rerun Last Request",
+            RestCancel => "Rest Client: Cancel Request",
             TerminateTask => "Tasks: Terminate Task...",
             ShowRunningTasks => "Tasks: Show Running Tasks",
             ConfigureDefaultBuildTask => "Tasks: Configure Default Build Task...",

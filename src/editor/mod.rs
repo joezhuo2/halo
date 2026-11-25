@@ -20,6 +20,7 @@ mod jump;
 mod layout;
 mod prefs;
 mod load;
+mod http;
 mod markdown;
 mod md_insert;
 mod md_links;
@@ -322,6 +323,7 @@ pub struct Editors {
     pub lsp: Lsp,
     pub marks: crate::debug::Marks,
     pub style_marks: mark_style::Files,
+    http: crate::http_client::Client,
     pub bookmarks: bookmarks::Bookmarks,
     pub layouts: layouts::Layouts,
     jump: Option<(u64, String, Vec<usize>)>,
@@ -459,6 +461,8 @@ fn build_rows(buf: &Document, wrap: Option<usize>, folds: &[(usize, usize)], len
     starts.push(at + pads.iter().filter(|p| p.0 >= buf.lines()).map(|p| p.1).sum::<u32>());
     starts
 }
+
+const HTTP_LENS: usize = usize::MAX - 1;
 
 fn lens_row(starts: &[u32], lens: &[(usize, usize)], line: usize) -> Option<usize> {
     let found = lens.binary_search_by_key(&line, |row| row.0).ok().map(|at| lens[at].1);
@@ -703,6 +707,7 @@ impl Editors {
             lsp: Lsp::default(),
             marks: Default::default(),
             style_marks: Default::default(),
+            http: Default::default(),
             bookmarks: Default::default(),
             layouts: Default::default(),
             jump: None,
@@ -1276,6 +1281,20 @@ impl Editors {
                     self.marks.toggle(&path, line);
                 }
             }
+            RestRequest => {
+                let doc = &self.docs[&doc_id];
+                let line = doc.buf.line_of(self.groups[g].tabs[t].sels[0].head);
+                let dir = doc.buf.path.as_deref().and_then(Path::parent).map(Path::to_path_buf);
+                match crate::http_client::parse(&doc.buf.rope.to_string(), line, dir.as_deref()) {
+                    Ok(req) => self.send_http(req, ctx),
+                    Err(e) => self.banner = Some((e, None)),
+                }
+            }
+            RestRerun => match self.http.last.clone() {
+                Some(req) => self.send_http(req, ctx),
+                None => self.banner = Some(("No request has been sent yet.".into(), None)),
+            },
+            RestCancel => self.http.cancel(),
             MarkStyle(_) | UnmarkStyle(_) | UnmarkAll | UnmarkAtCursor => {
                 if let Some(doc) = self.docs.get_mut(&doc_id).filter(|d| d.content.is_text()) {
                     let path = doc.buf.path.as_ref();
@@ -1873,6 +1892,7 @@ impl Editors {
         let mut pending = vec![];
         self.area_ui(ui, 0, theme, settings, git, &mut pending);
         self.after_previews();
+        self.after_http();
         self.run_pending(pending, settings, ui.ctx(), cmds);
         self.after_views();
         if self.take_git_refresh() | self.take_merge_refresh() {
@@ -2536,6 +2556,9 @@ impl Editors {
             }
             false => vec![],
         };
+        if !diffed && buf.path.as_deref().is_some_and(crate::http_client::is_http) {
+            lens_rows.extend(crate::http_client::request_lines(&buf.rope.to_string()).into_iter().filter(|l| *l < total).map(|l| (l, HTTP_LENS)));
+        }
         lens_rows.sort_unstable();
         lens_rows.dedup_by_key(|row| row.0);
         let mut pads = match (&shown, merging.as_mut()) {
@@ -3081,6 +3104,10 @@ impl Editors {
                                 let ready = !l.title.is_empty();
                                 let click = (ready && intel::runs_lens(&l.command, &offered)).then_some(intel::LensClick::Server(*at));
                                 items.push((if ready { l.title.clone() } else { "...".into() }, ready, click));
+                            }
+                            if index == HTTP_LENS {
+                                let busy = self.http.running();
+                                items.push((if busy { "Sending... (Ctrl+Alt+R to resend)".into() } else { "Send Request".into() }, true, Some(intel::LensClick::Http(line))));
                             }
                             let mut x = at(indent).x;
                             for (n, (text, ready, click)) in items.into_iter().enumerate() {
@@ -3633,6 +3660,10 @@ impl Editors {
             && let Some((lens, _)) = lang.code_lens.get(index)
         {
             self.intel.queued.push(Queued::Lens(doc_id, lens.clone()));
+        }
+        if let Some(intel::LensClick::Http(line)) = lens_open {
+            tab.sels = vec![Sel::caret(buf.line_start(line))];
+            pending.push(Command::RestRequest);
         }
         if bulb_click && let Some((_, actions)) = &lang.bulb {
             self.intel.show_actions(doc_id, actions.clone());

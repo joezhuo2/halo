@@ -19,6 +19,7 @@ mod find;
 mod git;
 mod glob;
 mod history;
+mod http_client;
 mod ipc;
 mod jumplist;
 mod macros;
