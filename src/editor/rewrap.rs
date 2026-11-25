@@ -321,7 +321,7 @@ mod tests {
             settings.langs.insert("rust".into(), Settings { rulers, word_wrap_column, ..Settings::default() });
             assert!(editors.exec(&Command::RewrapComment, &settings, &ctx));
             let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while editors.docs[&id].buf.rope.to_string() == original {
+            while editors.docs[&id].buf.rope == original {
                 editors.poll_background(&ctx);
                 assert!(std::time::Instant::now() < until);
                 std::thread::yield_now();
