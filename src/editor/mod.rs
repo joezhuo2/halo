@@ -29,6 +29,7 @@ mod remote_view;
 mod open_tabs;
 pub use open_tabs::OpenTab;
 mod review;
+mod rewrap;
 mod search_editor;
 mod stream_view;
 mod table_view;
@@ -319,6 +320,7 @@ pub struct Editors {
     pub tests: crate::testing::Marks,
     root: Option<PathBuf>,
     intel: Intel,
+    rewrap: rewrap::Channel,
     closed: Vec<PathBuf>,
     switcher: Option<(usize, usize)>,
     pub(crate) config: Settings,
@@ -699,6 +701,7 @@ impl Editors {
             tests: Default::default(),
             root: None,
             intel: Intel::default(),
+            rewrap: std::sync::mpsc::channel(),
             closed: vec![],
             switcher: None,
             config: Settings::default(),
@@ -1215,6 +1218,7 @@ impl Editors {
         let doc_id = self.groups[g].tabs[t].doc;
         let mut refocus = true;
         match cmd {
+            RewrapComment => self.start_rewrap(g, t, settings, ctx),
             Save if !self.docs.get(&doc_id).is_some_and(|d| d.content.is_text()) => {}
             Save => {
                 self.groups[g].tabs[t].preview = false;
@@ -1415,6 +1419,7 @@ impl Editors {
 
     // diffs and merges add their tab only when loaded, so poll them even while the welcome page shows
     pub fn poll_background(&mut self, ctx: &egui::Context) {
+        self.poll_rewrap();
         self.poll_loads(ctx);
         self.poll_diffs(ctx);
         self.poll_merges();

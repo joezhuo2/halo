@@ -140,7 +140,7 @@ impl Halo {
             Some(Undo), Some(Redo), None,
             Some(Cut), Some(Copy), Some(Paste), None,
             Some(Find), Some(Replace), None,
-            Some(ToggleComment), None,
+            Some(ToggleComment), Some(RewrapComment), None,
             Some(DeleteWordPartLeft), Some(DeleteWordPartRight), None,
             Some(RenameSymbol), Some(QuickFix), Some(OrganizeImports), Some(FormatDocument), Some(FormatSelection),
         ]);

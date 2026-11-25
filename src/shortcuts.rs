@@ -3,6 +3,8 @@ use crate::theme::Theme;
 use crate::ui::icons;
 use eframe::egui::{self, CornerRadius, Id, Key, KeyboardShortcut, RichText, TextEdit, Ui, vec2};
 
+pub const REWRAP: KeyboardShortcut = KeyboardShortcut::new(egui::Modifiers::ALT, Key::Q);
+
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct Recorder {
     pub keys: Vec<KeyboardShortcut>,
