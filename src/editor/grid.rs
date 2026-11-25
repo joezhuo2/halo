@@ -42,6 +42,10 @@ struct Saved {
     active: usize,
     #[serde(default)]
     locked: Vec<usize>,
+    #[serde(default)]
+    selected: Vec<Option<PathBuf>>,
+    #[serde(default)]
+    previews: Vec<Option<PathBuf>>,
 }
 
 fn direction(cmd: &Command) -> Dir {
@@ -455,14 +459,25 @@ impl Editors {
     }
 
     pub fn grid_state(&self) -> serde_json::Value {
+        self.saved_grid(false)
+    }
+
+    pub fn folder_grid(&self) -> serde_json::Value {
+        self.saved_grid(true)
+    }
+
+    fn saved_grid(&self, include_preview: bool) -> serde_json::Value {
+        let path = |t: &super::Tab| self.docs.get(&t.doc)?.buf.path.clone();
+        let selected = self.groups.iter().map(|g| g.tabs.get(g.active).and_then(path)).collect();
+        let previews = self.groups.iter().map(|g| g.tabs.iter().find(|t| include_preview && t.preview).and_then(path)).collect();
         let groups = self.groups.iter().map(|group| {
-            group.tabs.iter().filter(|t| !t.preview && t.diff.is_none() && t.merge.is_none() && t.md.is_none())
+            group.tabs.iter().filter(|t| (include_preview || !t.preview) && t.diff.is_none() && t.merge.is_none() && t.md.is_none())
                 .filter_map(|t| Some((self.docs.get(&t.doc)?.buf.path.clone()?, t.pinned)))
                 .collect()
         }).collect();
         let wins = self.grid.wins.iter().map(|w| (w.node.clone(), w.rect.map(|r| [r.left(), r.top(), r.width(), r.height()]))).collect();
         let locked = (0..self.groups.len()).filter(|&g| self.groups[g].locked).collect();
-        serde_json::to_value(Saved { wins, groups, active: self.active, locked }).unwrap_or_default()
+        serde_json::to_value(Saved { wins, groups, active: self.active, locked, selected, previews }).unwrap_or_default()
     }
 
     pub fn restore_grid(&mut self, value: &serde_json::Value) -> bool {
@@ -483,11 +498,19 @@ impl Editors {
             for (path, pinned) in tabs.iter().filter(|t| t.0.is_file()) {
                 let id = self.find_doc(path).unwrap_or_else(|| self.insert_deferred(path));
                 self.add_tab(id, vec![Sel::caret(0)]);
-                self.groups[g].tabs.last_mut().into_iter().for_each(|tab| tab.pinned = *pinned);
+                if let Some(tab) = self.groups[g].tabs.last_mut() {
+                    tab.pinned = *pinned;
+                    tab.preview = saved.previews.get(g).and_then(Option::as_ref) == Some(path);
+                }
             }
         }
         for (g, group) in self.groups.iter_mut().enumerate() {
             group.locked = saved.locked.contains(&g);
+            if let Some(path) = saved.selected.get(g).and_then(Option::as_ref)
+                && let Some(index) = group.tabs.iter().position(|t| self.docs.get(&t.doc).and_then(|d| d.buf.path.as_ref()) == Some(path))
+            {
+                group.active = index;
+            }
         }
         self.active = saved.active.min(self.groups.len() - 1);
         true

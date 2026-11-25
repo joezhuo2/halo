@@ -6,6 +6,20 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-11-25
+
+### Fixed
+
+- Scrolling in the references list, selecting a result and opening it now
+  work without crashing the editor (#3, #5).
+- Settings search handles non-ASCII queries, and the large-file viewer can
+  render in a split shorter than its scrollbar thumb.
+
+### Changed
+
+- Reopening a folder restores its tabs, active file, splits and Explorer
+  tree after visiting other folders or restarting Halo (#4).
+
 ## [0.1.22] - 2026-11-25
 
 Checked with unit tests, clippy and a request through curl to a local test
@@ -870,7 +884,9 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.21...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.23...HEAD
+[0.1.23]: https://github.com/joezhuo2/halo/compare/v0.1.22...v0.1.23
+[0.1.22]: https://github.com/joezhuo2/halo/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/joezhuo2/halo/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/joezhuo2/halo/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/joezhuo2/halo/compare/v0.1.18...v0.1.19

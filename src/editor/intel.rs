@@ -472,7 +472,7 @@ pub(super) struct Peek {
     files: HashMap<String, PeekFile>,
     hierarchy: Option<(bool, bool)>,
     reveal: bool,
-    scroll: isize,
+    scroll: f32,
 }
 
 struct Rename {
@@ -955,7 +955,7 @@ impl Editors {
             (d.buf.version, d.buf.line_start(line) + d.buf.line_len(line))
         });
         let group = self.active;
-        self.intel.peek = Some(Peek { doc, pos, group, anchor, title: title.to_owned(), items, selected: 0, files, hierarchy, reveal: true, scroll: 0 });
+        self.intel.peek = Some(Peek { doc, pos, group, anchor, title: title.to_owned(), items, selected: 0, files, hierarchy, reveal: true, scroll: 0.0 });
     }
 
     pub(super) fn peek_line(&mut self, g: usize, doc: u64, buf: &Document) -> Option<usize> {
@@ -1381,7 +1381,7 @@ impl Editors {
                     Key::Enter => intel.queued.extend(peek.items.get(peek.selected).map(|item| Queued::Jump(item.path.clone(), item.start))),
                     _ => {
                         moved(&mut peek.selected, peek.items.len().max(1));
-                        (peek.reveal, peek.scroll) = (true, 0);
+                        (peek.reveal, peek.scroll) = (true, 0.0);
                         return false;
                     }
                 }
@@ -1658,12 +1658,13 @@ impl Editors {
             if opened.hovered() {
                 let wheel = ui.input(|i| i.smooth_scroll_delta.y);
                 ui.input_mut(|i| i.smooth_scroll_delta.y = 0.0);
-                peek.scroll -= (wheel / row_h).round() as isize;
+                peek.scroll -= wheel / row_h;
             }
             let total = lines.map_or(0, |file| file.lines.len());
-            let natural = item.start.0 as isize - context.min(shown / 2) as isize;
-            peek.scroll = peek.scroll.clamp(-natural.max(0), (total as isize - natural - 1).max(0));
-            let first = (natural + peek.scroll).max(0) as usize;
+            let last_start = total.saturating_sub(shown) as f32;
+            let natural = (item.start.0.saturating_sub(context.min(shown / 2)) as f32).min(last_start);
+            peek.scroll = peek.scroll.clamp(-natural, last_start - natural);
+            let first = (natural + peek.scroll).round() as usize;
             let clip = painter.with_clip_rect(preview);
             for (index, line) in (first..first + shown).enumerate() {
                 let Some(text) = lines.and_then(|file| file.display(line, hide)) else { break };
@@ -1713,7 +1714,7 @@ impl Editors {
         });
         if let Some(index) = select {
             peek.selected = index;
-            peek.scroll = 0;
+            peek.scroll = 0.0;
         }
         let (pos, hierarchy) = (peek.pos, peek.hierarchy);
         let target = jump.and_then(|index| peek.items.get(index)).map(|item| (item.path.clone(), item.start));

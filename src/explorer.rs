@@ -116,6 +116,15 @@ enum Action {
     CollapseAll,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct TreeState {
+    expanded: Vec<PathBuf>,
+    flipped: Vec<PathBuf>,
+    cursor: Option<PathBuf>,
+    collapsed: bool,
+    open_editors: bool,
+}
+
 pub struct Explorer {
     root: Option<PathBuf>,
     roots: Vec<(PathBuf, String)>,
@@ -307,6 +316,32 @@ impl Explorer {
             added.iter().for_each(|r| self.expand(r));
         }
         self.title = title;
+        self.dirty = true;
+    }
+
+    pub fn tree_state(&self) -> TreeState {
+        TreeState {
+            expanded: self.expanded.iter().cloned().collect(),
+            flipped: self.flipped.iter().cloned().collect(),
+            cursor: self.sel.cursor.clone(),
+            collapsed: self.collapsed,
+            open_editors: self.open_editors,
+        }
+    }
+
+    pub fn restore_tree(&mut self, state: &TreeState, active: Option<PathBuf>) {
+        self.expanded.clear();
+        for path in &state.expanded {
+            if self.root_of(path).is_some() && path.is_dir() { self.expand(path); }
+        }
+        self.flipped = state.flipped.iter().filter(|p| self.root_of(p).is_some()).cloned().collect();
+        if let Some(path) = state.cursor.as_ref().filter(|p| self.root_of(p).is_some() && p.exists()) {
+            self.sel.set(path.clone());
+            self.scroll_to = Some(path.clone());
+        }
+        self.last_active = active;
+        self.collapsed = state.collapsed;
+        self.open_editors = state.open_editors;
         self.dirty = true;
     }
 
