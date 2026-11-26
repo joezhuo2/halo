@@ -6,6 +6,11 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Halo starts about 2 seconds faster on Windows: checking for an already
+  running window no longer waits on a dead connection.
+
 ### Added
 
 - macOS releases ship as a `.dmg` with `Halo.app` (drag to Applications).
