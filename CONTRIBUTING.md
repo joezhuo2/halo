@@ -30,13 +30,15 @@ cargo test
    can be agreed on.
 2. Branch from `main` and keep commits small, each with a message that says
    why the change is made.
-3. Follow the conventions in [docs/architecture.md](docs/architecture.md):
-   no code comments or docstrings, every color comes from `Theme`, and
-   icon-only buttons have a tooltip.
+3. Follow the house conventions: no code comments or docstrings (put the why
+   in the commit message); colors from `Theme`, icons from `ui::icons`, a
+   tooltip on icon-only buttons; every action is a `Command`; never block the
+   UI thread (run work on a thread, report back over a channel); show errors,
+   never drop them; keep CRLF line endings and the surrounding style.
 4. Halo is meant to stay small. Prefer the standard library and the crates
    already in `Cargo.toml` over a new dependency.
-5. Add or update a test for new logic, and make sure `cargo build` has no
-   warnings and `cargo test` passes.
+5. Add or update a test for new logic, and make sure `cargo test` passes and
+   `cargo clippy --all-targets -- -D warnings` is clean, as CI checks.
 6. Describe user-visible changes under **Unreleased** in
    [CHANGELOG.md](CHANGELOG.md), and update the README when a feature, key
    or setting changes.

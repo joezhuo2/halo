@@ -11,5 +11,5 @@
 - [ ] `cargo build` has no warnings and `cargo test` passes
 - [ ] New logic has a test
 - [ ] CHANGELOG.md has an entry under Unreleased for user-visible changes
-- [ ] README and docs are updated when a feature, key or setting changes
+- [ ] README is updated when a feature, key or setting changes
 - [ ] No secrets, and no new dependency without a reason given above

@@ -35,7 +35,7 @@ fn pick(release: &Value, current: &str, suffix: &str) -> Option<(String, String,
 
 fn run(program: &str, args: &[&str]) -> Result<String, String> {
     let mut command = Command::new(program);
-    command.args(args);
+    command.args(args).env_remove("PSModulePath");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -57,6 +57,23 @@ fn sha256(file: &Path) -> Result<String, String> {
     let words = out.lines().map(|line| line.replace(' ', "")).chain(out.split_whitespace().map(str::to_owned));
     let hash = words.into_iter().find(|word| word.len() == 64 && word.chars().all(|c| c.is_ascii_hexdigit()));
     hash.map(|hash| hash.to_lowercase()).ok_or_else(|| "the checksum of the download could not be computed".to_owned())
+}
+
+fn signature(file: &Path) -> Result<(String, String), String> {
+    let path = file.to_string_lossy().replace('\'', "''");
+    let script = format!("$s = Get-AuthenticodeSignature -LiteralPath '{path}'; [string]$s.Status; [string]$s.SignerCertificate.Subject");
+    let out = run("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script])?;
+    let mut lines = out.lines().map(str::trim).filter(|line| !line.is_empty());
+    let status = lines.next().ok_or("the signature could not be read")?;
+    Ok((status.to_owned(), lines.next().unwrap_or_default().to_owned()))
+}
+
+fn same_publisher(running: (&str, &str), download: (&str, &str)) -> Result<(), String> {
+    match (running, download) {
+        (("Valid", _), (status, _)) if status != "Valid" => Err("the download does not have a valid signature".to_owned()),
+        (("Valid", mine), (_, theirs)) if mine != theirs => Err(format!("the download is signed by {theirs}, not by {mine}")),
+        _ => Ok(()),
+    }
 }
 
 fn swap(exe: &Path, fresh: &Path) -> Result<(), String> {
@@ -85,6 +102,10 @@ fn install(exe: &Path, version: &str, url: &str, digest: &str) -> Result<(), Str
             std::fs::rename(unpacked.join("halo"), &fresh).map_err(|e| e.to_string())?;
         } else {
             std::fs::rename(&download, &fresh).map_err(|e| e.to_string())?;
+        }
+        if cfg!(windows) {
+            let (running, fresh) = (signature(exe)?, signature(&fresh)?);
+            same_publisher((&running.0, &running.1), (&fresh.0, &fresh.1))?;
         }
         swap(exe, &fresh)
     })();
@@ -145,5 +166,19 @@ mod tests {
         swap(&exe, &fresh).unwrap();
         assert_eq!((std::fs::read_to_string(&exe).unwrap().as_str(), std::fs::read_to_string(dir.join("halo.old")).unwrap().as_str()), ("abc", "old"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_signed_build_only_accepts_a_download_from_the_same_signer() {
+        let me = "CN=Halo Publisher, O=Halo";
+        assert_eq!(same_publisher(("NotSigned", ""), ("NotSigned", "")), Ok(()));
+        assert_eq!(same_publisher(("NotSigned", ""), ("Valid", "CN=Someone")), Ok(()));
+        assert_eq!(same_publisher(("HashMismatch", me), ("NotSigned", "")), Ok(()));
+        assert_eq!(same_publisher(("Valid", me), ("Valid", me)), Ok(()));
+        assert!(same_publisher(("Valid", me), ("NotSigned", "")).is_err());
+        assert!(same_publisher(("Valid", me), ("HashMismatch", me)).is_err());
+        assert!(same_publisher(("Valid", me), ("Valid", "CN=Someone Else")).unwrap_err().contains("CN=Someone Else"));
+        #[cfg(windows)]
+        assert_eq!(signature(&std::env::current_exe().unwrap()).unwrap(), ("NotSigned".to_owned(), String::new()));
     }
 }

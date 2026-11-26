@@ -95,6 +95,7 @@ impl Halo {
     pub fn new(cc: &eframe::CreationContext<'_>, mut args: crate::cli::Args, server: Option<crate::ipc::Server>) -> Self {
         let ctx = &cc.egui_ctx;
         let session = Session::load();
+        std::thread::spawn(crate::crash::report);
         crate::trust::seed(session.recent.iter().cloned().chain(session.folder.clone()));
         let mut app = Self::build(ctx, Settings::load(), session);
         app.reveal_at = Some(ctx.cumulative_frame_nr() + 3);
