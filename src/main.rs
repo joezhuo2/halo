@@ -9,6 +9,7 @@ mod blame;
 mod cli;
 mod command;
 mod commit_ai;
+mod crash;
 mod dap;
 mod debug;
 mod editor;
@@ -69,6 +70,7 @@ mod wsl;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    crash::install();
     let child = std::env::var("HALO_ARGS").ok();
     if child.is_some() {
         unsafe { std::env::remove_var("HALO_ARGS") };
