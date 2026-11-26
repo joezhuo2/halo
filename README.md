@@ -750,10 +750,9 @@ src/
   settings_page.rs  the Settings page
   theme.rs          dark and light themes, custom colors and fonts
   ui.rs             shared widgets, animation helpers and the logo
-installer/halo.iss  Inno Setup script
+installer/          Inno Setup script, macOS Info.plist and icon
 assets/             icon, screenshots and the demo
-docs/               requirements, decisions, architecture, milestones, handoff,
-                    and the startup measurement script
+scripts/            the startup measurement script
 ```
 
 ### Performance
@@ -823,7 +822,7 @@ with the panel showing a terminal. To repeat it, write a `session.json` for
 your own test folder and run from the repository root:
 
 ```powershell
-.\docs\measure-startup.ps1 -Exe target\release\halo-ide.exe -Session C:\path\to\test-session.json -Runs 5
+.\scripts\measure-startup.ps1 -Exe target\release\halo-ide.exe -Session C:\path\to\test-session.json -Runs 5
 ```
 
 The script backs up `%APPDATA%\halo\session.json`, copies the given session
