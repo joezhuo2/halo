@@ -113,6 +113,7 @@ impl Halo {
         let cmds = command::all().into_iter().filter(|c| startup.split(',').any(|id| id == c.id())).collect();
         let tabs = (fresh && restore && !app.session.files.is_empty()) || !app.session.backups.is_empty() || !args.paths.is_empty() || args.diff.is_some() || args.stdin.is_some();
         let folder = app.session.workspace.file.clone().or(app.session.folder.clone()).filter(|_| restore && arg.is_none());
+        let active = app.session.workspace_key().and_then(|k| app.session.folder_states.get(&k)).map_or(&app.session.files, |s| &s.files).last().cloned().filter(|_| fresh && restore);
         let (wake, (tx, rx)) = (ctx.clone(), std::sync::mpsc::channel::<()>());
         std::thread::spawn(move || {
             let _ = folder.is_some_and(|f| f.exists());
@@ -121,6 +122,9 @@ impl Halo {
             }
             drop(tx);
             wake.request_repaint();
+            if let Some(path) = active {
+                crate::editor::prime(&path);
+            }
         });
         app.startup = Some(Startup { arg, restore, fresh, args, cmds, tabs, loaded: rx });
         let wake = ctx.clone();

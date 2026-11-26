@@ -69,7 +69,7 @@ pub fn configure(settings: &Settings) {
 
 pub use buffer::{Encoding, Pattern};
 pub use snippet::{path as snippets_path, reload as reload_snippets, write_sample as write_sample_snippets};
-pub use highlight::{languages, warm};
+pub use highlight::{languages, prime, warm};
 pub(crate) use intel::list_popup;
 
 const TAB_H: f32 = 34.0;
