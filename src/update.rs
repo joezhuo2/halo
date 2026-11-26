@@ -35,7 +35,7 @@ fn pick(release: &Value, current: &str, suffix: &str) -> Option<(String, String,
 
 fn run(program: &str, args: &[&str]) -> Result<String, String> {
     let mut command = Command::new(program);
-    command.args(args);
+    command.args(args).env_remove("PSModulePath");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -63,8 +63,9 @@ fn signature(file: &Path) -> Result<(String, String), String> {
     let path = file.to_string_lossy().replace('\'', "''");
     let script = format!("$s = Get-AuthenticodeSignature -LiteralPath '{path}'; [string]$s.Status; [string]$s.SignerCertificate.Subject");
     let out = run("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script])?;
-    let mut lines = out.lines().map(str::trim);
-    Ok((lines.next().unwrap_or_default().to_owned(), lines.next().unwrap_or_default().to_owned()))
+    let mut lines = out.lines().map(str::trim).filter(|line| !line.is_empty());
+    let status = lines.next().ok_or("the signature could not be read")?;
+    Ok((status.to_owned(), lines.next().unwrap_or_default().to_owned()))
 }
 
 fn same_publisher(running: (&str, &str), download: (&str, &str)) -> Result<(), String> {

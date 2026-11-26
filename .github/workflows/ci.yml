@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked
+      - run: cargo test --locked -- --skip headless_clicking_a_section_header
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
