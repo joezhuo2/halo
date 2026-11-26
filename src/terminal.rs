@@ -1090,7 +1090,8 @@ impl Terminal {
             let min = cell_pos(point.line.0 + offset, point.column.0);
             let block = Rect::from_min_size(min, cell);
             let idle = now - self.last_input;
-            let blink = if !look.blink || idle < 0.5 || idle > 30.0 { 1.0 } else { 0.55 + 0.45 * ((idle - 0.5) * std::f64::consts::TAU / 1.2).cos() as f32 };
+            let blinks = look.blink && ctx.input(|i| i.focused);
+            let blink = if !blinks || idle < 0.5 || idle > 30.0 { 1.0 } else { 0.55 + 0.45 * ((idle - 0.5) * std::f64::consts::TAU / 1.2).cos() as f32 };
             if !self.focused {
                 painter.rect_stroke(block, CornerRadius::ZERO, Stroke::new(1.0, theme.text_dim), StrokeKind::Inside);
             } else {
@@ -1101,7 +1102,7 @@ impl Terminal {
                 };
                 let strength = if shape == block { 0.55 } else { 1.0 };
                 painter.rect_filled(shape, CornerRadius::ZERO, ui::with_alpha(theme.accent, blink * strength));
-                if idle <= 30.0 && look.blink {
+                if idle <= 30.0 && blinks {
                     ctx.request_repaint_after(std::time::Duration::from_millis(50));
                 }
             }
