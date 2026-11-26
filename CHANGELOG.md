@@ -10,6 +10,14 @@ All notable changes to Halo are documented here. The format follows
 
 - Halo starts about 2 seconds faster on Windows: checking for an already
   running window no longer waits on a dead connection.
+- The editor caret and the terminal cursor no longer blink while Halo's
+  window is in the background, so an idle background window uses no CPU (it
+  used about 8% of one core for 30 seconds after the last keystroke).
+
+### Changed
+
+- Restored tabs show highlighted text about 90 ms sooner: the active tab's
+  grammar loads on the startup thread instead of in the first editor frame.
 
 ### Added
 

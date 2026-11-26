@@ -816,6 +816,12 @@ Median of 5 runs per row, v0.1.7 against v0.1.8:
   three sessions.
 - About 400 ms of every start is eframe creating the window and the OpenGL
   context, before any Halo code runs.
+- **Idle CPU:** in v0.2.0 Halo used 0 ms of CPU over 30 s of idle in every
+  session measured (no folder, a folder with files, a terminal, the AI
+  panel, source control, and a focused editor in a background window).
+- These timings use test mode, which skips the check for an already running
+  window. Up to v0.1.24 that check added about 2 s to a normal start on
+  Windows (two 1 s connection timeouts); v0.2.0 removes the wait.
 
 Machine: AMD Ryzen AI 9 HX 370 (12 cores), Radeon 890M (driver
 32.0.21036.1002), 31.1 GB RAM, Windows 11 Home 10.0.26200, rustc 1.98.1,
