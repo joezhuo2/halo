@@ -6,6 +6,18 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- macOS releases ship as a `.dmg` with `Halo.app` (drag to Applications).
+  The app is ad-hoc signed; the `.tar.gz` is still published for auto
+  update.
+- Windows `halo-ide.exe` and the installer are code-signed. When the running
+  Halo is signed, the updater only installs a download signed by the same
+  publisher.
+- Each release includes `SHA256SUMS.txt` with the checksum of every file.
+- Halo writes a crash log (the 5 newest are kept in the settings folder
+  under `crashes`) and offers to open it the next time it starts.
+
 ## [0.1.24] - 2026-11-26
 
 ### Fixed
