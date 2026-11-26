@@ -69,7 +69,7 @@ pub fn configure(settings: &Settings) {
 
 pub use buffer::{Encoding, Pattern};
 pub use snippet::{path as snippets_path, reload as reload_snippets, write_sample as write_sample_snippets};
-pub use highlight::{languages, warm};
+pub use highlight::{languages, prime, warm};
 pub(crate) use intel::list_popup;
 
 const TAB_H: f32 = 34.0;
@@ -2608,8 +2608,9 @@ impl Editors {
         let beyond = if settings.scroll_beyond_last_line { (text_rect.height() * 0.5).max(line_h) } else { line_h };
         let content = vec2(wide, rows as f32 * line_h + beyond);
         let idle = now - self.last_input;
-        let caret_alpha = if has_focus { prefs::caret_alpha(crate::a11y::blinking(&settings.cursor_blinking), idle) } else { 0.35 };
-        if has_focus && idle <= 30.0 && crate::a11y::blinking(&settings.cursor_blinking) != "solid" {
+        let blinking = if ctx.input(|i| i.focused) { crate::a11y::blinking(&settings.cursor_blinking) } else { "solid" };
+        let caret_alpha = if has_focus { prefs::caret_alpha(blinking, idle) } else { 0.35 };
+        if has_focus && idle <= 30.0 && blinking != "solid" {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
 
@@ -4046,6 +4047,26 @@ mod tests {
         let text = crate::a11y::node(&nodes, Role::MultilineTextInput, "Untitled-2");
         assert_eq!((text.value(), text.description()), (Some("first line"), Some("Line 1, Column 9")));
         assert!(nodes.iter().any(|n| n.role() == Role::TextRun && n.value() == Some("first line")));
+    }
+
+    #[test]
+    fn caret_stops_blinking_while_the_window_is_unfocused() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        let mut delay = |focused: bool, time: f64| {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 600.0))), time: Some(time), focused, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| editors.ui(ui, &Theme::dark(), &settings, &Git::new(), &mut vec![]));
+            out.textures_delta.clear();
+            out.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+        };
+        for t in 0..20 {
+            delay(true, t as f64 * 0.05);
+        }
+        assert!(delay(true, 1.5) <= Duration::from_millis(50));
+        delay(false, 1.6);
+        assert_eq!(delay(false, 1.7), Duration::MAX);
     }
 
     fn frame_with(ctx: &egui::Context, editors: &mut Editors, events: Vec<Event>, settings: &Settings) {

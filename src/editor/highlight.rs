@@ -57,6 +57,12 @@ pub fn warm() {
     syntaxes();
 }
 
+pub fn prime(path: &Path) {
+    if let Some(syntax) = find_syntax(Some(path), "") {
+        let _ = ParseState::new(syntax).parse_line("a\n", syntaxes());
+    }
+}
+
 fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
     SET.get_or_init(|| {
@@ -260,6 +266,13 @@ impl Highlighter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prime_accepts_any_path() {
+        for name in ["README.md", "no-extension", "", "dir/"] {
+            prime(Path::new(name));
+        }
+    }
 
     #[test]
     fn highlights_invalidates_and_respects_budget() {
