@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/joezhuo2/halo/releases/latest"><img src="https://img.shields.io/github/v/release/joezhuo2/halo?logo=github&color=orange" alt="release"></a>
   <a href="https://github.com/joezhuo2/halo/releases"><img src="https://img.shields.io/github/downloads/joezhuo2/halo/total?logo=github&color=blue" alt="downloads"></a>
-  <a href="https://github.com/joezhuo2/halo/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/joezhuo2/halo/release.yml?label=build&logo=githubactions&logoColor=white" alt="build"></a>
+  <a href="https://github.com/joezhuo2/halo/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/joezhuo2/halo/ci.yml?branch=main&label=build&logo=githubactions&logoColor=white" alt="build"></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey" alt="platform: Windows | Linux | macOS">
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-2024-DEA584?logo=rust&logoColor=white" alt="Rust 2024"></a>
   <a href="https://www.egui.rs"><img src="https://img.shields.io/badge/egui-0.36-9FDCF7" alt="egui 0.36"></a>
@@ -46,21 +46,27 @@ Get the latest build from
   under Settings > Apps > Default apps for common text and code files.
 - **Windows portable:** `halo-x.y.z-windows-x64.exe`. One file, no install.
 - **Linux x64:** `halo-x.y.z-linux-x64.tar.gz`.
-- **macOS:** `halo-x.y.z-macos-arm64.tar.gz` (Apple silicon) or
-  `halo-x.y.z-macos-x64.tar.gz` (Intel).
+- **macOS:** `halo-x.y.z-macos-arm64.dmg` (Apple silicon) or
+  `halo-x.y.z-macos-x64.dmg` (Intel). Open it and drag **Halo** to
+  **Applications**.
 
 ### First launch
 
-Halo is not code-signed, so the system warns the first time you open it. The
-builds come from the public [release workflow](.github/workflows/release.yml),
-so you can check what went into them.
+The builds come from the public
+[release workflow](.github/workflows/release.yml), so you can check what went
+into them. `SHA256SUMS.txt` on each release lists the checksum of every file.
 
-- **Windows:** SmartScreen says "Windows protected your PC". Click
-  **More info**, then **Run anyway**. You only see this once.
-- **macOS:** the download is quarantined. Unpack it, run this, then start it:
+- **Windows:** the installer and `halo-ide.exe` are code-signed. Until the
+  certificate has built up reputation, SmartScreen can still say "Windows
+  protected your PC": click **More info**, then **Run anyway**.
+- **macOS:** Halo is ad-hoc signed but not notarized by Apple, so the first
+  open is blocked with "Apple could not verify Halo". Click **Done**, open
+  **System Settings > Privacy & Security**, scroll down to the message about
+  Halo, click **Open Anyway** and confirm with your password. Or remove the
+  quarantine flag in Terminal and open Halo normally:
 
   ```bash
-  xattr -d com.apple.quarantine ./halo
+  xattr -dr com.apple.quarantine /Applications/Halo.app
   ```
 
 - **Linux:** unpack and run `./halo`. It needs OpenGL and either X11 or
