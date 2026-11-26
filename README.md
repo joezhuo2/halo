@@ -56,9 +56,9 @@ The builds come from the public
 [release workflow](.github/workflows/release.yml), so you can check what went
 into them. `SHA256SUMS.txt` on each release lists the checksum of every file.
 
-- **Windows:** the installer and `halo-ide.exe` are code-signed. Until the
-  certificate has built up reputation, SmartScreen can still say "Windows
-  protected your PC": click **More info**, then **Run anyway**.
+- **Windows:** Halo is not code-signed yet, so SmartScreen says "Windows
+  protected your PC" the first time: click **More info**, then
+  **Run anyway**.
 - **macOS:** Halo is ad-hoc signed but not notarized by Apple, so the first
   open is blocked with "Apple could not verify Halo". Click **Done**, open
   **System Settings > Privacy & Security**, scroll down to the message about
