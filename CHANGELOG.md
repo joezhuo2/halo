@@ -6,6 +6,14 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-11-26
+
+### Fixed
+
+- Editing a numbered line in a Search Editor so non-ASCII text follows the
+  line number no longer crashes, and the merge editor's padding rows can't
+  underflow.
+
 ## [0.1.23] - 2026-11-25
 
 ### Fixed
@@ -17,9 +25,6 @@ All notable changes to Halo are documented here. The format follows
   a disk conflict when the saved bytes still match.
 - Settings search handles non-ASCII queries, and the large-file viewer can
   render in a split shorter than its scrollbar thumb.
-- Editing a numbered line in a Search Editor so non-ASCII text follows the
-  line number no longer crashes, and the merge editor's padding rows can't
-  underflow.
 
 ### Changed
 
@@ -890,7 +895,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.23...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.24...HEAD
+[0.1.24]: https://github.com/joezhuo2/halo/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/joezhuo2/halo/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/joezhuo2/halo/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/joezhuo2/halo/compare/v0.1.20...v0.1.21
