@@ -41,6 +41,32 @@ jobs:
           fi
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Signing configuration (Windows)
+        if: runner.os == 'Windows'
+        env:
+          TENANT: ${{ secrets.AZURE_TENANT_ID }}
+          CLIENT: ${{ secrets.AZURE_CLIENT_ID }}
+          SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+        run: |
+          if [ -n "$TENANT" ] && [ -n "$CLIENT" ] && [ -n "$SECRET" ] && [ -n "$ENDPOINT" ] && [ -n "$ACCOUNT" ] && [ -n "$PROFILE" ]; then
+            echo "SIGN=true" >> "$GITHUB_ENV"
+          else
+            echo "::notice::Azure signing is not configured; the Windows files are not signed"
+          fi
+      - name: Sign halo-ide.exe
+        if: env.SIGN == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\target\${{ matrix.target }}\release\halo-ide.exe
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -49,12 +75,41 @@ jobs:
           Copy-Item "target\${{ matrix.target }}\release\halo-ide.exe" "dist\halo-$($env:VERSION)-${{ matrix.name }}.exe"
           choco install innosetup --no-progress -y
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$($env:VERSION)" "/DExe=..\target\${{ matrix.target }}\release\halo-ide.exe" installer\halo.iss
+      - name: Sign the installer
+        if: env.SIGN == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\halo-${{ env.VERSION }}-${{ matrix.name }}-setup.exe
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir dist
           mv "target/${{ matrix.target }}/release/halo-ide" "target/${{ matrix.target }}/release/halo"
           tar -czf "dist/halo-$VERSION-${{ matrix.name }}.tar.gz" -C "target/${{ matrix.target }}/release" halo
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          app=dmg/Halo.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp "target/${{ matrix.target }}/release/halo" "$app/Contents/MacOS/halo"
+          cp installer/halo.icns "$app/Contents/Resources/halo.icns"
+          sed "s/@VERSION@/$VERSION/g" installer/Info.plist > "$app/Contents/Info.plist"
+          plutil -lint "$app/Contents/Info.plist"
+          codesign --force --deep -s - "$app"
+          codesign --verify --deep --strict "$app"
+          ln -s /Applications dmg/Applications
+          dmg="dist/halo-$VERSION-${{ matrix.name }}.dmg"
+          for attempt in 1 2 3; do
+            hdiutil create -volname Halo -srcfolder dmg -ov -format UDZO "$dmg" && break
+            sleep 10
+          done
+          test -f "$dmg"
       - uses: actions/upload-artifact@v7
         with:
           name: halo-${{ matrix.name }}
@@ -86,6 +141,7 @@ jobs:
             exit 1
           fi
           cat notes.md
+      - run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - run: gh release create "$TAG" dist/* --draft --title "$TAG" --notes-file notes.md --target "$GITHUB_SHA"
         env:
           GH_TOKEN: ${{ github.token }}
