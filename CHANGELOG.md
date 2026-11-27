@@ -6,6 +6,8 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-26
+
 ### Fixed
 
 - Halo starts about 2 seconds faster on Windows: checking for an already
@@ -922,7 +924,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.1.24...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/joezhuo2/halo/compare/v0.1.24...v0.2.0
 [0.1.24]: https://github.com/joezhuo2/halo/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/joezhuo2/halo/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/joezhuo2/halo/compare/v0.1.21...v0.1.22
