@@ -182,6 +182,15 @@ fn windows_word_erase(program: &str) -> bool {
     cfg!(windows) && matches!(name.strip_suffix(".exe").unwrap_or(&name), "cmd" | "powershell" | "pwsh")
 }
 
+fn encode_wheel(up: bool, column: usize, row: usize, sgr: bool) -> Vec<u8> {
+    let button = if up { 64 } else { 65 };
+    if sgr {
+        return format!("\x1b[<{button};{};{}M", column + 1, row + 1).into_bytes();
+    }
+    let byte = |n: usize| (n + 33).min(255) as u8;
+    vec![0x1b, b'[', b'M', 32 + button, byte(column), byte(row)]
+}
+
 fn encode_key(key: Key, m: Modifiers, app_cursor: bool, windows_word_erase: bool) -> Option<Vec<u8>> {
     let mods = 1 + u8::from(m.shift) + 2 * u8::from(m.alt) + 4 * u8::from(m.ctrl);
     let arrow = |c: char| match (mods > 1, app_cursor) {
@@ -959,7 +968,13 @@ impl Terminal {
             let lines = (self.wheel / cell.y) as i32;
             if lines != 0 {
                 self.wheel -= lines as f32 * cell.y;
-                if mode.contains(TermMode::ALT_SCREEN) && !mode.intersects(TermMode::MOUSE_MODE) {
+                if mode.intersects(TermMode::MOUSE_MODE) {
+                    let at = resp.hover_pos().map(|pos| self.point_at(rect, pos, cell, 0).0).unwrap_or_default();
+                    let report = encode_wheel(lines > 0, at.column.0, at.line.0 as usize, mode.contains(TermMode::SGR_MOUSE));
+                    for _ in 0..lines.unsigned_abs() {
+                        self.write(report.clone());
+                    }
+                } else if mode.contains(TermMode::ALT_SCREEN) {
                     let key = if lines > 0 { Key::ArrowUp } else { Key::ArrowDown };
                     for _ in 0..lines.unsigned_abs() {
                         if let Some(bytes) = encode_key(key, Modifiers::NONE, mode.contains(TermMode::APP_CURSOR), self.windows_word_erase) {
@@ -2099,6 +2114,8 @@ mod tests {
         assert_eq!(encode_key(Key::Tab, Modifiers::SHIFT, false, false).unwrap(), b"\x1b[Z");
         assert_eq!(encode_key(Key::Backspace, none, false, false).unwrap(), [0x7f]);
         assert!(encode_key(Key::A, none, false, false).is_none());
+        assert_eq!(encode_wheel(true, 4, 9, true), b"\x1b[<64;5;10M");
+        assert_eq!(encode_wheel(false, 0, 0, false), b"\x1b[Ma!!");
     }
 
     #[test]
