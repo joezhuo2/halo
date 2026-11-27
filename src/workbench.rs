@@ -1015,7 +1015,7 @@ mod tests {
 
     fn headless() -> (egui::Context, Halo) {
         let ctx = egui::Context::default();
-        let mut app = Halo::build(&ctx, crate::settings::Settings::default(), crate::settings::Session::default());
+        let mut app = Halo::build(&ctx, crate::settings::Settings { reduce_motion: "off".into(), ..Default::default() }, crate::settings::Session::default());
         app.session.layout.active[Place::Panel as usize] = Some(Problems);
         (ctx, app)
     }
@@ -1186,15 +1186,20 @@ mod tests {
         run(&ctx, &mut app, 0.0, vec![]);
         run(&ctx, &mut app, 0.1, vec![]);
         let open = app.session.outline;
-        let at = ctx.read_response(Id::new(("view_drag", Outline as u8))).unwrap().rect.center();
-        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
-        run(&ctx, &mut app, 0.2, vec![egui::Event::PointerMoved(at), button(true)]);
+        let header = || ctx.read_response(Id::new(("view_drag", Outline as u8))).unwrap().rect.center();
+        let at = header();
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        run(&ctx, &mut app, 0.2, vec![egui::Event::PointerMoved(at), button(at, true)]);
         assert!(app.dragging.is_none());
-        run(&ctx, &mut app, 0.25, vec![button(false)]);
+        run(&ctx, &mut app, 0.25, vec![button(at, false)]);
         run(&ctx, &mut app, 0.3, vec![]);
         assert_eq!(app.session.outline, !open);
         assert!(app.dragging.is_none() && app.session.layout.moved.is_empty());
-        run(&ctx, &mut app, 1.0, vec![button(true)]);
+        for t in 4..10 {
+            run(&ctx, &mut app, t as f64 / 10.0, vec![]);
+        }
+        let at = header();
+        run(&ctx, &mut app, 1.0, vec![egui::Event::PointerMoved(at), button(at, true)]);
         run(&ctx, &mut app, 1.1, vec![egui::Event::PointerMoved(at + vec2(0.0, -60.0))]);
         assert_eq!(app.dragging, Some(Outline));
     }
