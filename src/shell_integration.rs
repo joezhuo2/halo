@@ -315,7 +315,15 @@ impl<T: EventListener> EventedReadWrite for Tap<T> {
     type Writer = <tty::Pty as EventedReadWrite>::Writer;
 
     unsafe fn register(&mut self, poll: &Arc<polling::Poller>, event: polling::Event, mode: polling::PollMode) -> io::Result<()> {
-        unsafe { self.pty.register(poll, event, mode) }
+        unsafe { self.pty.register(poll, event, mode) }?;
+        #[cfg(windows)]
+        {
+            use polling::os::iocp::{CompletionPacket, PollerIocpExt};
+            let mut child = event;
+            child.key = tty::PTY_CHILD_EVENT_TOKEN;
+            poll.post(CompletionPacket::new(child))?;
+        }
+        Ok(())
     }
 
     fn reregister(&mut self, poll: &Arc<polling::Poller>, event: polling::Event, mode: polling::PollMode) -> io::Result<()> {
@@ -500,6 +508,34 @@ mod tests {
         let picture = &integration.pictures[0];
         assert_eq!((picture.line, picture.column, picture.size), (0, 2, (3.0, 12.0)));
         assert_eq!(term.grid().cursor.point, Point::new(Line(3), Column(2)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reports_an_exit_that_happens_before_the_event_loop_starts() {
+        use alacritty_terminal::event::Event;
+        use alacritty_terminal::event_loop::EventLoop;
+        use std::sync::mpsc::{Sender, channel};
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Threading::WaitForSingleObject;
+        #[derive(Clone)]
+        struct Exits(Sender<Option<i32>>);
+        impl EventListener for Exits {
+            fn send_event(&self, event: Event) {
+                if let Event::ChildExit(status) = event {
+                    let _ = self.0.send(status.code());
+                }
+            }
+        }
+        let options = tty::Options { shell: Some(tty::Shell::new("cmd.exe".into(), vec!["/c".into(), "exit 7".into()])), ..Default::default() };
+        let pty = tty::new(&options, WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 16 }, 0).unwrap();
+        unsafe { WaitForSingleObject(HANDLE(pty.child_watcher().raw_handle()), 10_000) };
+        std::thread::sleep(Duration::from_millis(200));
+        let (tx, rx) = channel();
+        let term = Arc::new(FairMutex::new(Term::new(alacritty_terminal::term::Config::default(), &Size(24, 80), Exits(tx.clone()))));
+        let tap = Tap::new(pty, term.clone(), Arc::new(Mutex::new(Integration::default())), egui::Context::default());
+        EventLoop::new(term, Exits(tx), tap, false, false).unwrap().spawn();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)), Ok(Some(7)));
     }
 
     #[test]
