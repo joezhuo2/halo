@@ -6,6 +6,15 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-27
+
+### Fixed
+
+- Opening files in a WSL folder no longer starts a new language server for
+  every file: they share one, so the status bar lists each server once.
+- The mouse wheel scrolls in terminal programs that capture the mouse, such
+  as the AI panel's chats, where it did nothing before.
+
 ## [0.2.0] - 2026-11-26
 
 ### Fixed
@@ -924,7 +933,8 @@ First release.
 - Windows installer with a Start menu entry and Open with Halo, a portable
   Windows executable, and Linux and macOS builds.
 
-[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/joezhuo2/halo/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/joezhuo2/halo/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/joezhuo2/halo/compare/v0.1.24...v0.2.0
 [0.1.24]: https://github.com/joezhuo2/halo/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/joezhuo2/halo/compare/v0.1.22...v0.1.23
