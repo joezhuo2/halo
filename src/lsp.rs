@@ -1001,6 +1001,7 @@ impl Lsp {
                     Ok(mut server) => {
                         self.next_id += 1;
                         server.init = self.next_id;
+                        server.command = command.clone();
                         server.write(&initialize(server.init, &root, &self.folders));
                         self.note(format!("Started {command} in {}", root.display()));
                         self.servers.push(server);
