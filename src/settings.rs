@@ -422,6 +422,9 @@ fn default_terminals() -> Vec<ShellProfile> {
 }
 
 pub fn dir() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("halo-test-config-{}", std::process::id()));
+    }
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("halo")
 }
 
