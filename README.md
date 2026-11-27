@@ -840,6 +840,27 @@ your own test folder and run from the repository root:
 The script backs up `%APPDATA%\halo\session.json`, copies the given session
 over it before each run, and puts the original back at the end.
 
+#### Compared with VS Code
+
+Halo uses about a thirteenth of the memory VS Code does on the same folder, measured as private working set, the figure Task Manager shows as Memory. Median of 5 runs per row after one discarded warm-up, VS Code 1.147.0 against Halo v0.2.0, each opening a small folder (`README.md`, `docs/notes.txt`, `data.json`) with no files open:
+
+| Editor | Window on screen | Private working set | Working set | Private bytes | Processes |
+| --- | --- | --- | --- | --- | --- |
+| VS Code, 39 extensions | 551 ms | 1401.8 MB | 2236.5 MB | 1943.2 MB | 15 |
+| VS Code, extensions disabled | 569 ms | 1233.7 MB | 2027.8 MB | 1777.5 MB | 12 |
+| Halo | 475 ms | 108.6 MB | 193.1 MB | 193.7 MB | 3 |
+
+- **Memory:** summed over every process each editor starts, 20 s after start. Working set counts shared pages (system libraries, GPU memory) once per process, so it overstates an editor made of many processes; private working set counts each page once.
+- **Window on screen:** defined as above. VS Code shows its window before the workbench has finished drawing, while Halo stays cloaked until its first frames are drawn, so this column favors VS Code.
+- VS Code runs with a profile of its own (`--user-data-dir`), so nothing is restored and open VS Code windows are left alone; extensions still load from `~\.vscode\extensions`. The welcome page, release notes and Workspace Trust prompt are skipped. Halo runs in test mode from an empty session.
+- The Halo figures include its child processes and are taken at 20 s, so they sit above the single-process, 10 s figures in the tables above.
+
+To repeat it, build with `cargo build --release` and run from the repository root (`-Code` points it at another `Code.exe`):
+
+```powershell
+.\scripts\compare-vscode.ps1 -Runs 5
+```
+
 ## Contributing
 
 Bug reports and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md)
