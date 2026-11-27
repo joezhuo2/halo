@@ -671,8 +671,8 @@ Click an image to view it at full size.
 
 | | |
 | :---: | :---: |
-| [![Editor with the explorer on the left and a terminal below](assets/screenshot-editor.png)](assets/screenshot-editor.png)<br>**Editor** with the explorer and an integrated terminal. | [![Source control side bar with the commit box, pull requests and the commit graph](assets/screenshot-source-control.png)](assets/screenshot-source-control.png)<br>**Source control** with pull requests and the commit graph. |
-| [![Settings page showing the theme switch and a color swatch for each interface and syntax color](assets/screenshot-settings.png)](assets/screenshot-settings.png)<br>**Settings** lets you change every color of a theme. | [![The same editor window in the light theme](assets/screenshot-light.png)](assets/screenshot-light.png)<br>**Light theme**, one click from the status bar. |
+| [![Editor with the explorer on the left and a terminal below](assets/screenshot-editor.png)](assets/screenshot-editor.png)<br>**Editor** with the explorer and an integrated terminal. | [![Source control side bar with the commit box, stashes, changes and the commit graph](assets/screenshot-source-control.png)](assets/screenshot-source-control.png)<br>**Source control** with the commit box, changes and the commit graph. |
+| [![Settings search for color: the color theme, the window color and a swatch for each interface and syntax color](assets/screenshot-settings.png)](assets/screenshot-settings.png)<br>**Settings** lets you change every color of a theme. | [![The same editor window in the light theme](assets/screenshot-light.png)](assets/screenshot-light.png)<br>**Light theme**, one click from the status bar. |
 
 ## Files
 
