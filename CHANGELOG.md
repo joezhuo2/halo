@@ -13,6 +13,8 @@ All notable changes to Halo are documented here. The format follows
 - The editor caret and the terminal cursor no longer blink while Halo's
   window is in the background, so an idle background window uses no CPU (it
   used about 8% of one core for 30 seconds after the last keystroke).
+- A task or terminal on Windows sometimes never reported its exit when its
+  command finished right away, most often on a busy machine.
 
 ### Changed
 
