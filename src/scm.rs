@@ -605,7 +605,7 @@ fn graph(
         }
         resp.context_menu(|ui| {
             ui::menu_pad(ui);
-            if ui.button("Open All Changes").clicked() {
+            if ui::menu_item(ui, "Open All Changes").clicked() {
                 let args = ["show", "--format=", "--diff-merges=first-parent", &commit.hash].map(str::to_owned).to_vec();
                 cmds.push(Command::OpenDiff(format!("{} ({})", commit.subject, &commit.hash[..commit.hash.len().min(8)]), args));
                 ui.close();
@@ -613,7 +613,7 @@ fn graph(
             for (op, label) in [(GitCommand::CherryPick, "Cherry Pick..."), (GitCommand::CreateTag, "Create Tag Here..."),
                 (GitCommand::BranchAt, "Create Branch Here..."), (GitCommand::InteractiveRebase, "Interactive Rebase from Here..."),
                 (GitCommand::Compare, "Compare with...")] {
-                if ui.add_enabled(!git.busy(), egui::Button::new(label)).clicked() {
+                if ui::menu_item_with(ui, label, label, !git.busy(), "").clicked() {
                     cmds.push(Command::GitAt(op, commit.hash.clone()));
                     ui.close();
                 }
@@ -744,7 +744,7 @@ fn group(
         if conflicted {
             resp.context_menu(|ui| {
                 ui::menu_pad(ui);
-                if ui.button("Resolve in Merge Editor").clicked() {
+                if ui::menu_item(ui, "Resolve in Merge Editor").clicked() {
                     cmds.push(Command::OpenMerge(full.clone()));
                     ui.close();
                 }

@@ -310,7 +310,7 @@ fn body(ui: &mut Ui, theme: &Theme, note: &Notification, width: f32) -> Option<u
             ui.set_width(width);
             let label = ui.add(egui::Label::new(RichText::new(&note.text).color(theme.text)).wrap().sense(Sense::click()));
             label.context_menu(|ui| {
-                if ui.button("Copy").clicked() {
+                if ui::menu_item(ui, "Copy").clicked() {
                     ui.ctx().copy_text(note.text.clone());
                     ui.close();
                 }

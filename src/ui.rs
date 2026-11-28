@@ -174,6 +174,133 @@ pub fn menu_pad(ui: &mut Ui) {
     ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
 }
 
+type MenuKeyMap = (bool, std::collections::BTreeMap<String, String>);
+
+#[derive(Clone, Default)]
+struct MenuKeys {
+    pass: u64,
+    labels: Vec<String>,
+    prev: Vec<String>,
+    used: Vec<char>,
+}
+
+#[derive(Default)]
+struct MenuKeyInput;
+
+fn key_char(key: egui::Key) -> Option<char> {
+    let mut name = key.name().chars();
+    name.next().filter(|c| c.is_ascii_alphanumeric() && name.next().is_none()).map(|c| c.to_ascii_lowercase())
+}
+
+impl egui::Plugin for MenuKeyInput {
+    fn debug_name(&self) -> &'static str { "Halo menu keys" }
+
+    fn on_begin_pass(&mut self, ui: &mut Ui) {
+        let id = Id::new("menu_keys_active").with(ui.ctx().viewport_id());
+        let pass = ui.ctx().cumulative_pass_nr();
+        let Some((at, menu, keys)) = ui.data_mut(|d| {
+            d.remove::<(Id, char)>(id.with("pending"));
+            let active = d.get_temp::<(u64, Id, Vec<char>)>(id);
+            d.remove::<(u64, Id, Vec<char>)>(id);
+            active
+        }) else { return };
+        if at + 1 != pass {
+            return;
+        }
+        let hit = ui.input_mut(|i| {
+            let at = i.events.iter().position(|e| matches!(e, egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } if modifiers.is_none() && key_char(*key).is_some_and(|c| keys.contains(&c))))?;
+            let egui::Event::Key { key, .. } = i.events.remove(at) else { return None };
+            let c = key_char(key)?;
+            if let Some(text) = i.events.iter().position(|e| matches!(e, egui::Event::Text(t) if t.len() == 1 && t.eq_ignore_ascii_case(c.encode_utf8(&mut [0; 4])))) {
+                i.events.remove(text);
+            }
+            Some(c)
+        });
+        if let Some(c) = hit {
+            ui.data_mut(|d| d.insert_temp(id.with("pending"), (menu, c)));
+        }
+    }
+}
+
+pub fn configure_menu_keys(ctx: &egui::Context, on: bool, map: &std::collections::BTreeMap<String, String>) {
+    ctx.data_mut(|d| d.insert_temp::<MenuKeyMap>(Id::new("menu_keys_settings"), (on, map.clone())));
+}
+
+fn menu_key(ui: &Ui, label: &str) -> Option<(Id, char)> {
+    let (on, map) = ui.data(|d| d.get_temp::<MenuKeyMap>(Id::new("menu_keys_settings"))).unwrap_or((true, Default::default()));
+    if !on || !egui::containers::menu::is_in_menu(ui) {
+        return None;
+    }
+    let root = egui::containers::menu::find_menu_root(ui).id;
+    let over = |l: &str| map.get(l).map(|v| v.trim().chars().next().map(|c| c.to_ascii_lowercase()).filter(char::is_ascii_alphanumeric));
+    let pass = ui.ctx().cumulative_pass_nr();
+    let state = root.with("menu_keys");
+    let mut keys: MenuKeys = ui.data_mut(|d| d.get_temp(state)).unwrap_or_default();
+    if keys.pass != pass {
+        keys.prev = if keys.pass + 1 == pass { std::mem::take(&mut keys.labels) } else { vec![] };
+        (keys.pass, keys.labels, keys.used) = (pass, vec![], vec![]);
+    }
+    let key = match over(label) {
+        Some(key) => key,
+        None => {
+            let reserved: Vec<char> = keys.prev.iter().filter(|l| *l != label).filter_map(|l| over(l).flatten()).collect();
+            label.chars().map(|c| c.to_ascii_lowercase()).find(|c| c.is_ascii_alphanumeric() && !keys.used.contains(c) && !reserved.contains(c))
+        }
+    }
+    .filter(|key| !keys.used.contains(key));
+    keys.labels.push(label.to_owned());
+    keys.used.extend(key);
+    ui.data_mut(|d| d.insert_temp(state, keys));
+    key.map(|key| (root, key))
+}
+
+pub fn menu_item(ui: &mut Ui, label: &str) -> Response {
+    menu_item_with(ui, label, label, true, "")
+}
+
+pub fn menu_item_with<'a>(ui: &mut Ui, label: &str, text: impl egui::IntoAtoms<'a>, enabled: bool, shortcut: &str) -> Response {
+    use egui::AtomExt;
+    let key = menu_key(ui, label);
+    let mut button = egui::Button::new(text);
+    if !shortcut.is_empty() || key.is_some() {
+        let mut right = egui::Atoms::default();
+        if !shortcut.is_empty() {
+            right.push_right(shortcut.to_owned());
+        }
+        if let Some((_, key)) = key {
+            let height = ui.text_style_height(&egui::TextStyle::Button);
+            right.push_right(key.to_ascii_uppercase().to_string().atom_size(egui::vec2(height, height)));
+        }
+        button = button.shortcut_text(right);
+    }
+    let mut response = ui.add_enabled(enabled, button);
+    let Some((root, key)) = key else { return response };
+    let ctx = ui.ctx().clone();
+    let id = Id::new("menu_keys_active").with(ctx.viewport_id());
+    let pass = ctx.cumulative_pass_nr();
+    let innermost = egui::containers::menu::MenuState::from_id(&ctx, root, |s| s.open_item.is_none());
+    let typing = ctx.memory(|m| m.focused()).is_some_and(|f| egui::TextEdit::load_state(&ctx, f).is_some() && ctx.read_response(f).is_some_and(|r| r.layer_id == ui.layer_id()));
+    if !innermost || typing {
+        return response;
+    }
+    ctx.data_mut(|d| {
+        let active = d.get_temp_mut_or_insert_with(id, || (pass, root, Vec::<char>::new()));
+        if (active.0, active.1) != (pass, root) {
+            *active = (pass, root, vec![]);
+        }
+        active.2.push(key);
+    });
+    ctx.plugin_or_default::<MenuKeyInput>();
+    if ctx.data(|d| d.get_temp::<(Id, char)>(id.with("pending"))) == Some((root, key)) {
+        ctx.data_mut(|d| d.remove::<(Id, char)>(id.with("pending")));
+        if response.enabled() {
+            response.flags |= egui::response::Flags::FAKE_PRIMARY_CLICKED;
+            ui.close();
+        }
+    }
+    response
+}
+
 fn logo_coverage(x: f32, y: f32) -> (bool, bool) {
     const APOTHEM: f32 = 0.667;
     const ROUND: f32 = 0.13;
@@ -631,8 +758,120 @@ pub fn direct_wheel(events: &mut Vec<egui::Event>, line: f32, smooth: bool) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use egui::{Event, PointerButton, pos2};
+
+    pub(crate) fn menu_keys(ctx: &egui::Context) -> Option<Vec<char>> {
+        ctx.data(|d| d.get_temp::<(u64, Id, Vec<char>)>(Id::new("menu_keys_active").with(ctx.viewport_id()))).map(|a| a.2)
+    }
+
+    pub(crate) fn press(c: char) -> Vec<Event> {
+        let key = egui::Key::from_name(&c.to_ascii_uppercase().to_string()).unwrap();
+        vec![Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }, Event::Text(c.to_string())]
+    }
+
+    struct Menu {
+        ctx: egui::Context,
+        items: Vec<(&'static str, bool)>,
+        fired: Vec<String>,
+        typed: Vec<Event>,
+        sub: Option<Rect>,
+    }
+
+    impl Menu {
+        fn open(items: &[(&'static str, bool)], on: bool, map: &[(&str, &str)]) -> Self {
+            let ctx = egui::Context::default();
+            configure_menu_keys(&ctx, on, &map.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+            let mut menu = Menu { ctx, items: items.to_vec(), fired: vec![], typed: vec![], sub: None };
+            let pos = pos2(20.0, 10.0);
+            let button = |pressed| Event::PointerButton { pos, button: PointerButton::Secondary, pressed, modifiers: Default::default() };
+            for events in [vec![Event::PointerMoved(pos)], vec![button(true)], vec![button(false)], vec![], vec![]] {
+                menu.frame(events);
+            }
+            menu
+        }
+
+        fn frame(&mut self, events: Vec<Event>) {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))), events, focused: true, ..Default::default() };
+            let (items, fired, typed, sub) = (&self.items, &mut self.fired, &mut self.typed, &mut self.sub);
+            let mut out = self.ctx.run_ui(input, |ui| {
+                typed.extend(ui.input(|i| i.events.iter().filter(|e| matches!(e, Event::Key { .. } | Event::Text(_))).cloned().collect::<Vec<_>>()));
+                let target = ui.add(egui::Label::new("target target target").sense(Sense::click()));
+                target.context_menu(|ui| {
+                    for (label, enabled) in items {
+                        if let Some(label) = label.strip_prefix('>') {
+                            *sub = Some(ui.menu_button("More", |ui| if menu_item(ui, label).clicked() { fired.push(label.to_string()) }).response.rect);
+                        } else if menu_item_with(ui, label, *label, *enabled, "").clicked() {
+                            fired.push(label.to_string());
+                        }
+                    }
+                });
+            });
+            out.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn a_menu_key_runs_its_item_once_and_closes_the_menu() {
+        let mut menu = Menu::open(&[("Copy", true), ("Cut", true), ("Copy Path", true), ("Paste", true)], true, &[]);
+        assert_eq!(menu_keys(&menu.ctx), Some(vec!['c', 'u', 'o', 'p']));
+        menu.frame(press('u'));
+        assert_eq!(menu.fired, ["Cut"]);
+        assert!(menu.typed.is_empty());
+        menu.frame(vec![]);
+        menu.frame(press('p'));
+        assert_eq!(menu.fired, ["Cut"]);
+        assert_eq!(menu_keys(&menu.ctx), None);
+        assert!(matches!(menu.typed[..], [Event::Key { .. }, Event::Text(_)]));
+    }
+
+    #[test]
+    fn overrides_take_a_key_and_free_the_old_one() {
+        let menu = Menu::open(&[("Discard", true), ("Delete", true)], true, &[]);
+        assert_eq!(menu_keys(&menu.ctx), Some(vec!['d', 'e']));
+        let mut menu = Menu::open(&[("Discard", true), ("Delete", true)], true, &[("Delete", "D")]);
+        assert_eq!(menu_keys(&menu.ctx), Some(vec!['i', 'd']));
+        menu.frame(press('d'));
+        assert_eq!(menu.fired, ["Delete"]);
+        let menu = Menu::open(&[("Discard", true), ("Delete", true)], true, &[("Discard", "x")]);
+        assert_eq!(menu_keys(&menu.ctx), Some(vec!['x', 'd']));
+        let menu = Menu::open(&[("Discard", true), ("Delete", true)], true, &[("Discard", "")]);
+        assert_eq!(menu_keys(&menu.ctx), Some(vec!['d']));
+    }
+
+    #[test]
+    fn switched_off_and_disabled_items_ignore_their_keys() {
+        let mut menu = Menu::open(&[("Cut", true), ("Copy", true)], false, &[]);
+        assert_eq!(menu_keys(&menu.ctx), None);
+        menu.frame(press('c'));
+        assert!(menu.fired.is_empty());
+        assert_eq!(menu.typed.len(), 2);
+        let mut menu = Menu::open(&[("Cut", false), ("Copy", true)], true, &[]);
+        menu.frame(press('c'));
+        assert!(menu.fired.is_empty());
+        assert!(menu.typed.is_empty());
+        assert_eq!(menu_keys(&menu.ctx), Some(vec!['c', 'o']));
+        menu.frame(press('o'));
+        assert_eq!(menu.fired, ["Copy"]);
+    }
+
+    #[test]
+    fn keys_act_on_the_innermost_open_menu() {
+        let mut menu = Menu::open(&[("Cut", true), (">Zoom", true)], true, &[]);
+        assert_eq!(menu_keys(&menu.ctx), Some(vec!['c']));
+        let more = menu.sub.unwrap().center();
+        for _ in 0..3 {
+            menu.frame(vec![Event::PointerMoved(more)]);
+        }
+        assert_eq!(menu_keys(&menu.ctx), Some(vec!['z']));
+        menu.frame(press('c'));
+        assert!(menu.fired.is_empty());
+        menu.frame(press('z'));
+        assert_eq!(menu.fired, ["Zoom"]);
+        menu.frame(vec![]);
+        assert_eq!(menu_keys(&menu.ctx), None);
+    }
 
     #[test]
     fn splits_touchpad_and_unsmoothed_wheel_input_into_direct_steps() {

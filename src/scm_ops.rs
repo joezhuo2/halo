@@ -253,7 +253,7 @@ impl Scm {
                 row.context_menu(|ui| {
                     ui::menu_pad(ui);
                     for op in [Op::ShowStash, Op::ApplyStash, Op::PopStash, Op::DropStash] {
-                        if ui.add_enabled(!git.busy(), egui::Button::new(op.label().trim_start_matches("Git: "))).clicked() {
+                        if ui::menu_item_with(ui, op.label().trim_start_matches("Git: "), op.label().trim_start_matches("Git: "), !git.busy(), "").clicked() {
                             cmds.push(Command::GitAt(op, s.reference.clone()));
                             ui.close();
                         }

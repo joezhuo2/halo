@@ -1526,20 +1526,20 @@ impl Tree<'_> {
             if parent != 0 {
                 resp.context_menu(|ui| {
                     ui::menu_pad(ui);
-                    if self.live.can("supportsDataBreakpoints") && ui.button("Break on Value Change").clicked() {
+                    if self.live.can("supportsDataBreakpoints") && ui::menu_item(ui, "Break on Value Change").clicked() {
                         *self.action = Some(TreeAction::BreakOnChange(parent, var.name.clone()));
                         ui.close();
                     }
-                    if self.settable && ui.button("Set Value").clicked() {
+                    if self.settable && ui::menu_item(ui, "Set Value").clicked() {
                         *self.action = Some(TreeAction::Edit(parent, var.name.clone(), var.value.clone()));
                         ui.close();
                     }
-                    if ui.button("Copy Value").clicked() {
+                    if ui::menu_item(ui, "Copy Value").clicked() {
                         ui.ctx().copy_text(var.value.clone());
                         ui.close();
                     }
                     if let Some(reference) = var.memory.as_ref().filter(|_| self.memory)
-                        && ui.button("View Binary Data").clicked()
+                        && ui::menu_item(ui, "View Binary Data").clicked()
                     {
                         *self.action = Some(TreeAction::Memory(reference.clone(), var.name.clone()));
                         ui.close();
@@ -1790,7 +1790,7 @@ impl Debug {
                     if can_disassemble && frame.ip.is_some() {
                         resp.context_menu(|ui| {
                             ui::menu_pad(ui);
-                            if ui.button("Open Disassembly View").clicked() {
+                            if ui::menu_item(ui, "Open Disassembly View").clicked() {
                                 (pick, disassemble) = (Some((session, Some(index))), true);
                                 ui.close();
                             }
@@ -1978,7 +1978,7 @@ pub fn gutter_menu(ui: &mut Ui, list: &[Breakpoint], line: usize) -> Option<Gutt
     };
     let mut picked = None;
     for (label, action) in items {
-        if ui.button(label).clicked() {
+        if ui::menu_item(ui, label).clicked() {
             picked = Some(action);
             ui.close();
         }

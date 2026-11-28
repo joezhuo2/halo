@@ -30,6 +30,8 @@ pub const VSCODE: &[(&str, &str)] = &[
     ("auto_save", "files.autoSave"),
     ("associations", "files.associations"),
     ("menus", "halo.menus"),
+    ("menu_keys", "halo.contextMenuKeys.enabled"),
+    ("menu_key_map", "halo.contextMenuKeys.keys"),
     ("font_ligatures", "editor.fontLigatures"),
     ("letter_spacing", "editor.letterSpacing"),
     ("cursor_smooth_caret_animation", "editor.cursorSmoothCaretAnimation"),

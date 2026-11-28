@@ -448,7 +448,7 @@ fn side_menu(ui: &mut Ui, right: bool, cmds: &mut Vec<Command>) {
         ("Reset View Locations", Command::ResetViewLocations),
     ];
     for (label, cmd) in items {
-        if ui.button(label).clicked() {
+        if ui::menu_item(ui, label).clicked() {
             cmds.push(cmd);
             ui.close();
         }
@@ -742,7 +742,7 @@ impl Halo {
                     clicked = Some(*view);
                 }
                 resp.context_menu(|ui| {
-                    if ui.button("Move into New Window").clicked() {
+                    if ui::menu_item(ui, "Move into New Window").clicked() {
                         self.cmds.push(Command::DetachView(*view));
                         ui.close();
                     }

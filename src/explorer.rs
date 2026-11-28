@@ -942,33 +942,33 @@ impl Explorer {
         ui.set_min_width(190.0);
         ui::menu_pad(ui);
         let dir = self.dir_for_new(path);
-        if ui.button("New File...").clicked() {
+        if ui::menu_item(ui, "New File...").clicked() {
             *action = Some(Action::New(EditKind::NewFile, dir.clone()));
             ui.close();
         }
-        if ui.button("New Folder...").clicked() {
+        if ui::menu_item(ui, "New Folder...").clicked() {
             *action = Some(Action::New(EditKind::NewFolder, dir.clone()));
             ui.close();
         }
         if let Some(root) = path.filter(|p| self.is_root(p)) {
             ui.separator();
-            if self.clipboard.is_some() && ui.button("Paste").clicked() {
+            if self.clipboard.is_some() && ui::menu_item(ui, "Paste").clicked() {
                 *action = Some(Action::Paste);
                 ui.close();
             }
-            if ui.button("Add Folder to Workspace...").clicked() {
+            if ui::menu_item(ui, "Add Folder to Workspace...").clicked() {
                 *action = Some(Action::Compare(Command::AddFolderToWorkspace));
                 ui.close();
             }
-            if ui.button("Remove Folder from Workspace").clicked() {
+            if ui::menu_item(ui, "Remove Folder from Workspace").clicked() {
                 *action = Some(Action::Compare(Command::RemoveWorkspaceFolder(root.to_path_buf())));
                 ui.close();
             }
-            if ui.button("Copy Path").clicked() {
+            if ui::menu_item(ui, "Copy Path").clicked() {
                 *action = Some(Action::Copy(root.to_string_lossy().into_owned()));
                 ui.close();
             }
-            if ui.button("Reveal in File Explorer").clicked() {
+            if ui::menu_item(ui, "Reveal in File Explorer").clicked() {
                 *action = Some(Action::Reveal(root.to_path_buf()));
                 ui.close();
             }
@@ -983,53 +983,53 @@ impl Explorer {
         if let Some(path) = path {
             ui.separator();
             if !many && !path.is_dir() {
-                if ui.button("Select for Compare").clicked() {
+                if ui::menu_item(ui, "Select for Compare").clicked() {
                     *action = Some(Action::Compare(Command::SelectComparePath(path.to_owned())));
                     ui.close();
                 }
-                if self.compare.as_deref().is_some_and(|p| p != path) && ui.button("Compare with Selected").clicked() {
+                if self.compare.as_deref().is_some_and(|p| p != path) && ui::menu_item(ui, "Compare with Selected").clicked() {
                     *action = Some(Action::Compare(Command::ComparePath(path.to_owned())));
                     ui.close();
                 }
                 ui.separator();
             }
-            if ui.button("Cut").clicked() {
+            if ui::menu_item(ui, "Cut").clicked() {
                 *action = Some(Action::Clip(true));
                 ui.close();
             }
-            if ui.button("Copy").clicked() {
+            if ui::menu_item(ui, "Copy").clicked() {
                 *action = Some(Action::Clip(false));
                 ui.close();
             }
         }
-        if self.clipboard.is_some() && ui.button("Paste").clicked() {
+        if self.clipboard.is_some() && ui::menu_item(ui, "Paste").clicked() {
             *action = Some(Action::Paste);
             ui.close();
         }
         if let Some(path) = path {
             ui.separator();
-            if !many && ui.button("Rename...").clicked() {
+            if !many && ui::menu_item(ui, "Rename...").clicked() {
                 *action = Some(Action::Rename(path.to_path_buf()));
                 ui.close();
             }
             let label = if many { format!("Delete {} Items", targets.len()) } else { "Delete".to_owned() };
-            if ui.button(label).clicked() {
+            if ui::menu_item(ui, &label).clicked() {
                 *action = Some(Action::Delete(targets.clone()));
                 ui.close();
             }
         }
         ui.separator();
-        if ui.button("Copy Path").clicked() {
+        if ui::menu_item(ui, "Copy Path").clicked() {
             let text = targets.iter().map(|t| t.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n");
             *action = Some(Action::Copy(text));
             ui.close();
         }
-        if ui.button("Copy Relative Path").clicked() {
+        if ui::menu_item(ui, "Copy Relative Path").clicked() {
             let rel = |t: &PathBuf| self.root_of(t).and_then(|r| t.strip_prefix(r).ok()).unwrap_or(t).to_string_lossy().replace('\\', "/");
             *action = Some(Action::Copy(targets.iter().map(rel).collect::<Vec<_>>().join("\n")));
             ui.close();
         }
-        if ui.button("Reveal in File Explorer").clicked() {
+        if ui::menu_item(ui, "Reveal in File Explorer").clicked() {
             *action = Some(Action::Reveal(targets[0].clone()));
             ui.close();
         }

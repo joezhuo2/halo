@@ -338,7 +338,7 @@ impl StreamView {
         painter.rect_filled(thumb, CornerRadius::same(3), ui::with_alpha(theme.text_dim, if bar_resp.hovered() || bar_resp.dragged() { 0.5 } else { 0.25 }));
         let picked = self.picked.and_then(|p| p.checked_sub(self.top)).and_then(|i| self.cache.3.get(i)).cloned();
         resp.context_menu(|ui| {
-            if ui.add_enabled(picked.is_some(), egui::Button::new("Copy Line")).clicked() {
+            if ui::menu_item_with(ui, "Copy Line", "Copy Line", picked.is_some(), "").clicked() {
                 ui.ctx().copy_text(picked.clone().unwrap_or_default());
                 ui.close();
             }

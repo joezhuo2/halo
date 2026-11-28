@@ -51,6 +51,8 @@ pub struct Settings {
     pub grammars: String,
     pub associations: BTreeMap<String, String>,
     pub menus: BTreeMap<String, Vec<String>>,
+    pub menu_keys: bool,
+    pub menu_key_map: BTreeMap<String, String>,
     pub run: BTreeMap<String, String>,
     pub tasks: Vec<Task>,
     pub lsp: bool,
@@ -200,6 +202,8 @@ impl Default for Settings {
             grammars: dir().join("grammars").to_string_lossy().into_owned(),
             associations: BTreeMap::new(),
             menus: BTreeMap::new(),
+            menu_keys: true,
+            menu_key_map: BTreeMap::new(),
             run: [
                 ("py", r#"python "{file}""#),
                 ("js", r#"node "{file}""#),

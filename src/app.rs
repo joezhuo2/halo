@@ -418,6 +418,7 @@ impl Halo {
         self.theme.apply(ctx);
         crate::icon_theme::select(&self.settings.icon_theme, &crate::settings::dir());
         crate::terminal::configure(&self.settings);
+        crate::ui::configure_menu_keys(ctx, self.settings.menu_keys, &self.settings.menu_key_map);
         let font = format!("{}
 {}", self.settings.font_family, self.settings.terminal_font_family);
         if self.font != font {

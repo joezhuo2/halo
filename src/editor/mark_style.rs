@@ -184,7 +184,7 @@ fn button(ui: &mut Ui, theme: &Theme, cmd: &Command, styles: &[Style]) -> bool {
         text.append("\u{25cf}", 0.0, egui::TextFormat { color: theme.mark_styles[*style as usize], ..format.clone() });
     }
     text.append(cmd.label(), 6.0, format);
-    ui.button(text).clicked()
+    crate::ui::menu_item_with(ui, cmd.label(), text, true, "").clicked()
 }
 
 #[cfg(test)]

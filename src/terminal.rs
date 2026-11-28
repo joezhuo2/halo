@@ -1870,20 +1870,20 @@ impl BottomPanel {
                             let mut to_editor = false;
                             resp.context_menu(|ui| {
                                 ui::menu_pad(ui);
-                                if ui.button("Rename...").clicked() {
+                                if ui::menu_item(ui, "Rename...").clicked() {
                                     self.renaming = Some((pane.id, pane.title(), true));
                                 }
                                 ui.menu_button("Change Color", |ui| {
                                     for (color, name) in color_names() {
-                                        if ui.button(name).clicked() {
+                                        if ui::menu_item(ui, name).clicked() {
                                             pane.color = color;
                                         }
                                     }
                                 });
-                                if pane.task.is_none() && ui.button("Move Terminal into Editor Area").clicked() {
+                                if pane.task.is_none() && ui::menu_item(ui, "Move Terminal into Editor Area").clicked() {
                                     to_editor = true;
                                 }
-                                if ui.button("Kill Terminal").clicked() {
+                                if ui::menu_item(ui, "Kill Terminal").clicked() {
                                     kill = Some((index, at));
                                 }
                             });

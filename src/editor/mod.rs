@@ -40,6 +40,8 @@ mod snippet;
 mod linked;
 mod typography;
 pub mod vim;
+#[cfg(test)]
+mod menu_keys_tests;
 
 use crate::command::{self, Command, Scope};
 use crate::git::{Git, LineChange};
@@ -2151,42 +2153,42 @@ impl Editors {
                             ("Close All", TabAction::CloseAll),
                             ("Copy Path", TabAction::CopyPath(t)),
                         ] {
-                            if ui.button(label).clicked() {
+                            if ui::menu_item(ui, label).clicked() {
                                 action = Some(choice);
                                 ui.close();
                             }
                         }
-                        if svg && ui.button("Reopen as Text").clicked() {
+                        if svg && ui::menu_item(ui, "Reopen as Text").clicked() {
                             action = Some(TabAction::ReopenText(t));
                             ui.close();
                         }
                         ui.separator();
                         let moves = [Command::MoveEditorToNewWindow, Command::CopyEditorToNewWindow, Command::MoveEditorToMainWindow];
                         for cmd in moves.into_iter().take(if floating { 3 } else { 2 }) {
-                            if ui.button(cmd.label()).clicked() {
+                            if ui::menu_item(ui, cmd.label()).clicked() {
                                 action = Some(TabAction::Activate(t));
                                 pending.push(cmd);
                                 ui.close();
                             }
                         }
-                        if ui.button(if locked { "Unlock Group" } else { "Lock Group" }).clicked() {
+                        if ui::menu_item(ui, if locked { "Unlock Group" } else { "Lock Group" }).clicked() {
                             action = Some(TabAction::Activate(t));
                             pending.push(Command::ToggleEditorGroupLock);
                             ui.close();
                         }
                         if let Some(terminal) = self.terminals.get_mut(&tab.doc) {
                             ui.separator();
-                            if ui.button("Rename...").clicked() {
+                            if ui::menu_item(ui, "Rename...").clicked() {
                                 self.renaming = Some((tab.doc, terminal.title(), true));
                             }
                             ui.menu_button("Change Color", |ui| {
                                 for (color, name) in crate::terminal::color_names() {
-                                    if ui.button(name).clicked() {
+                                    if ui::menu_item(ui, name).clicked() {
                                         terminal.color = color;
                                     }
                                 }
                             });
-                            if ui.button("Move Terminal into Panel").clicked() {
+                            if ui::menu_item(ui, "Move Terminal into Panel").clicked() {
                                 action = Some(TabAction::Activate(t));
                                 pending.push(Command::MoveTerminalToPanel);
                             }
@@ -3028,7 +3030,7 @@ impl Editors {
                         ui::menu_pad(ui);
                         if path.is_some() && !diffed && self.marks.cursor.allows(&RunToCursor) {
                             for cmd in [RunToCursor, JumpToCursor] {
-                                if self.marks.cursor.allows(&cmd) && ui.button(cmd.label()).clicked() {
+                                if self.marks.cursor.allows(&cmd) && ui::menu_item(ui, cmd.label()).clicked() {
                                     if let Some(p) = ui.data(|d| d.get_temp::<usize>(id.with("cursor_menu"))) {
                                         tab.sels = vec![Sel::caret(p.min(buf_ref.len()))];
                                     }
@@ -3059,7 +3061,7 @@ impl Editors {
                                 }
                             };
                             let keys = command::shortcut_text(ui.ctx(), &cmd).unwrap_or_default();
-                            if ui.add(egui::Button::new(cmd.label()).shortcut_text(keys)).clicked() {
+                            if ui::menu_item_with(ui, cmd.label(), cmd.label(), true, &keys).clicked() {
                                 pending.push(cmd);
                                 ui.close();
                             }

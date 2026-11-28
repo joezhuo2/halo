@@ -165,6 +165,8 @@ pub const SETTINGS: &[Meta] = &[
     m("show_tabs", 2, "Workbench", "Show Tabs", "Whether editor groups show their tab strip. Hide it to use the Open Editors list in the Explorer as vertical tabs.", Kind::Choice(&[("multiple", "Show"), ("none", "Hide")])),
     m("open_editors_tree", 2, "Workbench", "Open Editors Tree", "Group the Open Editors list in the Explorer by folder.", Kind::Toggle),
     m("menus", 2, "Workbench", "Menus and Toolbars", "Add, remove and reorder the commands in the title bar menus, the editor context menu and the editor toolbar.", Kind::Custom),
+    m("menu_keys", 2, "Workbench", "Context Menu Keys", "Show a key beside each item of a right-click menu. Pressing it runs the item.", Kind::Toggle),
+    m("menu_key_map", 2, "Workbench", "Context Menu Key Overrides", "The key of a right-click menu item, by its label. An empty key removes the item's key; other items pick another free letter.", Kind::Custom),
     m("colors", 2, "Workbench", "Colors", "Interface colors on the left, syntax colors on the right.", Kind::Custom),
     m("default_terminal", 3, "Terminal", "Default Profile", "The shell a new terminal starts with.", Kind::Custom),
     m("terminals", 3, "Terminal", "Profiles", "The name, program and arguments of each shell.", Kind::Custom),
@@ -209,6 +211,7 @@ pub struct SettingsPage {
     new_server: (String, String),
     new_adapter: (String, String),
     new_nesting: (String, String),
+    new_menu_key: (String, String),
     new_exclude: String,
     menu_location: usize,
     menu_filter: String,
@@ -646,6 +649,7 @@ fn custom(ui: &mut Ui, theme: &Theme, key: &str, s: &mut Settings, page: &mut Se
             }
         }
         "menus" => menus_editor(ui, theme, s, page),
+        "menu_key_map" => map_editor(ui, theme, "settings_menu_keys", &mut s.menu_key_map, &mut page.new_menu_key, "key"),
         "files_exclude" => exclude_editor(ui, theme, &mut s.files_exclude, &mut page.new_exclude),
         "default_terminal" => {
             let names: Vec<String> = s.terminals.iter().map(|p| p.name.clone()).collect();
@@ -813,10 +817,11 @@ fn map_editor(ui: &mut Ui, theme: &Theme, id: &str, map: &mut BTreeMap<String, S
             ui.end_row();
         }
         let patterns = id == "settings_nesting";
-        field(ui, &mut new.0, 90.0, if patterns { "*.ts" } else { "extension" });
+        let labels = id == "settings_menu_keys";
+        field(ui, &mut new.0, if labels { 220.0 } else { 90.0 }, if patterns { "*.ts" } else if labels { "label" } else { "extension" });
         field(ui, &mut new.1, 380.0, hint);
-        let key = if patterns { new.0.trim().to_owned() } else { new.0.trim().trim_start_matches('.').to_lowercase() };
-        if ui.add_enabled(!key.is_empty() && !new.1.trim().is_empty(), egui::Button::new("Add")).clicked() {
+        let key = if patterns || labels { new.0.trim().to_owned() } else { new.0.trim().trim_start_matches('.').to_lowercase() };
+        if ui.add_enabled(!key.is_empty() && (labels || !new.1.trim().is_empty()), egui::Button::new("Add")).clicked() {
             map.insert(key, new.1.trim().to_owned());
             *new = Default::default();
         }

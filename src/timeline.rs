@@ -224,23 +224,23 @@ impl Timeline {
                     ui::menu_pad(ui);
                     match item {
                         Item::Commit(entry) => {
-                            if ui.button("Copy Commit Hash").clicked() {
+                            if ui::menu_item(ui, "Copy Commit Hash").clicked() {
                                 ui.ctx().copy_text(entry.hash.clone());
                                 ui.close();
                             }
                         }
                         Item::Saved(_, snap) => {
-                            if ui.button("Restore Contents").clicked() {
+                            if ui::menu_item(ui, "Restore Contents").clicked() {
                                 cmds.push(Command::RestoreSnapshot(file.to_path_buf(), snap.clone()));
                                 ui.close();
                             }
-                            if ui.button("Delete").clicked() {
+                            if ui::menu_item(ui, "Delete").clicked() {
                                 delete = Some(snap.clone());
                                 ui.close();
                             }
                         }
                     }
-                    if ui.button("Open Changes").clicked() {
+                    if ui::menu_item(ui, "Open Changes").clicked() {
                         open(cmds);
                         ui.close();
                     }
