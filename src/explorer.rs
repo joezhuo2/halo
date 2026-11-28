@@ -416,6 +416,18 @@ impl Explorer {
         self.focused || self.open_focus
     }
 
+    pub fn focus_file(&mut self, path: &Path) -> bool {
+        if self.collapsed || !path.is_file() {
+            return false;
+        }
+        self.reveal_active(path);
+        if self.dirty {
+            self.build();
+        }
+        self.focus_tree = self.row_of(path).is_some();
+        self.focus_tree
+    }
+
     pub fn dragging(&self) -> bool {
         self.drag.is_some()
     }
@@ -1134,7 +1146,7 @@ impl Explorer {
                 *action = Some(if row.is_dir { Action::Toggle(row.path) } else { Action::Open(row.path) });
             } else if pressed(Modifiers::NONE, Key::F2) {
                 *action = Some(Action::Rename(cursor));
-            } else if pressed(Modifiers::NONE, Key::Delete) {
+            } else if pressed(Modifiers::NONE, Key::Delete) || pressed(Modifiers::NONE, Key::Backspace) {
                 let paths = if self.sel.paths.is_empty() { vec![cursor] } else { self.sel.paths.clone() };
                 *action = Some(Action::Delete(paths));
             }

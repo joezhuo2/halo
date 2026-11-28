@@ -364,6 +364,22 @@ mod headless {
     }
 
     #[test]
+    fn focus_file_selects_it_and_delete_or_backspace_asks_to_delete_it() {
+        let (dir, ctx, mut explorer) = setup("focus_file", &["a.txt", "b.txt"]);
+        assert!(!explorer.focus_file(&dir.join("missing.txt")));
+        for k in [Key::Delete, Key::Backspace] {
+            assert!(explorer.focus_file(&dir.join("b.txt")));
+            frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
+            assert!(explorer.has_focus() && explorer.sel.cursor.as_deref() == Some(dir.join("b.txt").as_path()), "{k:?}");
+            frame(&ctx, &mut explorer, vec![key(k, Modifiers::NONE)], Modifiers::NONE);
+            assert_eq!(explorer.confirm_delete, [dir.join("b.txt")], "{k:?}");
+            explorer.confirm_delete.clear();
+            frame(&ctx, &mut explorer, vec![], Modifiers::NONE);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn multi_select_then_delete_confirms_once_with_the_count() {
         let (dir, ctx, mut explorer) = setup("select", &["a.txt", "b.txt", "c.txt", "d.txt"]);
         click(&ctx, &mut explorer, &dir.join("a.txt"), Modifiers::NONE);

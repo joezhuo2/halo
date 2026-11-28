@@ -313,6 +313,7 @@ pub struct Editors {
     groups: Vec<Group>,
     active: usize,
     focused: bool,
+    pub escaped: bool,
     want_focus: bool,
     find: Find,
     goto: Option<String>,
@@ -697,6 +698,7 @@ impl Editors {
             groups: vec![Group::default()],
             active: 0,
             focused: false,
+            escaped: false,
             want_focus: false,
             find: Find::default(),
             goto: None,
@@ -2428,6 +2430,7 @@ impl Editors {
             self.popup_keys(&mut events, doc_id, buf, tab);
             self.ai_keys(&mut events, doc_id, buf, tab);
             self.peek_escape(&mut events, doc_id);
+            let vim_idle = !settings.vim || diffed || (self.vim.mode == vim::Mode::Normal && self.vim.keys.is_empty() && self.vim.line.is_none());
             if settings.vim && !diffed {
                 let out = self.vim.keys(&mut events, buf, &mut tab.sels, &unit, settings.tab_size);
                 pending.extend(out.cmds);
@@ -2445,6 +2448,8 @@ impl Editors {
                 tab.reveal = tab.sels.last().map(|s| s.head);
             }
             let (mut typed, mut pasted, mut entered) = (None, None, false);
+            self.escaped |= vim_idle && !self.find.open && self.intel.picker.is_none() && tab.snippet.is_none() && tab.sels.len() == 1 && tab.sels[0].is_empty()
+                && events.iter().any(|e| matches!(e, Event::Key { key: Key::Escape, pressed: true, modifiers, .. } if modifiers.is_none()));
             for event in &events {
                 if search_editor::enter_reruns(buf, &tab.sels, event) {
                     pending.push(Command::RerunSearchEditorSearch);

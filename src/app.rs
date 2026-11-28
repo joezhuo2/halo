@@ -1253,6 +1253,7 @@ impl Halo {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(delay.max(0.05)));
         }
 
+        let overlay = egui::Popup::is_any_open(&ctx) || ctx.memory(|m| m.top_modal_layer().is_some()) || self.search.is_open();
         crate::notifications::show(&ctx, &self.theme, &mut self.cmds);
         if self.run_form.as_mut().is_some_and(|form| form.ui(ui)) {
             self.run_form = None;
@@ -1269,6 +1270,12 @@ impl Halo {
         self.debug_frame(&ctx, window.top() + 44.0);
         self.testing_frame(&ctx);
         self.dialogs(&ctx);
+        if std::mem::take(&mut self.editors.escaped) && !overlay && self.showing(View::Explorer)
+            && let Some(path) = self.editors.active_path()
+            && self.explorer.focus_file(&path)
+        {
+            ctx.request_repaint();
+        }
         crate::a11y::help_ui(&ctx, &self.theme);
 
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false));
@@ -1592,6 +1599,61 @@ mod tests {
         }
         assert_eq!(app.editors.active_path(), Some(dir.join("c.txt")));
         assert_eq!(app.editors.open_paths(), Vec::<std::path::PathBuf>::new());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn headless_escape_in_the_editor_moves_focus_to_the_file_in_the_explorer() {
+        use crate::command::Command;
+        use eframe::egui::{self, Event, Key, Rect, pos2, vec2};
+        let dir = std::env::temp_dir().join(format!("halo-escape-explorer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = super::Halo::build(&ctx, crate::settings::Settings::default(), crate::settings::Session::default());
+        let time = std::cell::Cell::new(0.0);
+        let run = |app: &mut super::Halo, events: Vec<Event>| {
+            time.set(time.get() + 0.05);
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1400.0, 900.0))), time: Some(time.get()), events, focused: true, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| app.frame(ui));
+            out.textures_delta.clear();
+        };
+        let escape = || vec![Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }];
+        app.set_folder(Some(dir.clone()), &ctx);
+        app.editors.open_kept(&file);
+        for _ in 0..20 {
+            run(&mut app, vec![]);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let focus_editor = |app: &mut super::Halo, cmd: Option<Command>| {
+            app.editors.focus();
+            run(app, vec![]);
+            run(app, vec![]);
+            if let Some(cmd) = &cmd {
+                app.editors.exec(cmd, &app.settings, &ctx);
+            }
+            assert!(app.editors.has_focus() && !app.explorer.has_focus(), "{cmd:?} {} {}", app.editors.has_focus(), app.explorer.has_focus());
+        };
+        for cmd in [Command::SelectAll, Command::AddCursorAbove] {
+            focus_editor(&mut app, Some(cmd));
+            run(&mut app, escape());
+            run(&mut app, vec![]);
+            assert!(app.editors.has_focus() && !app.explorer.has_focus());
+            run(&mut app, escape());
+            run(&mut app, vec![]);
+            run(&mut app, vec![]);
+            assert!(app.explorer.has_focus() && !app.editors.has_focus());
+            assert_eq!(serde_json::to_value(app.explorer.tree_state()).unwrap()["cursor"], serde_json::json!(&file));
+        }
+        focus_editor(&mut app, None);
+        app.session.sidebar = false;
+        run(&mut app, vec![]);
+        run(&mut app, escape());
+        run(&mut app, vec![]);
+        run(&mut app, vec![]);
+        assert!(app.editors.has_focus() && !app.explorer.has_focus());
+        drop(app);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
