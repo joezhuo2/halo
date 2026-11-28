@@ -130,6 +130,7 @@ struct Tab {
     set_scroll: Option<f32>,
     anchor: (u64, usize, u32, f32),
     drag_anchor: Option<usize>,
+    drag_unit: Option<(u8, usize, usize)>,
     pinned: bool,
     rows: (u64, Vec<u32>),
     preview: bool,
@@ -2872,6 +2873,7 @@ impl Editors {
                     let over_gutter = resp.hovered() && pointer.is_some_and(|pos| pos.x < clip.left() + gutter_w);
                     let can_fold = |line: usize| folded.iter().any(|f| f.0 == line) || opens(line).is_some();
                     let mut lens_press = false;
+                    let line_span = |p: usize| (buf_ref.line_start(buf_ref.line_of(p)), buf_ref.line_start(buf_ref.line_of(p) + 1).min(buf_ref.len()));
                     if let Some(pos) = pointer {
                         if pressed && resp.is_pointer_button_down_on() {
                             resp.request_focus();
@@ -2881,6 +2883,7 @@ impl Editors {
                             let (p, v) = vhit(&painter, pos);
                             let boxed = (mods.alt && mods.shift && !on_lens).then(|| tab.sels.last().map_or((p, v), |s| (s.anchor, 0)));
                             tab.box_anchor = boxed;
+                            tab.drag_unit = None;
                             if let Some(anchor) = boxed {
                                 tab.sels = buf_ref.box_sels(anchor, (p, v));
                                 tab.drag_anchor = None;
@@ -2921,6 +2924,12 @@ impl Editors {
                             } else {
                                 tab.sels = vec![Sel { virt: v, ..Sel::caret(p) }];
                                 tab.drag_anchor = Some(p);
+                                let count = ui::press_count(ui, id, pos);
+                                if !follows_link && count > 1 {
+                                    let (a, b) = if count == 2 { buf_ref.word_at(p) } else { line_span(p) };
+                                    tab.sels = vec![Sel::new(a, b)];
+                                    tab.drag_unit = Some((count, a, b));
+                                }
                                 if follows_link {
                                     let line = buf_ref.line_of(p);
                                     let (column, dir) = (p - buf_ref.line_start(line), buf_ref.path.as_deref().and_then(Path::parent));
@@ -2938,6 +2947,9 @@ impl Editors {
                             let (p, v) = vhit(&painter, pos);
                             if let Some(anchor) = tab.box_anchor {
                                 tab.sels = buf_ref.box_sels(anchor, (p, v));
+                            } else if let Some((count, a, b)) = tab.drag_unit {
+                                let (c, d) = if count == 2 { buf_ref.word_at(p) } else { line_span(p) };
+                                tab.sels = vec![if c < a { Sel::new(b, c) } else { Sel::new(a, d.max(b)) }];
                             } else if let Some(anchor) = tab.drag_anchor
                                 && let Some(s) = tab.sels.iter_mut().find(|s| s.anchor == anchor)
                             {
@@ -2959,8 +2971,8 @@ impl Editors {
                             }
                         }
                         if resp.triple_clicked() && !on_lens {
-                            let line = buf_ref.line_of(hit(&painter, pos));
-                            tab.sels = vec![Sel::new(buf_ref.line_start(line), buf_ref.line_start(line + 1).min(buf_ref.len()))];
+                            let (a, b) = line_span(hit(&painter, pos));
+                            tab.sels = vec![Sel::new(a, b)];
                         }
                         if resp.secondary_clicked() && !on_lens {
                             let line = (marks.is_some() && pos.x < clip.left() + bp_w).then(|| row_at(pos.y).0);
@@ -4896,6 +4908,52 @@ fn xb() {}
         let escape = Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
         frame(&ctx, &mut editors, vec![escape]);
         assert!(editors.intel.peek.is_none());
+    }
+
+    #[test]
+    fn multi_press_drags_extend_by_word_and_by_line() {
+        let ctx = egui::Context::default();
+        let settings = Settings::default();
+        let mut editors = Editors::new();
+        editors.exec(&Command::NewFile, &settings, &ctx);
+        frame(&ctx, &mut editors, vec![]);
+        frame(&ctx, &mut editors, vec![Event::Paste("alpha beta gamma\nsecond line here\nthird\n".into())]);
+        frame(&ctx, &mut editors, vec![]);
+        let font = FontId::monospace(settings.font_size);
+        let (char_w, row_h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
+        let line_h = (row_h * 1.25).round();
+        let at = |col: f32, line: f32| pos2(8.0 * char_w + 6.0 + col * char_w, TAB_H + 22.0 + (line + 0.5) * line_h);
+        let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
+        let sel = |e: &Editors| (e.groups[0].tabs[0].sels.len(), e.groups[0].tabs[0].sels[0].anchor, e.groups[0].tabs[0].sels[0].head);
+        let presses = |editors: &mut Editors, from: Pos2, count: usize, to: Option<Pos2>| {
+            frame(&ctx, editors, vec![Event::PointerMoved(from)]);
+            for i in 0..count {
+                frame(&ctx, editors, vec![button(from, true)]);
+                if i + 1 < count {
+                    frame(&ctx, editors, vec![button(from, false)]);
+                }
+            }
+            let mid = sel(editors);
+            if let Some(to) = to {
+                frame(&ctx, editors, vec![Event::PointerMoved(to)]);
+                frame(&ctx, editors, vec![]);
+            }
+            frame(&ctx, editors, vec![button(to.unwrap_or(from), false)]);
+            for _ in 0..30 {
+                frame(&ctx, editors, vec![]);
+            }
+            mid
+        };
+        assert_eq!(presses(&mut editors, at(8.5, 0.0), 2, Some(at(13.5, 0.0))), (1, 6, 10));
+        assert_eq!(sel(&editors), (1, 6, 16));
+        presses(&mut editors, at(13.5, 0.0), 2, Some(at(2.5, 0.0)));
+        assert_eq!(sel(&editors), (1, 16, 0));
+        presses(&mut editors, at(8.5, 0.0), 2, None);
+        assert_eq!(sel(&editors), (1, 6, 10));
+        assert_eq!(presses(&mut editors, at(3.5, 1.0), 3, Some(at(1.5, 0.0))), (1, 17, 34));
+        assert_eq!(sel(&editors), (1, 34, 0));
+        presses(&mut editors, at(3.5, 1.0), 3, None);
+        assert_eq!(sel(&editors), (1, 17, 34));
     }
 
     #[test]

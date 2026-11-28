@@ -347,6 +347,16 @@ pub fn fade_in(ui: &Ui, id: Id) -> f32 {
     t
 }
 
+pub fn press_count(ui: &Ui, id: Id, pos: egui::Pos2) -> u8 {
+    let key = id.with("press_count");
+    let now = ui.input(|i| i.time);
+    let (delay, dist) = ui.ctx().options(|o| (o.input_options.max_double_click_delay, o.input_options.max_click_dist));
+    let (last, before, at) = ui.data(|d| d.get_temp::<(f64, f64, egui::Pos2)>(key)).unwrap_or((f64::NEG_INFINITY, f64::NEG_INFINITY, pos));
+    ui.data_mut(|d| d.insert_temp(key, (now, last, pos)));
+    let near = at.distance(pos) < dist;
+    if near && now - before < delay * 2.0 { 3 } else if near && now - last < delay { 2 } else { 1 }
+}
+
 pub fn with_alpha(color: Color32, t: f32) -> Color32 {
     color.gamma_multiply(t.clamp(0.0, 1.0))
 }
