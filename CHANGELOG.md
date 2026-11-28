@@ -6,6 +6,23 @@ All notable changes to Halo are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-27
+
+### Added
+
+- Right-click menus show a key beside each item; press it to run the item.
+  Turn it off or change the keys in Settings > Workbench > Context Menu Keys.
+- Pressing Escape in the editor, when it has nothing else to close or cancel,
+  moves keyboard focus to the Explorer with the current file selected, so
+  Delete, Backspace, F2 and the arrow keys act on the file (#20).
+- In the Explorer, Backspace deletes the selected files just like Delete.
+
+### Fixed
+
+- Double-clicking and dragging without releasing selects the word and extends
+  word by word; triple-click and drag selects whole lines. Works in the
+  editor, the diff and merge views, and word by word in the terminal.
+
 ## [0.2.1] - 2026-11-27
 
 ### Fixed

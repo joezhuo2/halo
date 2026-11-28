@@ -342,6 +342,9 @@ Each of these can be switched off under **Settings > Text Editor**.
 - New file, new folder, rename, delete to the Recycle Bin, copy path and
   reveal in the file manager, from the right-click menu. Where there is no
   Recycle Bin (WSL folders), Halo asks before deleting permanently.
+- `Escape` in the editor, when it has nothing else to close, moves focus to
+  the current file in the Explorer, so `Delete`, `Backspace`, `F2` and the
+  arrow keys act on the file.
 - The Open Editors, folder, Outline and Timeline sections are resized by
   dragging the line between them; double-click the line to reset.
 - Select several files (`Ctrl+Click`, `Shift+Click`), cut, copy and paste
@@ -519,6 +522,9 @@ what it searches:
 - **Editable menus:** Settings > Appearance > Menus and Toolbars (or
   "Customize Menus and Toolbars") adds, removes and reorders the commands in
   the title bar menus, the editor context menu and the editor toolbar.
+- **Context menu keys:** every right-click menu shows a key beside each item;
+  press it to run the item. Settings > Workbench > Context Menu Keys turns it
+  off or changes the keys.
 - **Open Recent** (`Ctrl+R`, or File > Open Recent) lists the recent folders
   and files to open again.
 - **Windows:** right-click the taskbar icon for recent folders, recent files
