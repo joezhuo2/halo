@@ -319,6 +319,7 @@ pub struct Terminal {
     focused: bool,
     want_focus: bool,
     wheel: f32,
+    presses: u8,
     last_input: f64,
     task: Option<String>,
     pub pid: Option<u32>,
@@ -417,6 +418,7 @@ impl Terminal {
             focused: false,
             want_focus: true,
             wheel: 0.0,
+            presses: 1,
             last_input: 0.0,
             task: task.map(str::to_owned),
             pid,
@@ -928,7 +930,13 @@ impl Terminal {
         if let Some(pos) = resp.interact_pointer_pos() {
             let (point, side) = self.point_at(rect, pos, cell, offset);
             let mut term = self.term.lock();
-            if resp.drag_started() {
+            if ui.input(|i| i.pointer.primary_pressed()) && resp.is_pointer_button_down_on() {
+                self.presses = ui::press_count(ui, id, pos);
+                if self.presses > 1 {
+                    term.selection = Some(Selection::new(if self.presses == 2 { SelectionType::Semantic } else { SelectionType::Lines }, point, side));
+                }
+            }
+            if resp.drag_started() && self.presses == 1 {
                 let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
                 drop(term);
                 let (start, start_side) = self.point_at(rect, origin, cell, offset);
@@ -2200,6 +2208,56 @@ mod tests {
             frame(&mut terminal, vec![event]);
             assert!(terminal.term.lock().selection.is_none());
         }
+    }
+
+    #[test]
+    fn double_press_drags_select_by_word() {
+        let ctx = egui::Context::default();
+        let (program, args): (&str, Vec<String>) = if cfg!(windows) { ("cmd.exe", vec![]) } else { ("sh", vec![]) };
+        let mut terminal = Terminal::spawn(1, "test", program, &args, None, ctx.clone()).unwrap();
+        let theme = Theme::dark();
+        let frame = |terminal: &mut Terminal, events: Vec<Event>| {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 400.0))), events, focused: true, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| terminal.ui(ui, &theme, 14.0, &mut vec![]));
+            out.textures_delta.clear();
+        };
+        frame(&mut terminal, vec![]);
+        frame(&mut terminal, vec![]);
+        terminal.write(b"echo alpha beta gamma\r".to_vec());
+        let row_of = |t: &Terminal| {
+            let term = t.term.lock();
+            (0..t.size.1 as i32).find(|&r| term.bounds_to_string(Point::new(Line(r), Column(0)), Point::new(Line(r), term.last_column())).trim_end() == "alpha beta gamma")
+        };
+        assert!(wait_for(|| row_of(&terminal).is_some()), "{}", terminal.text());
+        let row = row_of(&terminal).unwrap() as f32;
+        let rect = ctx.read_response(Id::new(("terminal", 1u64))).unwrap().rect;
+        let font = FontId::monospace(14.0);
+        let (cw, rh) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'm'), f.row_height(&font)));
+        let cell = egui::vec2(cw, (rh * look().line_height.clamp(1.0, 3.0)).round());
+        let at = |col: f32| rect.min + egui::vec2(col * cell.x, (row + 0.5) * cell.y);
+        let button = |pos, pressed| Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        let drag = |terminal: &mut Terminal, from: Pos2, to: Option<Pos2>| {
+            frame(terminal, vec![Event::PointerMoved(from)]);
+            frame(terminal, vec![button(from, true)]);
+            frame(terminal, vec![button(from, false)]);
+            frame(terminal, vec![button(from, true)]);
+            let pressed = terminal.selection();
+            if let Some(to) = to {
+                frame(terminal, vec![Event::PointerMoved(to)]);
+                frame(terminal, vec![]);
+            }
+            frame(terminal, vec![button(to.unwrap_or(from), false)]);
+            for _ in 0..30 {
+                frame(terminal, vec![]);
+            }
+            pressed
+        };
+        assert_eq!(drag(&mut terminal, at(7.5), Some(at(13.5))).as_deref(), Some("beta"));
+        assert_eq!(terminal.selection().as_deref(), Some("beta gamma"));
+        drag(&mut terminal, at(7.5), Some(at(2.5)));
+        assert_eq!(terminal.selection().as_deref(), Some("alpha beta"));
+        drag(&mut terminal, at(7.5), None);
+        assert_eq!(terminal.selection().as_deref(), Some("beta"));
     }
 
     fn integrated(program: &str, base: &[&str], lines: &[&str]) -> (Terminal, Vec<Record>, PathBuf) {
